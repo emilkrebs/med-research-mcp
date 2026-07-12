@@ -9,7 +9,7 @@ import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors } from "./errors.js";
 import { keywordGrade } from "./grader.js";
-import type { GradedArticle, NcbiArticle, SearchInput, SearchOutput, StudyType } from "./types.js";
+import type { FetchInput, FetchOutput, GradedArticle, NcbiArticle, SearchInput, SearchOutput, StudyType } from "./types.js";
 
 const EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
 const MAX_RESULTS_CAP = 50;
@@ -389,6 +389,89 @@ export async function searchPubMed(
     articles,
     total: count,
     query: input.query,
+    ...(warnings.length > 0 ? { warnings } : {}),
+  };
+}
+
+/**
+ * Fetch full metadata + abstracts for one or more PMIDs.
+ * Pure data tool — no grading. The calling agent does its own
+ * analysis on the returned NcbiArticle objects.
+ */
+export async function fetchPubMed(
+  input: FetchInput,
+  cache: Cache = new LRUBackend(),
+  client: NcbiClient = new NcbiClient(),
+): Promise<FetchOutput> {
+  const warnings: string[] = [];
+  const allArticles = new Map<string, NcbiArticle>();
+  const missing: string[] = [];
+
+  // Summaries first (cache-aware).
+  const needSummary = input.pmids.filter((pmid) => {
+    const cached = cache.getSummary(pmid);
+    if (cached) {
+      allArticles.set(pmid, cached);
+      return false;
+    }
+    return true;
+  });
+
+  if (needSummary.length > 0) {
+    const fetched = await client.esummary(needSummary);
+    for (const [pmid, article] of fetched) {
+      cache.setSummary(pmid, article);
+      allArticles.set(pmid, article);
+    }
+  }
+
+  // Check which PMIDs we couldn't get summaries for.
+  for (const pmid of input.pmids) {
+    if (!allArticles.has(pmid)) missing.push(pmid);
+  }
+
+  // Abstracts (best-effort, cache-aware).
+  const pmidsWithSummary = [...allArticles.keys()];
+  const needAbstract = pmidsWithSummary.filter((pmid) => cache.getAbstract(pmid) == null);
+
+  if (needAbstract.length > 0) {
+    try {
+      const fetched = await client.efetch(needAbstract);
+      for (const [pmid, data] of fetched) {
+        if (data.abstract) {
+          cache.setAbstract(pmid, data.abstract);
+          const article = allArticles.get(pmid);
+          if (article) {
+            article.abstract = data.abstract;
+            if (article.publicationTypes.length === 0 && data.publicationTypes.length > 0) {
+              article.publicationTypes = data.publicationTypes;
+            }
+            cache.setSummary(pmid, article);
+          }
+        }
+        if (data.publicationTypes.length > 0) {
+          const article = allArticles.get(pmid);
+          if (article && article.publicationTypes.length === 0) {
+            article.publicationTypes = data.publicationTypes;
+            cache.setSummary(pmid, article);
+          }
+        }
+      }
+    } catch {
+      warnings.push("Some abstracts could not be fetched.");
+    }
+  }
+
+  // Assemble in input order.
+  const articles: NcbiArticle[] = [];
+  for (const pmid of input.pmids) {
+    const article = allArticles.get(pmid);
+    if (article) articles.push(article);
+  }
+
+  return {
+    articles,
+    missing,
     ...(warnings.length > 0 ? { warnings } : {}),
   };
 }

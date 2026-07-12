@@ -6,8 +6,7 @@
  * fall back to regex over title + abstract. Known keyword-path weaknesses
  * (protocol papers read as RCTs, "unlike previous trials…" false positives,
  * animal studies with incidental human mentions) are damped via negative
- * patterns and surfaced in `limitations` — the LLM path (see llm-grader) is
- * what actually resolves them.
+ * patterns and surfaced in `limitations`.
  */
 
 import type { GradedArticle, NcbiArticle, StudyType } from "./types.js";
@@ -214,6 +213,5 @@ export function keywordGrade(article: NcbiArticle): GradedArticle {
     ...(grade.dosage ? { dosage: grade.dosage } : {}),
     ...(grade.population ? { population: grade.population } : {}),
     ...(grade.limitations ? { limitations: grade.limitations } : {}),
-    gradingMethod: "keyword",
   };
 }

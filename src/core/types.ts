@@ -14,8 +14,6 @@ export type StudyType =
   | "animal-study"
   | "unknown";
 
-export type GradingMethod = "keyword" | "llm";
-
 /** Raw article metadata as returned by NCBI (esummary + efetch merged). */
 export interface NcbiArticle {
   pmid: string;
@@ -28,9 +26,13 @@ export interface NcbiArticle {
   doi?: string;
   /** PubMed's own structured publication-type tags, e.g. ["Randomized Controlled Trial", "Journal Article"]. */
   publicationTypes: string[];
+  /** MeSH headings assigned by NLM indexers. */
+  meshHeadings?: string[];
+  /** PMIDs cited by this article. */
+  references?: string[];
 }
 
-/** An article plus its evidence grade. */
+/** An article with keyword-based evidence classification. */
 export interface GradedArticle extends NcbiArticle {
   studyType: StudyType;
   /** 0–5. Higher is stronger evidence. */
@@ -40,7 +42,6 @@ export interface GradedArticle extends NcbiArticle {
   dosage?: string;
   population?: string;
   limitations?: string[];
-  gradingMethod: GradingMethod;
 }
 
 export interface DateRange {
@@ -72,48 +73,14 @@ export interface SearchOutput {
   warnings?: string[];
 }
 
-export interface DeepGradeInput {
-  pmid: string;
-  /** If the abstract is already in hand, pass it to skip a network round-trip. */
-  abstract?: string;
+export interface FetchInput {
+  /** One or more PMIDs to fetch. */
+  pmids: string[];
 }
 
-export interface Pico {
-  population?: string;
-  intervention?: string;
-  comparison?: string;
-  outcome?: string;
-}
-
-export interface DeepGradeOutput {
-  pmid: string;
-  correctedStudyType: StudyType;
-  /** LLM-adjusted evidence score (0–5). */
-  correctedScore: number;
-  pico: Pico;
-  sampleSize?: number;
-  effectSize?: string;
-  fundingSource?: string;
-  /** Conflicts of interest, tiny sample, preprint, retracted, etc. */
-  redFlags: string[];
-  gradingReasoning: string;
-  gradingMethod: "llm";
-  /** True when the LLM path failed and this is a keyword-derived fallback. */
-  fallback?: boolean;
-  /** Present on fallback: why the LLM grade was unavailable. */
-  warning?: string;
-}
-
-/** Supported LLM providers for the deep-grade path. */
-export type LlmProvider = "openai" | "anthropic" | "local";
-
-export interface LlmConfig {
-  provider: LlmProvider;
-  apiKey?: string;
-  /** Model id; each provider has a sensible default. */
-  model?: string;
-  /** Base URL override — required for `local`, optional elsewhere. */
-  baseUrl?: string;
-  /** Request timeout in milliseconds. Default 15000. */
-  timeoutMs?: number;
+export interface FetchOutput {
+  articles: NcbiArticle[];
+  /** PMIDs that could not be found or fetched. */
+  missing: string[];
+  warnings?: string[];
 }

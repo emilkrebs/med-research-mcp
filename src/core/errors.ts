@@ -8,8 +8,6 @@ export type PubMedErrorCode =
   | "QUERY_TOO_BROAD"
   | "NO_ABSTRACT"
   | "PARSE_FAILURE"
-  | "LLM_UNAVAILABLE"
-  | "LLM_TIMEOUT"
   | "NETWORK_ERROR"
   | "NOT_FOUND";
 
@@ -71,7 +69,7 @@ export const errors = {
     return new PubMedException({
       code: "QUERY_TOO_BROAD",
       message: `Query matched ${count} results`,
-      userMessage: `Your query matched ${count.toLocaleString()} articles — too broad to grade meaningfully. Narrow it with field tags like [tiab] (title/abstract), [mesh] (MeSH term), or add AND clauses.`,
+      userMessage: `Your query matched ${count.toLocaleString()} articles — too broad. Narrow it with field tags like [tiab] (title/abstract), [mesh] (MeSH term), or add AND clauses.`,
       recoverable: true,
     });
   },
@@ -100,24 +98,6 @@ export const errors = {
       message: `PMID ${pmid} not found`,
       userMessage: `No PubMed article found for PMID ${pmid}. Check the identifier.`,
       recoverable: false,
-    });
-  },
-
-  llmUnavailable(detail: string): PubMedException {
-    return new PubMedException({
-      code: "LLM_UNAVAILABLE",
-      message: `LLM provider unavailable: ${detail}`,
-      userMessage: "The deep-grading LLM is not configured or unreachable. Falling back to keyword grading.",
-      recoverable: true,
-    });
-  },
-
-  llmTimeout(timeoutMs: number): PubMedException {
-    return new PubMedException({
-      code: "LLM_TIMEOUT",
-      message: `LLM grading timed out after ${timeoutMs}ms`,
-      userMessage: "Deep grading took too long and timed out. Falling back to keyword grading.",
-      recoverable: true,
     });
   },
 } as const;
