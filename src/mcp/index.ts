@@ -3,10 +3,10 @@
  * Thin MCP adapter over the pubmed-bio core library.
  *
  * Exposes two stdio tools:
- *   - pubmed_search — search + fast keyword grading (always cheap)
- *   - pubmed_grade  — LLM deep grading of one paper (costs tokens)
+ *   - pubmed_search — search + keyword classification (always cheap)
+ *   - pubmed_fetch  — fetch full metadata + abstracts for given PMIDs (pure data)
  *
- * All the logic lives in ../core; this file only wires it to MCP.
+ * All logic lives in ../core; this file only wires it to MCP.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -14,7 +14,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import {
   createCache,
-  gradeArticle,
+  fetchPubMed,
   isPubMedError,
   LRUBackend,
   NcbiClient,
@@ -52,10 +52,8 @@ function buildCache(): Cache {
 // One cache shared across tool calls for the life of the process.
 const cache = buildCache();
 
-// One NCBI client shared across tool calls, so its rate limiter serializes and
-// spaces *every* request — including concurrent pubmed_search/pubmed_grade calls
-// the agent fires in parallel. A fresh client per call would each get its own
-// limiter and blow past NCBI's 3 req/s (anonymous) limit.
+// One NCBI client shared across tool calls — its rate limiter serializes and
+// spaces *every* request so concurrent tool calls don't blow past NCBI's limit.
 const ncbi = new NcbiClient();
 
 if (!process.env.NCBI_EMAIL) {
@@ -65,6 +63,8 @@ if (!process.env.NCBI_EMAIL) {
 }
 
 const server = new McpServer({ name: "pubmed-bio", version: "0.1.0" });
+
+// ─── pubmed_search ──────────────────────────────────────────────
 
 const searchInputShape = {
   query: z
@@ -80,21 +80,15 @@ const searchInputShape = {
   sort: z.enum(["relevance", "date"]).optional().describe("Sort order. Default relevance."),
 };
 
-const searchOutputShape = {
-  articles: z.array(z.record(z.string(), z.any())),
-  total: z.number(),
-  query: z.string(),
-  warnings: z.array(z.string()).optional(),
-};
-
 server.registerTool(
   "pubmed_search",
   {
-    title: "Search PubMed (fast grade)",
+    title: "Search PubMed",
     description:
-      "Search PubMed and return evidence-graded results using fast keyword heuristics (PubMed publication types + title/abstract rules). Always cheap. Use pubmed_grade for a precise LLM grade of a specific paper.",
+      "Search PubMed and return results with automatic study-type classification (meta-analysis, RCT, cohort, review, case-control, case-report, animal-study) based on NLM PublicationType tags with keyword fallback. " +
+      "Evidence scores: 5=meta-analysis, 4=RCT, 3=cohort/review, 2=case-control, 1=case-report, 0=animal/unknown. " +
+      "Always cheap — no LLM calls. Use pubmed_fetch to get full metadata + abstracts for specific PMIDs.",
     inputSchema: searchInputShape,
-    outputSchema: searchOutputShape,
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
   async (args) => {
@@ -102,7 +96,6 @@ server.registerTool(
       const result = await searchPubMed(args, cache, ncbi);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        structuredContent: result as unknown as Record<string, unknown>,
       };
     } catch (err) {
       const payload = isPubMedError(err)
@@ -116,42 +109,33 @@ server.registerTool(
   },
 );
 
-const gradeInputShape = {
-  pmid: z.string().describe("PubMed ID to deep-grade."),
-  abstract: z.string().optional().describe("Abstract text, if already fetched, to skip a network round-trip."),
-};
+// ─── pubmed_fetch ───────────────────────────────────────────────
 
-const gradeOutputShape = {
-  pmid: z.string(),
-  correctedStudyType: z.string(),
-  correctedScore: z.number(),
-  pico: z.record(z.string(), z.any()),
-  sampleSize: z.number().optional(),
-  effectSize: z.string().optional(),
-  fundingSource: z.string().optional(),
-  redFlags: z.array(z.string()),
-  gradingReasoning: z.string(),
-  gradingMethod: z.literal("llm"),
-  fallback: z.boolean().optional(),
-  warning: z.string().optional(),
+const fetchInputShape = {
+  pmids: z
+    .array(z.string())
+    .min(1)
+    .max(50)
+    .describe("One or more PubMed IDs to fetch full metadata + abstracts for."),
 };
 
 server.registerTool(
-  "pubmed_grade",
+  "pubmed_fetch",
   {
-    title: "Deep-grade a paper (LLM)",
+    title: "Fetch PubMed articles",
     description:
-      "Precisely grade one PubMed paper with an LLM: verify the study-type classification, extract PICO/sample size/effect size/funding, and flag red flags (conflicts of interest, tiny sample, preprint, retracted). Costs tokens. Falls back to keyword grading if no LLM is configured or it times out.",
-    inputSchema: gradeInputShape,
-    outputSchema: gradeOutputShape,
+      "Fetch full metadata, abstracts, MeSH headings, and references for one or more PMIDs. " +
+      "Returns raw NcbiArticle objects — no grading or classification. " +
+      "The calling agent uses the returned data for its own analysis (PICO extraction, red flag detection, evidence assessment). " +
+      "Use after pubmed_search to drill into specific papers of interest.",
+    inputSchema: fetchInputShape,
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
   async (args) => {
     try {
-      const result = await gradeArticle(args, cache, { client: ncbi });
+      const result = await fetchPubMed({ pmids: args.pmids }, cache, ncbi);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        structuredContent: result as unknown as Record<string, unknown>,
       };
     } catch (err) {
       const payload = isPubMedError(err)
@@ -164,6 +148,8 @@ server.registerTool(
     }
   },
 );
+
+// ─── Start ──────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();

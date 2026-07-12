@@ -1,0 +1,7 @@
+mcp_servers:
+  pubmed-bio:
+    command: npx
+    args: ["tsx", "/Users/private/Desktop/repos/pubmed-bio-mcp/src/mcp/index.ts"]
+    env:
+      NCBI_EMAIL: "emilkrebz@gmail.com"
+      # optional: NCBI_API_KEY for 10 req/sec (free from ncbi.nlm.nih.gov/account)

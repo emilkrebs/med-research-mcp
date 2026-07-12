@@ -143,6 +143,5 @@ describe("keywordGrade — article integration", () => {
     expect(graded.pmid).toBe("123");
     expect(graded.studyType).toBe("randomized-controlled-trial");
     expect(graded.evidenceScore).toBe(SCORE_BY_TYPE["randomized-controlled-trial"]);
-    expect(graded.gradingMethod).toBe("keyword");
   });
 });

@@ -7,15 +7,13 @@
  */
 
 import { LRUCache } from "lru-cache";
-import type { NcbiArticle, DeepGradeOutput } from "./types.js";
+import type { NcbiArticle } from "./types.js";
 
 export interface Cache {
   getSummary(pmid: string): NcbiArticle | null;
   setSummary(pmid: string, article: NcbiArticle): void;
   getAbstract(pmid: string): string | null;
   setAbstract(pmid: string, abstract: string): void;
-  getLLMGrade(pmid: string): DeepGradeOutput | null;
-  setLLMGrade(pmid: string, grade: DeepGradeOutput): void;
 }
 
 export type CacheBackend = "memory" | "sqlite";
@@ -36,12 +34,10 @@ export interface CacheOptions {
 export class LRUBackend implements Cache {
   private readonly summaries: LRUCache<string, NcbiArticle>;
   private readonly abstracts: LRUCache<string, string>;
-  private readonly grades: LRUCache<string, DeepGradeOutput>;
 
   constructor(max = 200) {
     this.summaries = new LRUCache({ max });
     this.abstracts = new LRUCache({ max });
-    this.grades = new LRUCache({ max });
   }
 
   getSummary(pmid: string): NcbiArticle | null {
@@ -59,14 +55,6 @@ export class LRUBackend implements Cache {
   setAbstract(pmid: string, abstract: string): void {
     this.abstracts.set(pmid, abstract);
   }
-
-  getLLMGrade(pmid: string): DeepGradeOutput | null {
-    return this.grades.get(pmid) ?? null;
-  }
-
-  setLLMGrade(pmid: string, grade: DeepGradeOutput): void {
-    this.grades.set(pmid, grade);
-  }
 }
 
 /** A cache that stores nothing — useful for tests or explicit opt-out. */
@@ -79,10 +67,6 @@ export class NullCache implements Cache {
     return null;
   }
   setAbstract(): void {}
-  getLLMGrade(): DeepGradeOutput | null {
-    return null;
-  }
-  setLLMGrade(): void {}
 }
 
 export function createCache(options: CacheOptions): Cache {
