@@ -1,0 +1,68 @@
+{
+  "name": "pubmed-bio",
+  "version": "0.1.0",
+  "description": "Evidence-graded PubMed search for AI agents — built for biohacking, supplementation, and clinical decision support.",
+  "license": "MIT",
+  "author": {
+    "name": "Emil Krebs",
+    "email": "emilkrebz@gmail.com"
+  },
+  "keywords": [
+    "pubmed",
+    "ncbi",
+    "mcp",
+    "model-context-protocol",
+    "evidence-grading",
+    "biohacking",
+    "clinical-decision-support"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "pubmed-bio-mcp": "./dist/mcp/index.js"
+  },
+  "exports": {
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js",
+      "require": "./dist/core/index.cjs"
+    },
+    "./core/cache": {
+      "types": "./dist/core/cache.d.ts",
+      "import": "./dist/core/cache.js",
+      "require": "./dist/core/cache.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "mcpb/manifest.json"
+  ],
+  "scripts": {
+    "dev": "tsx watch src/mcp/index.ts",
+    "build": "tsup && tsc --emitDeclarationOnly",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/mcp/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build:mcpb": "node scripts/build-mcpb.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "fast-xml-parser": "^5.10.0",
+    "lru-cache": "^11.5.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@anthropic-ai/mcpb": "^2.1.2",
+    "@types/node": "^26.1.1",
+    "esbuild": "^0.28.1",
+    "tsup": "^8.5.1",
+    "tsx": "^4.23.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
