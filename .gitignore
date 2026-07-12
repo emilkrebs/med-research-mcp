@@ -1,0 +1,10 @@
+node_modules/
+dist/
+mcpb/server/
+*.mcpb
+*.db
+*.db-journal
+.env
+.env.*
+*.tsbuildinfo
+.DS_Store

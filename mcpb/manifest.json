@@ -1,0 +1,65 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/mcpb/main/schemas/mcpb-manifest-v0.4.schema.json",
+  "manifest_version": "0.4",
+  "name": "pubmed-bio",
+  "version": "0.1.0",
+  "description": "Evidence-graded PubMed search for AI agents — biohacking, supplementation, and clinical decision support.",
+  "author": {
+    "name": "Emil Krebs",
+    "email": "hello@emilkrebs.dev"
+  },
+  "license": "MIT",
+  "keywords": ["pubmed", "ncbi", "mcp", "evidence-grading", "biohacking"],
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "NCBI_EMAIL": "${user_config.ncbiEmail}",
+        "NCBI_API_KEY": "${user_config.ncbiApiKey}",
+        "PUBMED_LLM_PROVIDER": "${user_config.llmProvider}",
+        "PUBMED_LLM_API_KEY": "${user_config.llmApiKey}",
+        "PUBMED_CACHE_BACKEND": "memory"
+      }
+    }
+  },
+  "user_config": {
+    "ncbiEmail": {
+      "type": "string",
+      "title": "NCBI contact email",
+      "description": "NCBI asks for a contact email on every E-utilities request. Recommended to avoid throttling.",
+      "required": true
+    },
+    "ncbiApiKey": {
+      "type": "string",
+      "title": "NCBI API key (optional)",
+      "description": "Raises the NCBI rate limit from 3 to 10 requests/second. Leave blank if you don't have one.",
+      "sensitive": true,
+      "required": false
+    },
+    "llmProvider": {
+      "type": "string",
+      "title": "LLM provider for deep grading",
+      "description": "One of: openai, anthropic, local. Used by the pubmed_grade tool.",
+      "default": "openai",
+      "required": false
+    },
+    "llmApiKey": {
+      "type": "string",
+      "title": "LLM API key",
+      "description": "API key for the chosen LLM provider. Leave blank to disable deep grading (pubmed_grade falls back to keyword grading).",
+      "sensitive": true,
+      "required": false
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=1.0.0",
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=18"
+    }
+  }
+}
