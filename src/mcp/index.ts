@@ -17,6 +17,7 @@ import {
   gradeArticle,
   isPubMedError,
   LRUBackend,
+  NcbiClient,
   searchPubMed,
   type Cache,
   type CacheBackend,
@@ -50,6 +51,12 @@ function buildCache(): Cache {
 
 // One cache shared across tool calls for the life of the process.
 const cache = buildCache();
+
+// One NCBI client shared across tool calls, so its rate limiter serializes and
+// spaces *every* request — including concurrent pubmed_search/pubmed_grade calls
+// the agent fires in parallel. A fresh client per call would each get its own
+// limiter and blow past NCBI's 3 req/s (anonymous) limit.
+const ncbi = new NcbiClient();
 
 if (!process.env.NCBI_EMAIL) {
   console.error(
@@ -92,7 +99,7 @@ server.registerTool(
   },
   async (args) => {
     try {
-      const result = await searchPubMed(args, cache);
+      const result = await searchPubMed(args, cache, ncbi);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: result as unknown as Record<string, unknown>,
@@ -141,7 +148,7 @@ server.registerTool(
   },
   async (args) => {
     try {
-      const result = await gradeArticle(args, cache);
+      const result = await gradeArticle(args, cache, { client: ncbi });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: result as unknown as Record<string, unknown>,

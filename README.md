@@ -170,6 +170,25 @@ npm run build:mcpb
 
 Then drag the resulting `dist/pubmed-bio.mcpb` onto Claude Desktop. The installer prompts for your NCBI contact email and LLM API key at install time — no manual JSON editing required.
 
+## Agent skills
+
+This repo ships two [Agent Skills](skills/) that make the MCP self-guiding:
+
+- **[pubmed-research](skills/pubmed-research/SKILL.md)** — teaches an AI how to drive the two tools well: precise PubMed queries with field tags, reading the evidence grades (scores, confidence, limitations), when to escalate from the cheap keyword grade to LLM deep-grading, and how to report findings (cite PMIDs, surface red flags, not-medical-advice).
+- **[pubmed-mcp-setup](skills/pubmed-mcp-setup/SKILL.md)** — guides an AI helping a user install, configure, and troubleshoot the server across clients (Claude Code, Claude Desktop `.mcpb`, Cursor, Hermes) and credentials.
+
+Install them into Claude Code so they activate alongside the MCP:
+
+```bash
+# personal (all your projects)
+mkdir -p ~/.claude/skills && cp -r skills/* ~/.claude/skills/
+
+# or project-scoped (this workspace only)
+mkdir -p .claude/skills && cp -r skills/* .claude/skills/
+```
+
+Skills take effect in new Claude Code sessions. (Claude Desktop `.mcpb` installs don't auto-load skills — copy them in as above.)
+
 ## Direct library use (Biohacking-IDE)
 
 The `core/` library has no MCP dependency and can be imported directly:

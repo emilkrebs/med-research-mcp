@@ -39,6 +39,7 @@
   "files": [
     "dist",
     "src",
+    "skills",
     "mcpb/manifest.json"
   ],
   "scripts": {
