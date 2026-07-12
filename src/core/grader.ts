@@ -57,7 +57,7 @@ const RULES: Rule[] = [
   },
   {
     studyType: "animal-study",
-    patterns: [/\bmurine\b/i, /\brodents?\b/i, /animal model/i, /\bmice\b/i, /\brats?\b/i],
+    patterns: [/\bmurine\b/i, /\brodents?\b/i, /animal model/i, /\bmice\b/i, /\bmouse\b/i, /\brats?\b/i],
   },
 ];
 
@@ -66,6 +66,10 @@ const PUB_TYPE_MAP: Record<string, StudyType> = {
   "meta-analysis": "meta-analysis",
   "systematic review": "meta-analysis",
   "randomized controlled trial": "randomized-controlled-trial",
+  // NLM tags EHR/registry/propensity-matched studies "Observational Study".
+  // Without this, the abstract's mention of "randomized" trials it compares
+  // against misfires the RCT regex and inflates the score.
+  "observational study": "cohort",
   review: "review",
   "case reports": "case-report",
 };

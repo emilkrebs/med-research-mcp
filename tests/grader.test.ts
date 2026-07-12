@@ -25,6 +25,19 @@ describe("gradeText — publication type primary signal", () => {
     expect(g.studyType).toBe("review");
     expect(g.evidenceScore).toBe(3);
   });
+
+  it("maps Observational Study to cohort even when the abstract mentions randomized trials", () => {
+    // Real failure: an EHR cohort whose abstract compares itself to prior RCTs
+    // ("shown to reduce weight in randomized clinical trials") was misgraded as
+    // an RCT. The curated Observational Study tag must win.
+    const g = gradeText(
+      "Semaglutide vs Tirzepatide for Weight Loss",
+      "Although these drugs were shown to reduce weight in randomized clinical trials, in this cohort study of propensity-matched adults...",
+      ["Journal Article", "Observational Study", "Comparative Study"],
+    );
+    expect(g.studyType).toBe("cohort");
+    expect(g.evidenceScore).toBe(3);
+  });
 });
 
 describe("gradeText — keyword fallback and confidence formula", () => {
@@ -77,6 +90,13 @@ describe("gradeText — known weaknesses are damped", () => {
 
   it("keeps animal-study when no human terms appear", () => {
     const g = gradeText("Obesity", "Effects in a murine model; mice were used.", []);
+    expect(g.studyType).toBe("animal-study");
+    expect(g.evidenceScore).toBe(0);
+  });
+
+  it("recognizes singular 'mouse' as an animal study", () => {
+    // "mouse oocytes" was slipping through to unknown because only \bmice\b matched.
+    const g = gradeText("Epitalon and aging", "Epitalon protects mouse oocytes in vitro.", []);
     expect(g.studyType).toBe("animal-study");
     expect(g.evidenceScore).toBe(0);
   });
