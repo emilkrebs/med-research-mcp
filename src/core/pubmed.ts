@@ -86,7 +86,7 @@ export class NcbiClient {
   constructor(config: NcbiConfig = {}) {
     this.email = config.email ?? process.env.NCBI_EMAIL;
     this.apiKey = config.apiKey ?? process.env.NCBI_API_KEY;
-    this.tool = config.tool ?? "pubmed-bio";
+    this.tool = config.tool ?? "med-research-mcp";
     this.broadThreshold = config.broadThreshold ?? DEFAULT_BROAD_THRESHOLD;
     this.timeoutMs = config.timeoutMs ?? 15_000;
     this.limiter = new RateLimiter(this.apiKey ? 10 : 3);

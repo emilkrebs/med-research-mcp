@@ -27,7 +27,7 @@ const DEFAULT_MAX_CHARS = 50_000;
 const DEFAULT_TIMEOUT_MS = 20_000;
 /** Extracted text shorter than this is treated as a paywall stub / failed extraction. */
 const MIN_FULLTEXT_CHARS = 500;
-const FULLTEXT_USER_AGENT = "pubmed-bio/0.2.0 (https://github.com/emilkrebs/pubmed-bio)";
+const FULLTEXT_USER_AGENT = "med-research-mcp/0.2.0 (https://github.com/emilkrebs/med-research-mcp)";
 
 /** A resource fetched from an arbitrary URL. Either `text` (HTML) or `bytes` (PDF) is set. */
 export interface FetchedResource {

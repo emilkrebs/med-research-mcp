@@ -1,5 +1,5 @@
 /**
- * Shared types for the pubmed-bio core library.
+ * Shared types for the med-research-mcp core library.
  * No MCP or runtime dependency — safe to import from anywhere.
  */
 

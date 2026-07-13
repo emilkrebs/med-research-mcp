@@ -1,9 +1,9 @@
 ---
 name: pubmed-mcp-setup
-description: Use when helping a user install, configure, or troubleshoot the pubmed-bio MCP server (evidence-graded PubMed search). Walks through building the project, registering it with an MCP client (Claude Code, Claude Desktop via .mcpb, Cursor, Hermes) or importing the core library directly, wiring up NCBI and LLM credentials, and verifying it works. Trigger on "install the pubmed MCP", "set up pubmed-bio", "configure PubMed search", or connection/credential problems with it.
+description: Use when helping a user install, configure, or troubleshoot the med-research-mcp MCP server (evidence-graded PubMed search). Walks through building the project, registering it with an MCP client (Claude Code, Claude Desktop via .mcpb, Cursor, Hermes) or importing the core library directly, wiring up NCBI and LLM credentials, and verifying it works. Trigger on "install the pubmed MCP", "set up med-research-mcp", "configure PubMed search", or connection/credential problems with it.
 ---
 
-# Installing & setting up the pubmed-bio MCP
+# Installing & setting up the med-research-mcp MCP
 
 Guide the user through this. **Gather three things first, then run the right path.** Don't dump every option — ask, then act.
 
@@ -31,27 +31,27 @@ Requires Node ≥ 18. Re-run `npm run build` after any source change — clients
 
 ### Claude Code (CLI)
 ```bash
-claude mcp add pubmed-bio -s user \
+claude mcp add med-research-mcp -s user \
   -e NCBI_EMAIL=you@example.com \
   -- node <REPO>/dist/mcp/index.js
 ```
 Use `-s user` for all projects, `-s local` for just this one. Add `-e PUBMED_LLM_PROVIDER=anthropic -e PUBMED_LLM_API_KEY=sk-...` to enable deep grading. Verify:
 ```bash
-claude mcp get pubmed-bio      # expect: Status ✓ Connected
+claude mcp get med-research-mcp      # expect: Status ✓ Connected
 ```
 Tools appear in **new** Claude Code sessions.
 
 ### Claude Desktop (.mcpb — easiest for non-technical users)
 ```bash
-npm run build:mcpb             # produces dist/pubmed-bio.mcpb
+npm run build:mcpb             # produces dist/med-research-mcp.mcpb
 ```
-Drag `dist/pubmed-bio.mcpb` onto Claude Desktop. The installer prompts for the NCBI email and (optional) LLM key — no JSON editing. Note: `.mcpb` installs do **not** auto-load the companion `pubmed-research` skill; copy it in manually (Step 4).
+Drag `dist/med-research-mcp.mcpb` onto Claude Desktop. The installer prompts for the NCBI email and (optional) LLM key — no JSON editing. Note: `.mcpb` installs do **not** auto-load the companion `pubmed-research` skill; copy it in manually (Step 4).
 
 ### Cursor / generic JSON (`mcpServers`)
 ```json
 {
   "mcpServers": {
-    "pubmed-bio": {
+    "med-research-mcp": {
       "command": "node",
       "args": ["<REPO>/dist/mcp/index.js"],
       "env": { "NCBI_EMAIL": "you@example.com" }
@@ -63,7 +63,7 @@ Drag `dist/pubmed-bio.mcpb` onto Claude Desktop. The installer prompts for the N
 ### Hermes / generic stdio (YAML) — runs TypeScript source directly, no build needed
 ```yaml
 mcp_servers:
-  pubmed-bio:
+  med-research-mcp:
     command: npx
     args: ["tsx", "<REPO>/src/mcp/index.ts"]
     env:
@@ -75,7 +75,7 @@ mcp_servers:
 ```
 
 ### Direct library import (Biohacking-IDE / any TS project)
-Add as a git submodule (or dependency), then `import { searchPubMed, gradeArticle } from "pubmed-bio/core"` and `import { createCache } from "pubmed-bio/core/cache"`. The dual ESM+CJS build means both ESM and CommonJS consumers work.
+Add as a git submodule (or dependency), then `import { searchPubMed, gradeArticle } from "med-research-mcp/core"` and `import { createCache } from "med-research-mcp/core/cache"`. The dual ESM+CJS build means both ESM and CommonJS consumers work.
 
 ## Step 3 — Environment reference
 
@@ -109,4 +109,4 @@ Start a new session with the client and run a `pubmed_search` for `creatine AND 
 - **`pubmed_grade` returns `fallback: true`** → no/invalid LLM provider or key, or it timed out; keyword grade was returned instead. Add/fix `PUBMED_LLM_*`.
 - **`QUERY_TOO_BROAD`** → the query is too generic; add `[tiab]`/`[mesh]` field tags or `AND` clauses.
 - **Changed the source** → rebuild (`npm run build`); the `tsx`/Hermes path picks up source automatically.
-- **Connection check** (Claude Code): `claude mcp get pubmed-bio`. Remove with `claude mcp remove pubmed-bio -s user`.
+- **Connection check** (Claude Code): `claude mcp get med-research-mcp`. Remove with `claude mcp remove med-research-mcp -s user`.

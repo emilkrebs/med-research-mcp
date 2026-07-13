@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Build pipeline for the pubmed-bio MCPB bundle.
+ * Build pipeline for the med-research-mcp MCPB bundle.
  *
  * 1. Bundles src/mcp/index.ts into a single self-contained CommonJS file
  *    with esbuild (mcpb/server/index.js).
- * 2. Packs mcpb/ into dist/pubmed-bio.mcpb via the @anthropic-ai/mcpb CLI.
+ * 2. Packs mcpb/ into dist/med-research-mcp.mcpb via the @anthropic-ai/mcpb CLI.
  *
  * Usage: node scripts/build-mcpb.mjs   (wired up as `npm run build:mcpb`)
  */
@@ -22,7 +22,7 @@ const serverOutDir = path.join(root, "mcpb", "server");
 const distDir = path.join(root, "dist");
 const entryPoint = path.join(root, "src", "mcp", "index.ts");
 const outfile = path.join(serverOutDir, "index.js");
-const mcpbOutfile = path.join(distDir, "pubmed-bio.mcpb");
+const mcpbOutfile = path.join(distDir, "med-research-mcp.mcpb");
 
 async function main() {
   console.log("Preparing output directories…");
@@ -38,7 +38,7 @@ async function main() {
   console.log("Packing…");
   packBundle();
 
-  console.log("Created dist/pubmed-bio.mcpb");
+  console.log("Created dist/med-research-mcp.mcpb");
 }
 
 async function bundleServer() {
@@ -63,7 +63,7 @@ async function bundleServer() {
 function packBundle() {
   const result = spawnSync(
     "npx",
-    ["@anthropic-ai/mcpb", "pack", "./mcpb", "./dist/pubmed-bio.mcpb"],
+    ["@anthropic-ai/mcpb", "pack", "./mcpb", "./dist/med-research-mcp.mcpb"],
     { stdio: "inherit", cwd: root, shell: false },
   );
 

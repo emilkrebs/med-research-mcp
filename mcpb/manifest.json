@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/anthropics/mcpb/main/schemas/mcpb-manifest-v0.4.schema.json",
   "manifest_version": "0.4",
-  "name": "pubmed-bio",
+  "name": "med-research-mcp",
   "version": "0.2.0",
   "description": "Evidence-graded PubMed search for AI agents — biohacking, supplementation, and clinical decision support.",
   "author": {
