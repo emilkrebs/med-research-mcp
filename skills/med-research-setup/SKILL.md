@@ -80,8 +80,8 @@ Add as a git submodule (or dependency), then `import { searchLiterature, fetchLi
 |-----|---------|---------|
 | `NCBI_EMAIL` | recommended | Contact email; avoids anonymous throttling |
 | `NCBI_API_KEY` | optional | Raises rate limit 3 → 10 req/s |
-| `PUBMED_UNPAYWALL_EMAIL` | optional | Contact email for Unpaywall lookups (`literature_fulltext`). Falls back to `NCBI_EMAIL`. |
-| `PUBMED_CACHE_BACKEND` | optional | `memory` (default). `sqlite` is planned for a future release |
+| `MED_RESEARCH_UNPAYWALL_EMAIL` | optional | Contact email for Unpaywall lookups (`literature_fulltext`). Falls back to `NCBI_EMAIL`. |
+| `MED_RESEARCH_CACHE_BACKEND` | optional | `memory` (default). `sqlite` is planned for a future release |
 
 ## Step 4 — Install the companion usage skill
 

@@ -1,11 +1,10 @@
 /**
  * PubMed adapter — a thin wrapper over the existing NcbiClient pipeline.
  *
- * It does not touch the v0.2.0 code path: `search` delegates to `esearch` and
- * `fetch` delegates to `fetchPubMed`, which already handle esummary + efetch,
- * caching (bare PMIDs, for backward compatibility), and abstract backfill.
+ * `search` delegates to `esearch` and `fetch` delegates to `fetchPubMed`,
+ * which already handle esummary + efetch, caching, and abstract backfill.
  * PubMed articles are left with `database` unset — the library treats an absent
- * `database` as "pubmed", so `pubmed_search` output is byte-for-byte unchanged.
+ * `database` as "pubmed".
  */
 
 import type { Cache } from "../cache.js";
@@ -30,7 +29,7 @@ export class PubMedAdapter implements DatabaseAdapter {
 
   async fetch(ids: string[], cache: Cache): Promise<Article[]> {
     if (ids.length === 0) return [];
-    const { articles } = await fetchPubMed({ pmids: ids }, cache, this.client);
+    const { articles } = await fetchPubMed({ ids }, cache, this.client);
     return articles;
   }
 }

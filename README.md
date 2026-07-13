@@ -100,9 +100,9 @@ For papers where the keyword grade is suspicious, fetch the full abstract with `
 | --- | --- | --- |
 | `NCBI_EMAIL` | Recommended | Contact email sent with every NCBI request, as NCBI's usage policy asks. |
 | `NCBI_API_KEY` | No | Raises the NCBI rate limit from 3 to 10 requests/second. |
-| `PUBMED_UNPAYWALL_EMAIL` | No | Contact email for Unpaywall open-access lookups (used by `*_fulltext`). Falls back to `NCBI_EMAIL` if unset. |
-| `PUBMED_CACHE_BACKEND` | No | `memory` (default). `sqlite` is planned for a future release. |
-| `PUBMED_CACHE_PATH` | No | Path for the cache file, when using a persistent backend. |
+| `MED_RESEARCH_UNPAYWALL_EMAIL` | No | Contact email for Unpaywall open-access lookups (used by `*_fulltext`). Falls back to `NCBI_EMAIL` if unset. |
+| `MED_RESEARCH_CACHE_BACKEND` | No | `memory` (default). `sqlite` is planned for a future release. |
+| `MED_RESEARCH_CACHE_PATH` | No | Path for the cache file, when using a persistent backend. |
 
 ## MCP client setup
 

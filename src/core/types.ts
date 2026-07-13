@@ -21,20 +21,20 @@ export interface Article {
   abstract?: string;
   authors: string[];
   journal: string;
-  /** Publication date as reported by PubMed (e.g. "2021 Mar 15" or "2021"). */
+  /** Publication date as reported by the source database (e.g. "2021 Mar 15" or "2021"). */
   pubDate: string;
   doi?: string;
-  /** PubMed's own structured publication-type tags, e.g. ["Randomized Controlled Trial", "Journal Article"]. */
+  /** Source database's structured publication-type tags (NLM tags for PubMed, keyword-detected for others). */
   publicationTypes: string[];
-  /** MeSH headings assigned by NLM indexers. */
+  /** MeSH headings assigned by NLM indexers (PubMed only). */
   meshHeadings?: string[];
-  /** PMIDs cited by this article. */
+  /** IDs cited by this article in the source database. */
   references?: string[];
 
   /**
    * Source database — one of the adapter ids ("pubmed", "scielo", "cyberleninka",
    * "europepmc", "chinaxiv", "jstage"). Treated as "pubmed" when absent, so all
-   * existing PubMed code keeps working without setting it. Non-PubMed adapters
+   * existing code keeps working without setting it. Non-PubMed adapters
    * always set it. When set, `pmid` holds the database-specific id.
    */
   database?: string;
@@ -95,13 +95,12 @@ export interface DateRange {
 }
 
 export interface SearchInput {
-  /** PubMed query, supports field tags like `[tiab]`, `[mesh]`, `[au]`. */
+  /** Search query, supports PubMed field tags like `[tiab]`, `[mesh]`, `[au]` on the pubmed database. */
   query: string;
   /**
    * Source database(s) for {@link searchLiterature}. A single id ("pubmed",
    * "scielo", "cyberleninka", "europepmc", "chinaxiv", "jstage"), an array of
-   * ids, or "all" to fan out to every adapter. Ignored by {@link searchPubMed}
-   * (PubMed-only). Defaults to "pubmed" when omitted.
+   * ids, or "all" to fan out to every adapter. Defaults to "pubmed" when omitted.
    */
   database?: string | string[];
   /** Results to return. Default 10, hard cap 50. */
@@ -129,8 +128,8 @@ export interface SearchOutput {
 }
 
 export interface FetchInput {
-  /** One or more PMIDs to fetch. */
-  pmids: string[];
+  /** One or more database-specific ids to fetch. */
+  ids: string[];
 }
 
 export interface LiteratureFetchInput {
@@ -142,7 +141,7 @@ export interface LiteratureFetchInput {
 
 export interface FetchOutput {
   articles: Article[];
-  /** PMIDs that could not be found or fetched. */
+  /** IDs that could not be found or fetched. */
   missing: string[];
   warnings?: string[];
 }
@@ -151,14 +150,14 @@ export interface FetchOutput {
 export type FulltextSource = "unpaywall" | "proxy" | "direct" | "none";
 
 export interface FulltextInput {
-  /** PubMed ID. */
-  pmid: string;
-  /** DOI — if provided, skips the PMID→DOI lookup. */
+  /** Article identifier from the source database. */
+  id: string;
+  /** DOI — if provided, skips the id→DOI lookup. */
   doi?: string;
 }
 
 export interface FulltextOutput {
-  pmid: string;
+  id: string;
   doi?: string;
   source: FulltextSource;
   /** Extracted full text (markdown) or, on the fallback path, the abstract. Absent if nothing was available. */
