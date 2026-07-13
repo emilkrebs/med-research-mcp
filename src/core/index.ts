@@ -14,7 +14,8 @@ export { ADAPTERS, getAdapters, getAdapter } from "./adapters/registry.js";
 export type { DatabaseAdapter } from "./adapters/types.js";
 export { PubMedAdapter } from "./adapters/pubmed.js";
 export { EuropePmcAdapter, parseEuropePmc } from "./adapters/europepmc.js";
-export { ChinaXivAdapter, parseChinaXiv } from "./adapters/chinaxiv.js";
+export { ChinaRXivAdapter, parsePapers as parseChinaRXiv } from "./adapters/chinarxiv.js";
+export { SovietRxivAdapter } from "./adapters/russiarxiv.js";
 export { defaultHttp } from "./adapters/http.js";
 export type { AdapterHttp, HttpOptions } from "./adapters/http.js";
 

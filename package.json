@@ -1,7 +1,7 @@
 {
   "name": "pubmed-bio",
   "version": "0.3.0",
-  "description": "Evidence-graded scientific literature search for AI agents — multi-database (PubMed, SciELO, Europe PMC, CyberLeninka, ChinaXiv, J-STAGE), built for biohacking, supplementation, and clinical decision support.",
+  "description": "Evidence-graded scientific literature search for AI agents — multi-database (PubMed, SciELO, Europe PMC, CyberLeninka, ChinaRXiv, J-STAGE), built for biohacking, supplementation, and clinical decision support.",
   "license": "MIT",
   "author": {
     "name": "Emil Krebs",

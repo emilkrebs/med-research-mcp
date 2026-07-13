@@ -67,36 +67,51 @@ export function defaultHttp(options: HttpOptions = {}): AdapterHttp {
       return res.text();
     },
     async post<T>(url: string, body?: unknown): Promise<T> {
-      const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), timeoutMs);
-      let res: Response;
-      try {
-        res = await fetch(url, {
-          method: "POST",
-          signal: ac.signal,
-          headers: {
-            "User-Agent": userAgent,
-            "Content-Type": "application/json; charset=utf-8",
-            Accept: "application/json",
-          },
-          body: body != null ? JSON.stringify(body) : undefined,
-        });
-      } catch (err) {
-        throw errors.network(err instanceof Error ? err.message : String(err));
-      } finally {
-        clearTimeout(timer);
+      // Some databases (ChinaRXiv) return transient 403s under concurrent load.
+      // Retry once with a short delay before giving up.
+      const retryStatuses = new Set([403, 429]);
+      let lastErr: Error | null = null;
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 2000));
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), timeoutMs);
+        let res: Response;
+        try {
+          res = await fetch(url, {
+            method: "POST",
+            signal: ac.signal,
+            headers: {
+              "User-Agent": userAgent,
+              "Content-Type": "application/json; charset=utf-8",
+              Accept: "application/json",
+            },
+            body: body != null ? JSON.stringify(body) : undefined,
+          });
+        } catch (err) {
+          throw errors.network(err instanceof Error ? err.message : String(err));
+        } finally {
+          clearTimeout(timer);
+        }
+
+        if (res.status === 429) {
+          lastErr = errors.rateLimit(Number(res.headers.get("retry-after")) || 1);
+          continue;
+        }
+        if (!res.ok) {
+          if (retryStatuses.has(res.status)) {
+            lastErr = errors.network(`Upstream returned HTTP ${res.status} (attempt ${attempt + 1})`);
+            continue;
+          }
+          throw errors.network(`Upstream returned HTTP ${res.status}`);
+        }
+        try {
+          return (await res.json()) as T;
+        } catch (err) {
+          throw errors.parseFailure(err instanceof Error ? err.message : "invalid JSON from upstream");
+        }
       }
-      if (res.status === 429) {
-        throw errors.rateLimit(Number(res.headers.get("retry-after")) || 1);
-      }
-      if (!res.ok) {
-        throw errors.network(`Upstream returned HTTP ${res.status}`);
-      }
-      try {
-        return (await res.json()) as T;
-      } catch (err) {
-        throw errors.parseFailure(err instanceof Error ? err.message : "invalid JSON from upstream");
-      }
+      throw lastErr ?? errors.network("Upstream unavailable after retries");
     },
   };
 }
