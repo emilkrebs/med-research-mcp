@@ -1,0 +1,26 @@
+{
+  "name": "med-research-mcp-benchmark",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Benchmark harness: does med-research-mcp improve AI biomedical research vs closed-book and web search?",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "bench": "tsx run.ts",
+    "smoke": "tsx run.ts --runs 1 --conditions C --queries factual-01",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ai": "^5.0.0",
+    "@ai-sdk/anthropic": "^2.0.0",
+    "@ai-sdk/deepseek": "^1.0.0",
+    "@ai-sdk/openai": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  }
+}
