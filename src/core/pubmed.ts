@@ -9,7 +9,7 @@ import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors } from "./errors.js";
 import { keywordGrade } from "./grader.js";
-import type { FetchInput, FetchOutput, GradedArticle, NcbiArticle, SearchInput, SearchOutput, StudyType } from "./types.js";
+import type { FetchInput, FetchOutput, GradedArticle, Article, SearchInput, SearchOutput, StudyType } from "./types.js";
 
 const EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
 const MAX_RESULTS_CAP = 50;
@@ -165,8 +165,8 @@ export class NcbiClient {
   }
 
   /** Fetches article metadata (no abstract). Preserves nothing about order. */
-  async esummary(pmids: string[]): Promise<Map<string, NcbiArticle>> {
-    const out = new Map<string, NcbiArticle>();
+  async esummary(pmids: string[]): Promise<Map<string, Article>> {
+    const out = new Map<string, Article>();
     if (pmids.length === 0) return out;
 
     const params = new URLSearchParams({
@@ -192,9 +192,9 @@ export class NcbiClient {
     return out;
   }
 
-  private docToArticle(pmid: string, doc: EsummaryDoc): NcbiArticle {
+  private docToArticle(pmid: string, doc: EsummaryDoc): Article {
     const doi = doc.articleids?.find((a) => a.idtype === "doi")?.value;
-    const article: NcbiArticle = {
+    const article: Article = {
       pmid,
       title: (doc.title ?? "").replace(/\.$/, ""),
       authors: toArray(doc.authors)
@@ -321,7 +321,7 @@ export async function searchPubMed(
   }
 
   // Summaries (metadata) — cache-first.
-  const summaries = new Map<string, NcbiArticle>();
+  const summaries = new Map<string, Article>();
   const missingSummaries = pmids.filter((pmid) => {
     const cached = cache.getSummary(pmid);
     if (cached) {
@@ -378,7 +378,7 @@ export async function searchPubMed(
     const summary = summaries.get(pmid);
     if (!summary) continue;
     const abstract = abstracts.get(pmid);
-    const article: NcbiArticle = abstract ? { ...summary, abstract } : summary;
+    const article: Article = abstract ? { ...summary, abstract } : summary;
     const graded = keywordGrade(article);
     if (graded.evidenceScore < minScore) continue;
     if (typeFilter && !typeFilter.has(graded.studyType)) continue;
@@ -404,7 +404,7 @@ export async function fetchPubMed(
   client: NcbiClient = new NcbiClient(),
 ): Promise<FetchOutput> {
   const warnings: string[] = [];
-  const allArticles = new Map<string, NcbiArticle>();
+  const allArticles = new Map<string, Article>();
   const missing: string[] = [];
 
   // Summaries first (cache-aware).
@@ -463,7 +463,7 @@ export async function fetchPubMed(
   }
 
   // Assemble in input order.
-  const articles: NcbiArticle[] = [];
+  const articles: Article[] = [];
   for (const pmid of input.pmids) {
     const article = allArticles.get(pmid);
     if (article) articles.push(article);

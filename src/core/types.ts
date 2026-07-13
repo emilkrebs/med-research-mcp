@@ -15,7 +15,7 @@ export type StudyType =
   | "unknown";
 
 /** Raw article metadata as returned by NCBI (esummary + efetch merged). */
-export interface NcbiArticle {
+export interface Article {
   pmid: string;
   title: string;
   abstract?: string;
@@ -45,7 +45,7 @@ export interface NcbiArticle {
 }
 
 /** An article with keyword-based evidence classification. */
-export interface GradedArticle extends NcbiArticle {
+export interface GradedArticle extends Article {
   studyType: StudyType;
   /** 0–5. Higher is stronger evidence. */
   evidenceScore: number;
@@ -110,7 +110,7 @@ export interface LiteratureFetchInput {
 }
 
 export interface FetchOutput {
-  articles: NcbiArticle[];
+  articles: Article[];
   /** PMIDs that could not be found or fetched. */
   missing: string[];
   warnings?: string[];

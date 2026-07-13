@@ -14,14 +14,14 @@
 import { createRequire } from "node:module";
 import { LRUCache } from "lru-cache";
 import type SqliteDatabase from "better-sqlite3";
-import type { FulltextData, NcbiArticle } from "./types.js";
+import type { FulltextData, Article } from "./types.js";
 
 /** Full texts expire after 30 days — the paper is stable but resolved OA URLs rot. */
 export const FULLTEXT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export interface Cache {
-  getSummary(pmid: string): NcbiArticle | null;
-  setSummary(pmid: string, article: NcbiArticle): void;
+  getSummary(pmid: string): Article | null;
+  setSummary(pmid: string, article: Article): void;
   getAbstract(pmid: string): string | null;
   setAbstract(pmid: string, abstract: string): void;
   /** Returns a cached full text, or null on a miss or if older than {@link FULLTEXT_TTL_MS}. */
@@ -45,7 +45,7 @@ export interface CacheOptions {
  * there's no TTL here; the LRU bound alone keeps memory in check.
  */
 export class LRUBackend implements Cache {
-  private readonly summaries: LRUCache<string, NcbiArticle>;
+  private readonly summaries: LRUCache<string, Article>;
   private readonly abstracts: LRUCache<string, string>;
   private readonly fulltexts: LRUCache<string, FulltextData>;
 
@@ -57,11 +57,11 @@ export class LRUBackend implements Cache {
     this.fulltexts = new LRUCache({ max, ttl: FULLTEXT_TTL_MS });
   }
 
-  getSummary(pmid: string): NcbiArticle | null {
+  getSummary(pmid: string): Article | null {
     return this.summaries.get(pmid) ?? null;
   }
 
-  setSummary(pmid: string, article: NcbiArticle): void {
+  setSummary(pmid: string, article: Article): void {
     this.summaries.set(pmid, article);
   }
 
@@ -90,7 +90,7 @@ export class LRUBackend implements Cache {
 
 /** A cache that stores nothing — useful for tests or explicit opt-out. */
 export class NullCache implements Cache {
-  getSummary(): NcbiArticle | null {
+  getSummary(): Article | null {
     return null;
   }
   setSummary(): void {}
@@ -196,11 +196,11 @@ export class SQLiteBackend implements Cache {
     this.vacuum();
   }
 
-  getSummary(pmid: string): NcbiArticle | null {
+  getSummary(pmid: string): Article | null {
     const row = this.stmts.getSummary.get(pmid) as { article: string } | undefined;
     if (!row) return null;
     try {
-      return JSON.parse(row.article) as NcbiArticle;
+      return JSON.parse(row.article) as Article;
     } catch {
       // Corrupt JSON — drop the row and treat as a miss.
       this.stmts.delSummary.run(pmid);
@@ -208,7 +208,7 @@ export class SQLiteBackend implements Cache {
     }
   }
 
-  setSummary(pmid: string, article: NcbiArticle): void {
+  setSummary(pmid: string, article: Article): void {
     this.stmts.setSummary.run(pmid, JSON.stringify(article), Date.now());
   }
 

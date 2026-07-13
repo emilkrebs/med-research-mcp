@@ -9,7 +9,7 @@
  */
 
 import type { Cache } from "../cache.js";
-import type { NcbiArticle, SearchInput } from "../types.js";
+import type { Article, SearchInput } from "../types.js";
 
 export interface DatabaseAdapter {
   /** Unique identifier — "pubmed", "scielo", "cyberleninka", "europepmc", "chinaxiv", "jstage". */
@@ -19,9 +19,9 @@ export interface DatabaseAdapter {
   /** Execute a search and return matching ids + total count. */
   search(input: SearchInput): Promise<{ count: number; ids: string[] }>;
   /**
-   * Fetch full metadata ({@link NcbiArticle}[]) for one or more ids. Order is not
+   * Fetch full metadata ({@link Article}[]) for one or more ids. Order is not
    * guaranteed; ids with no result are simply absent from the returned array.
    * The cache is scoped per-database (see {@link RestAdapter}).
    */
-  fetch(ids: string[], cache: Cache): Promise<NcbiArticle[]>;
+  fetch(ids: string[], cache: Cache): Promise<Article[]>;
 }

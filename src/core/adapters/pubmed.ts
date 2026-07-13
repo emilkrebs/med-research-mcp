@@ -10,7 +10,7 @@
 
 import type { Cache } from "../cache.js";
 import { fetchPubMed, NcbiClient } from "../pubmed.js";
-import type { NcbiArticle, SearchInput } from "../types.js";
+import type { Article, SearchInput } from "../types.js";
 import type { DatabaseAdapter } from "./types.js";
 
 export class PubMedAdapter implements DatabaseAdapter {
@@ -28,7 +28,7 @@ export class PubMedAdapter implements DatabaseAdapter {
     return { count, ids: pmids };
   }
 
-  async fetch(ids: string[], cache: Cache): Promise<NcbiArticle[]> {
+  async fetch(ids: string[], cache: Cache): Promise<Article[]> {
     if (ids.length === 0) return [];
     const { articles } = await fetchPubMed({ pmids: ids }, cache, this.client);
     return articles;

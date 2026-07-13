@@ -21,7 +21,7 @@ import type {
   FetchOutput,
   GradedArticle,
   LiteratureFetchInput,
-  NcbiArticle,
+  Article,
   SearchInput,
   SearchOutput,
 } from "./types.js";
@@ -91,7 +91,7 @@ export async function searchLiterature(
         return { count, articles };
       } catch (err) {
         warnings.push(`${adapter.name} search failed: ${err instanceof Error ? err.message : String(err)}`);
-        return { count: 0, articles: [] as NcbiArticle[] };
+        return { count: 0, articles: [] as Article[] };
       }
     }),
   );

@@ -13,7 +13,7 @@
  */
 
 import type { Cache } from "../cache.js";
-import type { NcbiArticle, SearchInput } from "../types.js";
+import type { Article, SearchInput } from "../types.js";
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import type { DatabaseAdapter } from "./types.js";
 
@@ -25,7 +25,7 @@ export abstract class RestAdapter implements DatabaseAdapter {
   abstract readonly name: string;
 
   /** id → article, populated by `search` and read by `fetch` within a process. */
-  private readonly memo = new Map<string, NcbiArticle>();
+  private readonly memo = new Map<string, Article>();
 
   constructor(protected readonly http: AdapterHttp = defaultHttp()) {}
 
@@ -35,7 +35,7 @@ export abstract class RestAdapter implements DatabaseAdapter {
    * Fetch a single record by id when it's in neither the memo nor the cache.
    * Best-effort: return null when the database can't be queried by id alone.
    */
-  protected abstract fetchOne(id: string): Promise<NcbiArticle | null>;
+  protected abstract fetchOne(id: string): Promise<Article | null>;
 
   /** Database-scoped cache key. */
   protected cacheKey(id: string): string {
@@ -43,15 +43,15 @@ export abstract class RestAdapter implements DatabaseAdapter {
   }
 
   /** Record parsed articles for later `fetch` calls in the same process. */
-  protected remember(articles: NcbiArticle[]): void {
+  protected remember(articles: Article[]): void {
     if (this.memo.size + articles.length > MEMO_CAP) this.memo.clear();
     for (const article of articles) this.memo.set(article.pmid, article);
   }
 
-  async fetch(ids: string[], cache: Cache): Promise<NcbiArticle[]> {
-    const out: NcbiArticle[] = [];
+  async fetch(ids: string[], cache: Cache): Promise<Article[]> {
+    const out: Article[] = [];
     for (const id of ids) {
-      let article: NcbiArticle | undefined =
+      let article: Article | undefined =
         this.memo.get(id) ?? cache.getSummary(this.cacheKey(id)) ?? undefined;
       if (!article) {
         try {

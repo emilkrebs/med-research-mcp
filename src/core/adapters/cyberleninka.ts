@@ -18,7 +18,7 @@
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
 import { stripHtml } from "./util.js";
-import type { NcbiArticle, SearchInput } from "../types.js";
+import type { Article, SearchInput } from "../types.js";
 
 const BASE = "https://cyberleninka.ru/search";
 const MAX_RESULTS_CAP = 50;
@@ -48,9 +48,9 @@ function extractYear(segment: string): string | undefined {
 }
 
 /** Pure parser over the search-results HTML — exposed for testing without the network. */
-export function parseCyberLeninkaHtml(html: string): { count: number; articles: NcbiArticle[] } {
+export function parseCyberLeninkaHtml(html: string): { count: number; articles: Article[] } {
   const matches = [...html.matchAll(LINK_RE)];
-  const articles: NcbiArticle[] = [];
+  const articles: Article[] = [];
   const seen = new Set<string>();
 
   for (let i = 0; i < matches.length; i++) {
@@ -66,7 +66,7 @@ export function parseCyberLeninkaHtml(html: string): { count: number; articles: 
     const segEnd = i + 1 < matches.length ? matches[i + 1]!.index ?? html.length : html.length;
     const segment = html.slice(segStart, segEnd);
 
-    const article: NcbiArticle = {
+    const article: Article = {
       pmid: id,
       title,
       authors: extractAuthors(segment),
@@ -105,7 +105,7 @@ export class CyberLeninkaAdapter extends RestAdapter {
     return { count: parsed.count, ids: limited.map((a) => a.pmid) };
   }
 
-  protected async fetchOne(): Promise<NcbiArticle | null> {
+  protected async fetchOne(): Promise<Article | null> {
     return null;
   }
 }

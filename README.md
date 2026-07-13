@@ -133,7 +133,7 @@ Study types are ordered highest evidence quality first. The keyword grader tries
 mcp_servers:
   pubmed-bio:
     command: npx
-    args: ["tsx", "/path/to/pubmed-bio-mcp/src/mcp/index.ts"]
+    args: ["tsx", "/path/to/med-research-mcp/src/mcp/index.ts"]
     env:
       NCBI_EMAIL: "you@example.com"
       NCBI_API_KEY: ""
@@ -150,7 +150,7 @@ Run `npm run build` first, then point the client at the built output:
   "mcpServers": {
     "pubmed-bio": {
       "command": "node",
-      "args": ["/path/to/pubmed-bio-mcp/dist/mcp/index.js"],
+      "args": ["/path/to/med-research-mcp/dist/mcp/index.js"],
       "env": {
         "NCBI_EMAIL": "you@example.com",
         "NCBI_API_KEY": "",

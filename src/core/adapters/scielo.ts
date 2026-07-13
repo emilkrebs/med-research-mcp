@@ -14,7 +14,7 @@
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
 import { cleanDoi, first, strArray, toIso1 } from "./util.js";
-import type { NcbiArticle, SearchInput } from "../types.js";
+import type { Article, SearchInput } from "../types.js";
 
 const BASE = "https://search.scielo.org/";
 const MAX_RESULTS_CAP = 50;
@@ -34,14 +34,14 @@ function fieldByPrefix(doc: SolrDoc, prefix: string): unknown {
   return undefined;
 }
 
-function toArticle(doc: SolrDoc): NcbiArticle | null {
+function toArticle(doc: SolrDoc): Article | null {
   const id = first(doc.id);
   if (!id) return null;
   const doi = cleanDoi(first(doc.doi));
   const language = toIso1(first(fieldByPrefix(doc, "la"))) ?? "es";
   const url = first(fieldByPrefix(doc, "ur")) ?? `https://search.scielo.org/?q=${encodeURIComponent(id)}`;
 
-  const article: NcbiArticle = {
+  const article: Article = {
     pmid: id,
     title: (first(fieldByPrefix(doc, "ti")) ?? "").replace(/\.$/, ""),
     authors: strArray(fieldByPrefix(doc, "au")),
@@ -59,10 +59,10 @@ function toArticle(doc: SolrDoc): NcbiArticle | null {
 }
 
 /** Pure parser — exposed for testing without the network. */
-export function parseScielo(data: ScieloResponse): { count: number; articles: NcbiArticle[] } {
+export function parseScielo(data: ScieloResponse): { count: number; articles: Article[] } {
   const count = Number(data?.response?.numFound ?? 0);
   const docs = data?.response?.docs ?? [];
-  const articles: NcbiArticle[] = [];
+  const articles: Article[] = [];
   for (const doc of docs) {
     const a = toArticle(doc);
     if (a) articles.push(a);
@@ -94,7 +94,7 @@ export class SciELOAdapter extends RestAdapter {
     return { count: parsed.count, ids: parsed.articles.map((a) => a.pmid) };
   }
 
-  protected async fetchOne(id: string): Promise<NcbiArticle | null> {
+  protected async fetchOne(id: string): Promise<Article | null> {
     const params = new URLSearchParams({
       q: `id:${id}`,
       count: "1",

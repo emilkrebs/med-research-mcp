@@ -19,7 +19,7 @@ import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors } from "./errors.js";
 import { NcbiClient } from "./pubmed.js";
-import type { FulltextInput, FulltextOutput, FulltextSource, NcbiArticle } from "./types.js";
+import type { FulltextInput, FulltextOutput, FulltextSource, Article } from "./types.js";
 import { UnpaywallClient } from "./unpaywall.js";
 import type { UnpaywallResult } from "./unpaywall.js";
 
@@ -213,7 +213,7 @@ function proxyUrl(prefix: string, doi: string): string {
 
 async function resolveAbstract(
   pmid: string,
-  article: NcbiArticle | null,
+  article: Article | null,
   cache: Cache,
   client: NcbiClient,
 ): Promise<string | undefined> {
