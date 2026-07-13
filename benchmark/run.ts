@@ -14,6 +14,7 @@
  * See `--help`.
  */
 
+import "./lib/loadenv.js"; // MUST be first — populates process.env before config/providers read it
 import { parseArgs } from "node:util";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -144,11 +145,12 @@ function zeroRow(record: RunRecord): ScoreRow {
 }
 
 /** Preflight: keys present for the work we're about to do. Returns fatal problems. */
-function preflight(models: ModelSpec[], conditions: ConditionId[]): string[] {
+function preflight(models: ModelSpec[], conditions: ConditionId[], queries: BenchmarkQuery[]): string[] {
   const problems: string[] = [];
   const need = new Set<string>();
   for (const m of models) need.add(m.apiKeyEnv);
-  need.add(JUDGE.apiKeyEnv); // scorer needs the judge
+  const needsJudge = queries.some((q) => q.answerKey.kind === "rubric");
+  if (needsJudge) need.add(JUDGE.apiKeyEnv); // rubric scoring uses the judge model
   for (const env of need) if (!process.env[env]) problems.push(`Missing ${env}`);
   if (conditions.includes("web-search") && !process.env.BRAVE_API_KEY) problems.push("Missing BRAVE_API_KEY (condition B)");
   if (!process.env.NCBI_EMAIL) console.warn("⚠️  NCBI_EMAIL not set — NCBI may throttle. Set it to a contact email.");
@@ -201,7 +203,7 @@ async function main(): Promise<void> {
   if (publish && unverified.length > 0)
     console.warn("⚠️  --publish with unverified keys: results are provisional. Review the keys before quoting numbers.");
 
-  const problems = preflight(models, conditions);
+  const problems = preflight(models, conditions, queries);
   if (problems.length > 0) {
     console.error(`\nPreflight problems:\n  - ${problems.join("\n  - ")}`);
     if (!values["dry-run"]) {

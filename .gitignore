@@ -6,5 +6,6 @@ mcpb/server/
 *.db-journal
 .env
 .env.*
+!.env.example
 *.tsbuildinfo
 .DS_Store

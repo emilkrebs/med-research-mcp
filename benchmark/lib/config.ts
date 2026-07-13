@@ -39,13 +39,13 @@ export const MODELS: ModelSpec[] = [
   {
     label: "deepseek-v4-pro",
     provider: "deepseek",
-    modelId: "deepseek-chat",
+    modelId: "deepseek-v4-pro",
     apiKeyEnv: "DEEPSEEK_API_KEY",
   },
   {
     label: "deepseek-v4-flash",
     provider: "deepseek",
-    modelId: "deepseek-reasoner",
+    modelId: "deepseek-v4-flash",
     apiKeyEnv: "DEEPSEEK_API_KEY",
   },
 ];
