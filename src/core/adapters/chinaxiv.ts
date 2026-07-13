@@ -1,15 +1,11 @@
 /**
- * ChinaXiv adapter — the Chinese Academy of Sciences preprint server.
+ * ChinaXiv adapter — Chinese Academy of Sciences preprint server.
  *
- * API: GET http://chinaxiv.org/api/search?q={q}&page=1&size={n}
+ * API: POST https://chinaxiv.org/api/search  (JSON body)
  *
- * ChinaXiv is open-access by definition (a preprint server) and a growing
- * biomedical repository. Papers carry English titles/abstracts with Chinese
- * full text, so articles are tagged `language: "zh"` to cue the agent. Full
- * text is typically a PDF resolved via the shared full-text pipeline. The exact
- * JSON envelope isn't publicly documented, so the parser accepts the common
- * `total`/`count` + `data`/`records`/`results` variants and is defensive about
- * field names.
+ * Returns structured JSON with English titles/abstracts and Chinese full texts.
+ * Articles are tagged `language: "zh"` to cue the agent. Full text is typically
+ * a PDF resolved via the shared full-text pipeline.
  */
 
 import { defaultHttp, type AdapterHttp } from "./http.js";
@@ -17,38 +13,41 @@ import { RestAdapter } from "./base.js";
 import { cleanDoi, first, strArray, toIso1 } from "./util.js";
 import type { Article, SearchInput } from "../types.js";
 
-const BASE = "http://chinaxiv.org/api/search";
+const BASE = "https://chinaxiv.org/api/search";
 const MAX_RESULTS_CAP = 50;
 
 type Record_ = Record<string, unknown>;
 
 interface ChinaXivResponse {
-  total?: number;
-  count?: number;
-  data?: Record_[];
-  records?: Record_[];
-  results?: Record_[];
+  success?: boolean;
+  code?: number;
+  message?: string;
+  data?: {
+    total?: number;
+    content?: Record_[];
+  };
 }
 
 function toArticle(r: Record_): Article | null {
-  const id = first(r.id) ?? first(r.identifier) ?? first(r.doi);
+  const id = first(r.id) ?? first(r.uuid) ?? first(r.doi);
   if (!id) return null;
   const doi = cleanDoi(first(r.doi));
+  // ChinaXiv uses "entitle" for English title, "title" for Chinese
+  const title = first(r.entitle) ?? first(r.title) ?? first(r.title_str) ?? "";
   const language = toIso1(first(r.language)) ?? "zh";
-  const url = first(r.url) ?? first(r.link) ?? `http://chinaxiv.org/abs/${id}`;
 
   const article: Article = {
     pmid: id,
-    title: (first(r.title) ?? "").replace(/\.$/, ""),
-    authors: strArray(r.authors ?? r.author ?? r.creators),
-    journal: first(r.journal) ?? first(r.source) ?? "ChinaXiv",
-    pubDate: first(r.year) ?? first(r.date) ?? first(r.publishTime) ?? "",
+    title: title.replace(/\.$/, ""),
+    authors: strArray(r.authors ?? r.author),
+    journal: first(r.journal) ?? first(r.source) ?? first(r.publisher) ?? "ChinaXiv",
+    pubDate: first(r.year) ?? first(r.date) ?? first(r.createTime) ?? "",
     publicationTypes: [],
     database: "chinaxiv",
-    url,
+    url: first(r.url) ?? first(r.link) ?? `https://chinaxiv.org/abs/${id}`,
     language,
   };
-  const abstract = first(r.abstract) ?? first(r.summary);
+  const abstract = first(r.enabstract) ?? first(r.abstract) ?? first(r.summary);
   if (abstract) article.abstract = abstract;
   if (doi) article.doi = doi;
   return article;
@@ -56,10 +55,10 @@ function toArticle(r: Record_): Article | null {
 
 /** Pure parser — exposed for testing without the network. */
 export function parseChinaXiv(data: ChinaXivResponse): { count: number; articles: Article[] } {
-  const records = data?.data ?? data?.records ?? data?.results ?? [];
-  const count = Number(data?.total ?? data?.count ?? records.length);
+  const content = data?.data?.content ?? [];
+  const count = Number(data?.data?.total ?? content.length);
   const articles: Article[] = [];
-  for (const r of records) {
+  for (const r of content) {
     const a = toArticle(r);
     if (a) articles.push(a);
   }
@@ -76,16 +75,14 @@ export class ChinaXivAdapter extends RestAdapter {
 
   async search(input: SearchInput): Promise<{ count: number; ids: string[] }> {
     const size = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
-    const params = new URLSearchParams({ q: input.query, page: "1", size: String(size) });
-    const data = await this.http.json<ChinaXivResponse>(`${BASE}?${params.toString()}`);
+    const data = await this.http.post<ChinaXivResponse>(BASE, { q: input.query, page: 0, size });
     const parsed = parseChinaXiv(data);
     this.remember(parsed.articles);
     return { count: parsed.count, ids: parsed.articles.map((a) => a.pmid) };
   }
 
   protected async fetchOne(id: string): Promise<Article | null> {
-    const params = new URLSearchParams({ q: id, page: "1", size: "1" });
-    const data = await this.http.json<ChinaXivResponse>(`${BASE}?${params.toString()}`);
+    const data = await this.http.post<ChinaXivResponse>(BASE, { q: id, page: 0, size: 1 });
     return parseChinaXiv(data).articles[0] ?? null;
   }
 }

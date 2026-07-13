@@ -33,8 +33,8 @@ export type { UnpaywallConfig, UnpaywallResult } from "./unpaywall.js";
 export { createCache, LRUBackend, NullCache, SQLiteBackend, FULLTEXT_TTL_MS } from "./cache.js";
 export type { Cache, CacheBackend, CacheOptions } from "./cache.js";
 
-export { PubMedException, isPubMedError, errors } from "./errors.js";
-export type { PubMedError, PubMedErrorCode } from "./errors.js";
+export { ResearchApiException as PubMedException, isMedResearchError as isPubMedError, errors } from "./errors.js";
+export type { ResearchError as PubMedError, ResearchErrorCode as PubMedErrorCode } from "./errors.js";
 
 export type {
   StudyType,

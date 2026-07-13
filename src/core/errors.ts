@@ -3,7 +3,7 @@
  * these so callers (agents) can decide whether to retry, adjust, or give up.
  */
 
-export type PubMedErrorCode =
+export type ResearchErrorCode =
   | "RATE_LIMIT"
   | "QUERY_TOO_BROAD"
   | "NO_ABSTRACT"
@@ -11,8 +11,8 @@ export type PubMedErrorCode =
   | "NETWORK_ERROR"
   | "NOT_FOUND";
 
-export interface PubMedError {
-  code: PubMedErrorCode;
+export interface ResearchError {
+  code: ResearchErrorCode;
   /** Human-readable, for logs. */
   message: string;
   /** Actionable phrasing for the agent/user. */
@@ -23,15 +23,15 @@ export interface PubMedError {
   retryAfter?: number;
 }
 
-export class PubMedException extends Error implements PubMedError {
-  readonly code: PubMedErrorCode;
+export class ResearchApiException extends Error implements ResearchError {
+  readonly code: ResearchErrorCode;
   readonly userMessage: string;
   readonly recoverable: boolean;
   readonly retryAfter?: number;
 
-  constructor(error: PubMedError) {
+  constructor(error: ResearchError) {
     super(error.message);
-    this.name = "PubMedException";
+    this.name = "ResearchApiException";
     this.code = error.code;
     this.userMessage = error.userMessage;
     this.recoverable = error.recoverable;
@@ -39,7 +39,7 @@ export class PubMedException extends Error implements PubMedError {
   }
 
   /** Plain serializable shape — safe to return in tool results. */
-  toJSON(): PubMedError {
+  toJSON(): ResearchError {
     return {
       code: this.code,
       message: this.message,
@@ -50,23 +50,23 @@ export class PubMedException extends Error implements PubMedError {
   }
 }
 
-export function isPubMedError(value: unknown): value is PubMedException {
-  return value instanceof PubMedException;
+export function isMedResearchError(value: unknown): value is ResearchApiException {
+  return value instanceof ResearchApiException;
 }
 
 export const errors = {
-  rateLimit(retryAfter = 1): PubMedException {
-    return new PubMedException({
+  rateLimit(retryAfter = 1): ResearchApiException {
+    return new ResearchApiException({
       code: "RATE_LIMIT",
-      message: `NCBI rate limit hit; retry after ${retryAfter}s`,
-      userMessage: `Too many requests to PubMed. Wait ${retryAfter}s and try again. Set NCBI_API_KEY to raise the limit from 3 to 10 requests/second.`,
+      message: `Rate limit hit; retry after ${retryAfter}s`,
+      userMessage: `Too many requests to PubMed. Wait ${retryAfter}s and try again. Set an API-Key, like NCBI_API_KEY to raise the limit from 3 to 10 requests/second.`,
       recoverable: true,
       retryAfter,
     });
   },
 
-  queryTooBroad(count: number): PubMedException {
-    return new PubMedException({
+  queryTooBroad(count: number): ResearchApiException {
+    return new ResearchApiException({
       code: "QUERY_TOO_BROAD",
       message: `Query matched ${count} results`,
       userMessage: `Your query matched ${count.toLocaleString()} articles — too broad. Narrow it with field tags like [tiab] (title/abstract), [mesh] (MeSH term), or add AND clauses.`,
@@ -74,26 +74,26 @@ export const errors = {
     });
   },
 
-  parseFailure(detail: string): PubMedException {
-    return new PubMedException({
+  parseFailure(detail: string): ResearchApiException {
+    return new ResearchApiException({
       code: "PARSE_FAILURE",
-      message: `Failed to parse NCBI response: ${detail}`,
-      userMessage: "PubMed returned a response that couldn't be fully parsed. Partial results may be available.",
+      message: `Failed to parse upstream response: ${detail}`,
+      userMessage: "The database returned a response that couldn't be fully parsed. Partial results may be available.",
       recoverable: true,
     });
   },
 
-  network(detail: string): PubMedException {
-    return new PubMedException({
+  network(detail: string): ResearchApiException {
+    return new ResearchApiException({
       code: "NETWORK_ERROR",
-      message: `Network error contacting NCBI: ${detail}`,
-      userMessage: "Couldn't reach PubMed. Check your connection and try again.",
+      message: `Network error: ${detail}`,
+      userMessage: "Couldn't reach the database. Check your connection and try again.",
       recoverable: true,
     });
   },
 
-  notFound(pmid: string): PubMedException {
-    return new PubMedException({
+  notFound(pmid: string): ResearchApiException {
+    return new ResearchApiException({
       code: "NOT_FOUND",
       message: `PMID ${pmid} not found`,
       userMessage: `No PubMed article found for PMID ${pmid}. Check the identifier.`,
