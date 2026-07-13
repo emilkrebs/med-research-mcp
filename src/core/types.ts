@@ -44,6 +44,35 @@ export interface Article {
   language?: string;
 }
 
+/**
+ * Who the intervention was actually tested on — the range of people behind a
+ * result. Used to judge external validity (generalizability): a finding in 20
+ * healthy young men doesn't automatically transfer to elderly women. Every
+ * field is best-effort, extracted from the abstract, and absent when the study
+ * didn't report it. This is NOT a quality score — a narrow but well-run trial
+ * is still narrow.
+ */
+export interface PopulationDiversity {
+  /** Total participants when a sample size is stated (e.g. "n = 240" → 240). */
+  sampleSize?: number;
+  /** Reported age span or central value (e.g. "18–65 years", "mean ~42 years"). */
+  age?: string;
+  /** Sex composition (e.g. "male only", "men and women (48% female)"). */
+  sex?: string;
+  /** Ancestry / geographic-origin cues when stated (e.g. "Japanese", "multi-ethnic"). */
+  ancestry?: string;
+  /** Health status of the group (e.g. "healthy", "patients with type 2 diabetes"). */
+  healthStatus?: string;
+  /**
+   * 0–1 rough breadth of the tested population — how many demographic axes were
+   * reported and how broad each is. A generalizability hint, not a quality
+   * score. Absent when no demographic signal could be extracted.
+   */
+  breadth?: number;
+  /** Why breadth is limited (single-sex, small n, one ancestry group, …). */
+  notes?: string[];
+}
+
 /** An article with keyword-based evidence classification. */
 export interface GradedArticle extends Article {
   studyType: StudyType;
@@ -53,6 +82,8 @@ export interface GradedArticle extends Article {
   confidence: number;
   dosage?: string;
   population?: string;
+  /** Structured breakdown of the tested population — see {@link PopulationDiversity}. */
+  diversity?: PopulationDiversity;
   limitations?: string[];
 }
 
