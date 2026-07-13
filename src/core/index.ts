@@ -11,7 +11,13 @@ export type { NcbiConfig } from "./pubmed.js";
 export { keywordGrade, gradeText, SCORE_BY_TYPE } from "./grader.js";
 export type { GradeResult } from "./grader.js";
 
-export { createCache, LRUBackend, NullCache } from "./cache.js";
+export { fetchFulltext } from "./fulltext.js";
+export type { FulltextDeps, FetchedResource } from "./fulltext.js";
+
+export { UnpaywallClient } from "./unpaywall.js";
+export type { UnpaywallConfig, UnpaywallResult } from "./unpaywall.js";
+
+export { createCache, LRUBackend, NullCache, FULLTEXT_TTL_MS } from "./cache.js";
 export type { Cache, CacheBackend, CacheOptions } from "./cache.js";
 
 export { PubMedException, isPubMedError, errors } from "./errors.js";
@@ -26,4 +32,8 @@ export type {
   SearchOutput,
   FetchInput,
   FetchOutput,
+  FulltextInput,
+  FulltextOutput,
+  FulltextData,
+  FulltextSource,
 } from "./types.js";

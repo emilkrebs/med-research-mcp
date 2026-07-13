@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/anthropics/mcpb/main/schemas/mcpb-manifest-v0.4.schema.json",
   "manifest_version": "0.4",
   "name": "pubmed-bio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Evidence-graded PubMed search for AI agents — biohacking, supplementation, and clinical decision support.",
   "author": {
     "name": "Emil Krebs",
@@ -20,8 +20,8 @@
       "env": {
         "NCBI_EMAIL": "${user_config.ncbiEmail}",
         "NCBI_API_KEY": "${user_config.ncbiApiKey}",
-        "PUBMED_LLM_PROVIDER": "${user_config.llmProvider}",
-        "PUBMED_LLM_API_KEY": "${user_config.llmApiKey}",
+        "PUBMED_UNPAYWALL_EMAIL": "${user_config.unpaywallEmail}",
+        "PUBMED_PROXY_PREFIX": "${user_config.proxyPrefix}",
         "PUBMED_CACHE_BACKEND": "memory"
       }
     }
@@ -40,18 +40,16 @@
       "sensitive": true,
       "required": false
     },
-    "llmProvider": {
+    "unpaywallEmail": {
       "type": "string",
-      "title": "LLM provider for deep grading",
-      "description": "One of: openai, anthropic, local. Used by the pubmed_grade tool.",
-      "default": "openai",
+      "title": "Unpaywall contact email (optional)",
+      "description": "Used by pubmed_fulltext to query Unpaywall for open-access copies. Unpaywall asks for a contact email on every request. Falls back to the NCBI email if left blank.",
       "required": false
     },
-    "llmApiKey": {
+    "proxyPrefix": {
       "type": "string",
-      "title": "LLM API key",
-      "description": "API key for the chosen LLM provider. Leave blank to disable deep grading (pubmed_grade falls back to keyword grading).",
-      "sensitive": true,
+      "title": "Institutional proxy prefix (optional)",
+      "description": "EZproxy-style DOI prefix for off-campus access, e.g. https://doi-org.ezproxy.uni-kiel.de — pubmed_fulltext prepends it to the DOI. Requires an existing proxy session on the machine.",
       "required": false
     }
   },

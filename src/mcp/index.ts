@@ -2,9 +2,10 @@
 /**
  * Thin MCP adapter over the pubmed-bio core library.
  *
- * Exposes two stdio tools:
- *   - pubmed_search — search + keyword classification (always cheap)
- *   - pubmed_fetch  — fetch full metadata + abstracts for given PMIDs (pure data)
+ * Exposes three stdio tools:
+ *   - pubmed_search   — search + keyword classification (always cheap)
+ *   - pubmed_fetch    — fetch full metadata + abstracts for given PMIDs (pure data)
+ *   - pubmed_fulltext — resolve and return an article's full text as markdown
  *
  * All logic lives in ../core; this file only wires it to MCP.
  */
@@ -14,6 +15,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import {
   createCache,
+  fetchFulltext,
   fetchPubMed,
   isPubMedError,
   LRUBackend,
@@ -62,7 +64,13 @@ if (!process.env.NCBI_EMAIL) {
   );
 }
 
-const server = new McpServer({ name: "pubmed-bio", version: "0.1.0" });
+if (!process.env.PUBMED_UNPAYWALL_EMAIL && !process.env.NCBI_EMAIL) {
+  console.error(
+    "[pubmed-bio] Neither PUBMED_UNPAYWALL_EMAIL nor NCBI_EMAIL is set. pubmed_fulltext needs a contact email to query Unpaywall for open-access copies; without one it can only try the institutional proxy and direct DOI access.",
+  );
+}
+
+const server = new McpServer({ name: "pubmed-bio", version: "0.2.0" });
 
 // ─── pubmed_search ──────────────────────────────────────────────
 
@@ -134,6 +142,44 @@ server.registerTool(
   async (args) => {
     try {
       const result = await fetchPubMed({ pmids: args.pmids }, cache, ncbi);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    } catch (err) {
+      const payload = isPubMedError(err)
+        ? err.toJSON()
+        : { code: "UNKNOWN", message: err instanceof Error ? err.message : String(err), recoverable: false };
+      return {
+        isError: true,
+        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+      };
+    }
+  },
+);
+
+// ─── pubmed_fulltext ────────────────────────────────────────────
+
+const fulltextInputShape = {
+  pmid: z.string().describe("PubMed ID"),
+  doi: z.string().optional().describe("DOI — if known, skips PMID→DOI lookup"),
+};
+
+server.registerTool(
+  "pubmed_fulltext",
+  {
+    title: "Fetch full text for a PubMed article",
+    description:
+      "Attempts to fetch the full text of a PubMed article as markdown. " +
+      "Tries Unpaywall (open access), institutional proxy (if configured), " +
+      "and direct DOI access. Falls back to abstract-only if paywalled. " +
+      "Use this when the abstract isn't sufficient — e.g., to verify dosage, " +
+      "check sample sizes, read methods, or detect statistical flaws.",
+    inputSchema: fulltextInputShape,
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  async (args) => {
+    try {
+      const result = await fetchFulltext({ pmid: args.pmid, ...(args.doi ? { doi: args.doi } : {}) }, cache, ncbi);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };

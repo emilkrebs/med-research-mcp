@@ -84,3 +84,35 @@ export interface FetchOutput {
   missing: string[];
   warnings?: string[];
 }
+
+/** How a full text was obtained. `none` means only the abstract (or nothing) is available. */
+export type FulltextSource = "unpaywall" | "proxy" | "direct" | "none";
+
+export interface FulltextInput {
+  /** PubMed ID. */
+  pmid: string;
+  /** DOI — if provided, skips the PMID→DOI lookup. */
+  doi?: string;
+}
+
+export interface FulltextOutput {
+  pmid: string;
+  doi?: string;
+  source: FulltextSource;
+  /** Extracted full text (markdown) or, on the fallback path, the abstract. Absent if nothing was available. */
+  fulltext?: string;
+  format: "markdown" | "pdf";
+  /** True if the text was capped at the character limit. */
+  truncated: boolean;
+  /** Set when the full text couldn't be retrieved, explaining why and what to do. */
+  warning?: string;
+}
+
+/** What the cache stores for a resolved full text. The stored text is never truncated. */
+export interface FulltextData {
+  source: string;
+  fulltext: string;
+  format: "markdown" | "pdf";
+  /** Unix epoch millis when this was resolved. Used to expire stale entries (URLs rot). */
+  fetchedAt: number;
+}
