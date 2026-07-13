@@ -2,11 +2,18 @@
  * Cache interface + backends.
  *
  * The interface is what the rest of the library depends on; backends are
- * swappable. v0.1.0 ships the in-memory LRU backend. SQLite (survives restarts,
- * used by Biohacking-IDE) is deferred to v0.2 and throws if requested.
+ * swappable. Two ship: the in-memory `LRUBackend` (dies with the process) and
+ * the persistent `SQLiteBackend` (survives restarts, used by Biohacking-IDE).
+ *
+ * better-sqlite3 is a native module, so it's loaded lazily — only when the
+ * sqlite backend is actually constructed. That keeps `LRUBackend`-only
+ * consumers from paying for (or being broken by) a native binding they never
+ * use, and lets `createCache` fall back to LRU if the binding fails to load.
  */
 
+import { createRequire } from "node:module";
 import { LRUCache } from "lru-cache";
+import type SqliteDatabase from "better-sqlite3";
 import type { FulltextData, NcbiArticle } from "./types.js";
 
 /** Full texts expire after 30 days — the paper is stable but resolved OA URLs rot. */
@@ -28,7 +35,7 @@ export interface CacheOptions {
   backend: CacheBackend;
   /** Max entries per store for the memory backend. Default 200. */
   max?: number;
-  /** Filesystem path for the sqlite backend (v0.2). */
+  /** Filesystem path for the sqlite backend. Use ":memory:" for an ephemeral DB. Default "./pubmed-cache.db". */
   path?: string;
 }
 
@@ -97,14 +104,166 @@ export class NullCache implements Cache {
   setFulltext(): void {}
 }
 
+// ─── SQLite backend ─────────────────────────────────────────────
+
+const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS summaries (
+    pmid       TEXT PRIMARY KEY,
+    article    TEXT NOT NULL,
+    fetched_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS abstracts (
+    pmid       TEXT PRIMARY KEY,
+    abstract   TEXT NOT NULL,
+    fetched_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS fulltexts (
+    pmid       TEXT PRIMARY KEY,
+    source     TEXT NOT NULL,
+    fulltext   TEXT NOT NULL,
+    format     TEXT NOT NULL,
+    fetched_at INTEGER NOT NULL
+);
+`;
+
+interface FulltextRow {
+  source: string;
+  fulltext: string;
+  format: string;
+  fetched_at: number;
+}
+
+/**
+ * Loads the native better-sqlite3 module on first use (see the module header).
+ *
+ * Resolves from this module's own location so better-sqlite3 is found even when
+ * pubmed-bio is a nested dependency. `__filename` exists in the CJS build;
+ * `import.meta.url` exists in the ESM build — esbuild leaves the other one
+ * undefined per format, so `typeof` picks whichever is real. (`typeof` on an
+ * undeclared identifier is safe — it evaluates to "undefined" rather than
+ * throwing.)
+ */
+function loadSqlite(): typeof SqliteDatabase {
+  const from = typeof __filename !== "undefined" ? __filename : import.meta.url;
+  const require = createRequire(from);
+  return require("better-sqlite3") as typeof SqliteDatabase;
+}
+
+/**
+ * Persistent cache backed by a single SQLite file. Drop-in replacement for
+ * {@link LRUBackend} — same interface, same semantics, but survives restarts so
+ * papers are fetched from NCBI at most once.
+ *
+ * Summaries and abstracts never expire (papers are immutable); full texts
+ * expire after {@link FULLTEXT_TTL_MS} because resolved OA URLs and proxy
+ * sessions rot. Expiry is enforced at read time and swept by {@link vacuum}.
+ */
+export class SQLiteBackend implements Cache {
+  private readonly db: SqliteDatabase.Database;
+  private readonly stmts: {
+    getSummary: SqliteDatabase.Statement<[string]>;
+    setSummary: SqliteDatabase.Statement<[string, string, number]>;
+    delSummary: SqliteDatabase.Statement<[string]>;
+    getAbstract: SqliteDatabase.Statement<[string]>;
+    setAbstract: SqliteDatabase.Statement<[string, string, number]>;
+    getFulltext: SqliteDatabase.Statement<[string]>;
+    setFulltext: SqliteDatabase.Statement<[string, string, string, string, number]>;
+    delFulltext: SqliteDatabase.Statement<[string]>;
+    vacuumFulltext: SqliteDatabase.Statement<[number]>;
+  };
+
+  constructor(path: string) {
+    const Database = loadSqlite();
+    this.db = new Database(path);
+    this.db.pragma("journal_mode = WAL"); // concurrent reads while another process writes
+    this.db.pragma("synchronous = NORMAL"); // safe with WAL, faster writes
+    this.db.exec(SCHEMA_SQL);
+
+    this.stmts = {
+      getSummary: this.db.prepare("SELECT article FROM summaries WHERE pmid = ?"),
+      setSummary: this.db.prepare("INSERT OR REPLACE INTO summaries (pmid, article, fetched_at) VALUES (?, ?, ?)"),
+      delSummary: this.db.prepare("DELETE FROM summaries WHERE pmid = ?"),
+      getAbstract: this.db.prepare("SELECT abstract FROM abstracts WHERE pmid = ?"),
+      setAbstract: this.db.prepare("INSERT OR REPLACE INTO abstracts (pmid, abstract, fetched_at) VALUES (?, ?, ?)"),
+      getFulltext: this.db.prepare("SELECT source, fulltext, format, fetched_at FROM fulltexts WHERE pmid = ?"),
+      setFulltext: this.db.prepare(
+        "INSERT OR REPLACE INTO fulltexts (pmid, source, fulltext, format, fetched_at) VALUES (?, ?, ?, ?, ?)",
+      ),
+      delFulltext: this.db.prepare("DELETE FROM fulltexts WHERE pmid = ?"),
+      vacuumFulltext: this.db.prepare("DELETE FROM fulltexts WHERE fetched_at < ?"),
+    };
+
+    this.vacuum();
+  }
+
+  getSummary(pmid: string): NcbiArticle | null {
+    const row = this.stmts.getSummary.get(pmid) as { article: string } | undefined;
+    if (!row) return null;
+    try {
+      return JSON.parse(row.article) as NcbiArticle;
+    } catch {
+      // Corrupt JSON — drop the row and treat as a miss.
+      this.stmts.delSummary.run(pmid);
+      return null;
+    }
+  }
+
+  setSummary(pmid: string, article: NcbiArticle): void {
+    this.stmts.setSummary.run(pmid, JSON.stringify(article), Date.now());
+  }
+
+  getAbstract(pmid: string): string | null {
+    const row = this.stmts.getAbstract.get(pmid) as { abstract: string } | undefined;
+    return row ? row.abstract : null;
+  }
+
+  setAbstract(pmid: string, abstract: string): void {
+    this.stmts.setAbstract.run(pmid, abstract, Date.now());
+  }
+
+  getFulltext(pmid: string): FulltextData | null {
+    const row = this.stmts.getFulltext.get(pmid) as FulltextRow | undefined;
+    if (!row) return null;
+    if (Date.now() - row.fetched_at > FULLTEXT_TTL_MS) {
+      this.stmts.delFulltext.run(pmid);
+      return null;
+    }
+    return {
+      source: row.source,
+      fulltext: row.fulltext,
+      format: row.format === "pdf" ? "pdf" : "markdown",
+      fetchedAt: row.fetched_at,
+    };
+  }
+
+  setFulltext(pmid: string, data: FulltextData): void {
+    this.stmts.setFulltext.run(pmid, data.source, data.fulltext, data.format, data.fetchedAt ?? Date.now());
+  }
+
+  /** Delete every expired full-text row. Runs on construction; call periodically if desired. */
+  vacuum(): void {
+    this.stmts.vacuumFulltext.run(Date.now() - FULLTEXT_TTL_MS);
+  }
+
+  /** Total rows across all three tables — handy for debugging. */
+  get size(): number {
+    const count = (table: string): number =>
+      (this.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+    return count("summaries") + count("abstracts") + count("fulltexts");
+  }
+
+  /** Close the database connection. Call on process exit; operations afterward throw. */
+  close(): void {
+    this.db.close();
+  }
+}
+
 export function createCache(options: CacheOptions): Cache {
   switch (options.backend) {
     case "memory":
       return new LRUBackend(options.max ?? 200);
     case "sqlite":
-      throw new Error(
-        "The sqlite cache backend is not implemented in v0.1.0 (planned for v0.2). Use backend: 'memory'.",
-      );
+      return new SQLiteBackend(options.path ?? "./pubmed-cache.db");
     default: {
       const exhaustive: never = options.backend;
       throw new Error(`Unknown cache backend: ${String(exhaustive)}`);

@@ -197,9 +197,25 @@ server.registerTool(
 
 // ─── Start ──────────────────────────────────────────────────────
 
+/** Persistent backends (SQLite) expose close(); flush the DB before exiting. */
+function shutdown(signal: string): void {
+  const maybeClose = (cache as { close?: () => void }).close;
+  if (typeof maybeClose === "function") {
+    try {
+      maybeClose.call(cache);
+    } catch (err) {
+      console.error(`[pubmed-bio] error closing cache on ${signal}:`, err);
+    }
+  }
+  process.exit(0);
+}
+
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.on(signal, () => shutdown(signal));
+  }
   console.error("[pubmed-bio] MCP server ready on stdio.");
 }
 
