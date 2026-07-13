@@ -10,7 +10,7 @@
 import type { DatabaseAdapter } from "./types.js";
 import { PubMedAdapter } from "./pubmed.js";
 import { EuropePmcAdapter } from "./europepmc.js";
-import { ChinaRXivAdapter } from "./chinarxiv.js";
+import { ChinaRXivAdapter } from "./chinaxiv.js";
 import { SovietRxivAdapter } from "./russiarxiv.js";
 
 export const ADAPTERS: Record<string, DatabaseAdapter> = {

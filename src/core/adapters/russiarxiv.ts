@@ -1,7 +1,7 @@
 /**
  * SovietRxiv / Russian paper adapter via the unified ChinaRxiv API.
  *
- * API: GET https://chinarxiv.org/api/v1/papers?source=russiarxiv
+ * API: GET https://chinaxiv.org/api/v1/papers?source=russiarxiv
  *
  * Searches the Soviet-era Russian corpus. Same API as ChinaRXiv, different source.
  */
@@ -9,11 +9,11 @@
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
 import { cleanDoi, first, strArray } from "./util.js";
-import { parsePapers } from "./chinarxiv.js";
-import type { PaperResponse } from "./chinarxiv.js";
+import { parsePapers } from "./chinaxiv.js";
+import type { PaperResponse } from "./chinaxiv.js";
 import type { Article, SearchInput } from "../types.js";
 
-const BASE = "https://chinarxiv.org/api/v1/papers";
+const BASE = "https://chinaxiv.org/api/v1/papers";
 const MAX_RESULTS_CAP = 50;
 
 export class SovietRxivAdapter extends RestAdapter {
