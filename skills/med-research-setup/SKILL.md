@@ -12,7 +12,6 @@ Guide the user through this. **Gather three things first, then run the right pat
 Ask the user (or infer from context):
 1. **Which client?** Claude Code (CLI), Claude Desktop, Cursor, Hermes, or direct library import (Biohacking-IDE).
 2. **NCBI contact email** — strongly recommended; NCBI asks for one on every request and throttles anonymous traffic. (Optional: an NCBI API key, which raises the rate limit from 3 to 10 req/s.)
-3. **LLM for deep grading?** Optional. Provider (`openai` / `anthropic` / `local`) + API key enables the `pubmed_grade` tool. Without it, `pubmed_grade` falls back to keyword grading — perfectly fine to skip at first.
 
 Find the repo's absolute path (`pwd` inside it, or locate `med-research-mcp`). Substitute it for `<REPO>` below.
 
@@ -35,7 +34,7 @@ claude mcp add med-research-mcp -s user \
   -e NCBI_EMAIL=you@example.com \
   -- node <REPO>/dist/mcp/index.js
 ```
-Use `-s user` for all projects, `-s local` for just this one. Add `-e PUBMED_LLM_PROVIDER=anthropic -e PUBMED_LLM_API_KEY=sk-...` to enable deep grading. Verify:
+Use `-s user` for all projects, `-s local` for just this one. Verify:
 ```bash
 claude mcp get med-research-mcp      # expect: Status ✓ Connected
 ```
@@ -83,11 +82,8 @@ Add as a git submodule (or dependency), then `import { searchPubMed, gradeArticl
 |-----|---------|---------|
 | `NCBI_EMAIL` | recommended | Contact email; avoids anonymous throttling |
 | `NCBI_API_KEY` | optional | Raises rate limit 3 → 10 req/s |
-| `PUBMED_LLM_PROVIDER` | optional | `openai` \| `anthropic` \| `local` — enables `pubmed_grade` |
-| `PUBMED_LLM_API_KEY` | with provider | Key for that provider |
-| `PUBMED_LLM_MODEL` | optional | Override default (openai `gpt-4o-mini`, anthropic `claude-haiku-4-5-20251001`, local `llama3.1`) |
-| `PUBMED_LLM_BASE_URL` | for `local` | OpenAI-compatible endpoint (Ollama/LM Studio) |
-| `PUBMED_CACHE_BACKEND` | optional | `memory` (default). `sqlite` is planned for v0.2 |
+| `PUBMED_UNPAYWALL_EMAIL` | optional | Contact email for Unpaywall lookups (`literature_fulltext`). Falls back to `NCBI_EMAIL`. |
+| `PUBMED_CACHE_BACKEND` | optional | `memory` (default). `sqlite` is planned for a future release |
 
 ## Step 4 — Install the companion usage skill
 
@@ -99,14 +95,13 @@ mkdir -p ~/.claude/skills && cp -r <REPO>/skills/pubmed-research ~/.claude/skill
 
 ## Step 5 — Verify
 
-Start a new session with the client and run a `pubmed_search` for `creatine AND cognition[tiab]` (maxResults 3). Expect a few graded articles with study types and 0–5 evidence scores. If deep grading is configured, `pubmed_grade` on one PMID should return PICO + red flags.
+Start a new session with the client and run a `literature_search` for `creatine AND cognition[tiab]` (maxResults 3). Expect a few graded articles with study types and 0–5 evidence scores.
 
 ## Troubleshooting
 
 - **"No such file … dist/mcp/index.js"** → run `npm run build` (or point the client at `npx tsx <REPO>/src/mcp/index.ts` instead).
 - **Tools don't show up** → MCP servers load at client startup; restart the session.
 - **Throttling / RATE_LIMIT** → set `NCBI_EMAIL`; add `NCBI_API_KEY` for higher limits.
-- **`pubmed_grade` returns `fallback: true`** → no/invalid LLM provider or key, or it timed out; keyword grade was returned instead. Add/fix `PUBMED_LLM_*`.
 - **`QUERY_TOO_BROAD`** → the query is too generic; add `[tiab]`/`[mesh]` field tags or `AND` clauses.
 - **Changed the source** → rebuild (`npm run build`); the `tsx`/Hermes path picks up source automatically.
 - **Connection check** (Claude Code): `claude mcp get med-research-mcp`. Remove with `claude mcp remove med-research-mcp -s user`.

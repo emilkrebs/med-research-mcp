@@ -14,7 +14,7 @@ export { ADAPTERS, getAdapters, getAdapter } from "./adapters/registry.js";
 export type { DatabaseAdapter } from "./adapters/types.js";
 export { PubMedAdapter } from "./adapters/pubmed.js";
 export { EuropePmcAdapter, parseEuropePmc } from "./adapters/europepmc.js";
-export { ChinaRXivAdapter, parsePapers as parseChinaRXiv } from "./adapters/chinaxiv.js";
+export { ChinaRXivAdapter, parsePapers as parseChinaRXiv } from "./adapters/chinarxiv.js";
 export { SovietRxivAdapter } from "./adapters/russiarxiv.js";
 export { defaultHttp } from "./adapters/http.js";
 export type { AdapterHttp, HttpOptions } from "./adapters/http.js";
@@ -31,8 +31,8 @@ export type { UnpaywallConfig, UnpaywallResult } from "./unpaywall.js";
 export { createCache, LRUBackend, NullCache, SQLiteBackend, FULLTEXT_TTL_MS } from "./cache.js";
 export type { Cache, CacheBackend, CacheOptions } from "./cache.js";
 
-export { ResearchApiException as PubMedException, isMedResearchError as isPubMedError, errors } from "./errors.js";
-export type { ResearchError as PubMedError, ResearchErrorCode as PubMedErrorCode } from "./errors.js";
+export { ResearchApiException, isMedResearchError, errors } from "./errors.js";
+export type { ResearchError, ResearchErrorCode } from "./errors.js";
 
 export type {
   StudyType,
