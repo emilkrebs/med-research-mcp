@@ -1,24 +1,21 @@
 ---
 name: pubmed-research
-description: Use when researching biomedical, supplement, peptide, or biohacking evidence with the med-research-mcp MCP server (tools pubmed_search and pubmed_grade). Covers writing precise PubMed queries with field tags, reading the evidence grades (0-5 scores, study types, confidence), and when to escalate from the cheap keyword grade to LLM deep-grading. Trigger on questions about what the research/evidence says for a compound, dose, intervention, or biomarker.
+description: Use when researching biomedical, supplement, peptide, or biohacking evidence with the med-research-mcp MCP server (tools literature_search, literature_fetch, literature_fulltext). Covers writing precise PubMed queries with field tags, reading the evidence grades (0-5 scores, study types, confidence), choosing between search/fetch/fulltext, and multi-database searches. Trigger on questions about what the research/evidence says for a compound, dose, intervention, or biomarker.
 ---
 
 # Using the med-research-mcp MCP
 
-Two tools, a cheap-first workflow. **Always start with `pubmed_search`** (free, keyword-graded). **Escalate to `pubmed_grade`** (LLM, costs tokens) only for the few papers where the stakes justify it.
+Three tools, a triage-first workflow. **Always start with `literature_search`** (free, keyword-graded). **Drill into specific papers with `literature_fetch`** (full metadata + abstracts). **Use `literature_fulltext`** only when you need more than the abstract (methods, sample sizes, dosage details).
 
 ## Decision flow
 
-1. Turn the question into a precise PubMed query (see below) and call `pubmed_search`.
+1. Turn the question into a precise query and call `literature_search` (default database: `pubmed`).
 2. Read the graded results: sort your attention by `evidenceScore`, but check `confidence` and `limitations` before trusting a grade.
-3. Escalate a specific `pmid` to `pubmed_grade` when **any** of these hold:
-   - A single paper is about to drive a real decision (a dose, a "should I take X").
-   - The keyword grade looks suspicious: high score but low `confidence`, or `limitations` flags a protocol/animal/false-positive.
-   - Results contradict each other and you need to know which study is actually stronger.
-   - You need extracted specifics the keyword path can't give: sample size, effect size, PICO, funding/conflicts.
-4. Never escalate the whole result set — that burns tokens. Grade 1–3 pivotal papers at most.
+3. For papers you want to drill into, call `literature_fetch` with the specific ids to get full abstracts and MeSH terms.
+4. Call `literature_fulltext` **only** when you need more than the abstract — to verify dosage, check sample sizes, read methods, or detect statistical flaws.
+5. For broader coverage, rerun with `database: ["pubmed", "europepmc"]` or `database: "all"`. Non-PubMed results are graded keyword-only (lower confidence — treat their scores as less reliable).
 
-## Writing good queries (`pubmed_search`)
+## Writing good queries (`literature_search`)
 
 Bare keywords match tens of thousands of papers and bury the signal. Use field tags and boolean operators.
 
@@ -30,6 +27,7 @@ Bare keywords match tens of thousands of papers and bury the signal. Use field t
 - Prefer narrow first. If you get `QUERY_TOO_BROAD` or a "matched N articles" warning, add a `[tiab]` term or an `AND` clause.
 
 Parameters worth setting:
+- `database` — default `"pubmed"`. Use `["pubmed", "europepmc"]` or `"all"` for broader coverage.
 - `maxResults` (default 10, max 50) — 5–10 is usually enough for a first pass.
 - `minEvidenceScore` — set to `4` to see only RCTs and meta-analyses, `3` to include cohorts/reviews.
 - `studyTypes` — e.g. `["meta-analysis","randomized-controlled-trial"]` to filter.
@@ -38,7 +36,7 @@ Parameters worth setting:
 
 ## Reading the grades
 
-Each result is a `GradedArticle`. Evidence scale (higher = stronger):
+Each result from `literature_search` is a `GradedArticle`. Evidence scale (higher = stronger):
 
 | Score | Study type | Reading |
 |-------|-----------|---------|
@@ -50,20 +48,23 @@ Each result is a `GradedArticle`. Evidence scale (higher = stronger):
 | 0 | animal-study / unknown | not directly applicable to humans |
 
 Also read:
-- `confidence` (0–1): how sure the classifier is. **Low confidence on a high score = escalate.** Values below ~0.5, or a title-only grade, mean treat the study type as tentative.
+- `confidence` (0–1): how sure the classifier is. **Low confidence on a high score = fetch the abstract and read it.** Values below ~0.5, or a title-only grade, mean treat the study type as tentative.
 - `limitations[]`: surfaces protocol papers, animal-with-human-mentions, small-sample/underpowered cues, and title-only grades.
-- `gradingMethod`: `"keyword"` from search; `"llm"` after `pubmed_grade`.
+- `gradingMethod`: `"keyword"` from search.
+- `database`, `url`, `language`: present on non-PubMed results — treat non-PubMed keyword grades as lower confidence.
 - `dosage` / `population`: best-effort extraction — handy for biohacking, but confirm against the abstract for anything actionable.
 
-## Deep grading (`pubmed_grade`)
+## Fetching details (`literature_fetch`)
 
-Pass a `pmid` (and the `abstract` if you already have it, to skip a fetch). Returns a `DeepGradeOutput`:
-- `correctedStudyType` / `correctedScore` — the LLM's verified classification (it catches protocol-papers-read-as-RCTs, meta-analyses of junk, animal studies misread as human).
-- `pico` — population, intervention, comparison, outcome.
-- `sampleSize`, `effectSize`, `fundingSource`.
-- `redFlags[]` — conflicts of interest, n < 20, preprint, retracted, no full text. **Always report red flags to the user.**
-- `gradingReasoning` — cite this when explaining why a grade changed.
-- `fallback: true` + `warning` — the LLM was unavailable/timed out and this is the keyword grade instead. Say so; don't present it as a deep grade.
+Pass one or more `ids` and a `database` string. Returns raw article objects with full abstracts, MeSH headings, and references — no grading. Use after `literature_search` to drill into specific papers.
+
+```
+literature_fetch({ ids: ["39123456", "38987654"], database: "pubmed" })
+```
+
+## Full text (`literature_fulltext`)
+
+Pass a `pmid` (or non-PubMed id) and optionally a `doi` (required for non-numeric ids). Returns the article body as markdown via Unpaywall → institutional proxy → direct DOI; falls back to abstract-only if paywalled. Use this when you need to verify dosage, read methods, or detect statistical flaws that aren't visible in the abstract.
 
 ## Rate limits & parallel calls
 
@@ -73,8 +74,7 @@ The server shares one NCBI client across all tool calls and serializes its reque
 
 - `QUERY_TOO_BROAD` (recoverable) — narrow with `[tiab]`/`[mesh]`/`AND`, then retry.
 - `RATE_LIMIT` (recoverable, `retryAfter`) — wait the given seconds; back off.
-- `NETWORK_ERROR` / `PARSE_FAILURE` — retry once; if it persists, tell the user PubMed is unreachable.
-- `LLM_UNAVAILABLE` / `LLM_TIMEOUT` — deep grading isn't configured or timed out; you'll get a keyword `fallback` — proceed with it and note the limitation.
+- `NETWORK_ERROR` / `PARSE_FAILURE` — retry once; if it persists, tell the user the database is unreachable.
 
 ## Reporting to the user
 

@@ -3,9 +3,9 @@
  * Thin MCP adapter over the med-research-mcp core library.
  *
  * Exposes three stdio tools:
- *   - pubmed_search   — search + keyword classification (always cheap)
- *   - pubmed_fetch    — fetch full metadata + abstracts for given PMIDs (pure data)
- *   - pubmed_fulltext — resolve and return an article's full text as markdown
+ *   - literature_search   — multi-database search + keyword classification (always cheap)
+ *   - literature_fetch    — fetch full metadata + abstracts for given ids (pure data)
+ *   - literature_fulltext — resolve and return an article's full text as markdown
  *
  * All logic lives in ../core; this file only wires it to MCP.
  */
@@ -17,14 +17,12 @@ import {
   createCache,
   fetchFulltext,
   fetchLiterature,
-  fetchPubMed,
   getAdapters,
-  isPubMedError,
+  isMedResearchError,
   LRUBackend,
   NcbiClient,
   PubMedAdapter,
   searchLiterature,
-  searchPubMed,
   type Cache,
   type CacheBackend,
   type DatabaseAdapter,
@@ -93,136 +91,13 @@ if (!process.env.NCBI_EMAIL) {
 
 if (!process.env.PUBMED_UNPAYWALL_EMAIL && !process.env.NCBI_EMAIL) {
   console.error(
-    "[med-research-mcp] Neither PUBMED_UNPAYWALL_EMAIL nor NCBI_EMAIL is set. pubmed_fulltext needs a contact email to query Unpaywall for open-access copies; without one it can only try the institutional proxy and direct DOI access.",
+    "[med-research-mcp] Neither PUBMED_UNPAYWALL_EMAIL nor NCBI_EMAIL is set. literature_fulltext needs a contact email to query Unpaywall for open-access copies; without one it can only try the institutional proxy and direct DOI access.",
   );
 }
 
 const server = new McpServer({ name: "med-research-mcp", version: "0.3.0" });
 
 const DATABASES = ["pubmed", "europepmc", "chinaxiv", "russiarxiv"] as const;
-
-// ─── pubmed_search ──────────────────────────────────────────────
-
-const searchInputShape = {
-  query: z
-    .string()
-    .describe("PubMed query. Supports field tags: [tiab] (title/abstract), [mesh] (MeSH), [au] (author)."),
-  maxResults: z.number().int().min(1).max(50).optional().describe("Results to return. Default 10, max 50."),
-  minEvidenceScore: z.number().min(0).max(5).optional().describe("Drop results below this evidence score (0-5)."),
-  studyTypes: z.array(z.enum(STUDY_TYPES)).optional().describe("Keep only these study types."),
-  dateRange: z
-    .object({ from: z.string().optional(), to: z.string().optional() })
-    .optional()
-    .describe("Publication date filter, YYYY-MM-DD."),
-  sort: z.enum(["relevance", "date"]).optional().describe("Sort order. Default relevance."),
-};
-
-server.registerTool(
-  "pubmed_search",
-  {
-    title: "Search PubMed",
-    description:
-      "Search PubMed and return results with automatic study-type classification (meta-analysis, RCT, cohort, review, case-control, case-report, animal-study) based on NLM PublicationType tags with keyword fallback. " +
-      "Evidence scores: 5=meta-analysis, 4=RCT, 3=cohort/review, 2=case-control, 1=case-report, 0=animal/unknown. " +
-      "Always cheap — no LLM calls. Use pubmed_fetch to get full metadata + abstracts for specific PMIDs.",
-    inputSchema: searchInputShape,
-    annotations: { readOnlyHint: true, openWorldHint: true },
-  },
-  async (args) => {
-    try {
-      const result = await searchPubMed(args, cache, ncbi);
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
-    } catch (err) {
-      const payload = isPubMedError(err)
-        ? err.toJSON()
-        : { code: "UNKNOWN", message: err instanceof Error ? err.message : String(err), recoverable: false };
-      return {
-        isError: true,
-        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
-      };
-    }
-  },
-);
-
-// ─── pubmed_fetch ───────────────────────────────────────────────
-
-const fetchInputShape = {
-  pmids: z
-    .array(z.string())
-    .min(1)
-    .max(50)
-    .describe("One or more PubMed IDs to fetch full metadata + abstracts for."),
-};
-
-server.registerTool(
-  "pubmed_fetch",
-  {
-    title: "Fetch PubMed articles",
-    description:
-      "Fetch full metadata, abstracts, MeSH headings, and references for one or more PMIDs. " +
-      "Returns raw NcbiArticle objects — no grading or classification. " +
-      "The calling agent uses the returned data for its own analysis (PICO extraction, red flag detection, evidence assessment). " +
-      "Use after pubmed_search to drill into specific papers of interest.",
-    inputSchema: fetchInputShape,
-    annotations: { readOnlyHint: true, openWorldHint: true },
-  },
-  async (args) => {
-    try {
-      const result = await fetchPubMed({ pmids: args.pmids }, cache, ncbi);
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
-    } catch (err) {
-      const payload = isPubMedError(err)
-        ? err.toJSON()
-        : { code: "UNKNOWN", message: err instanceof Error ? err.message : String(err), recoverable: false };
-      return {
-        isError: true,
-        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
-      };
-    }
-  },
-);
-
-// ─── pubmed_fulltext ────────────────────────────────────────────
-
-const fulltextInputShape = {
-  pmid: z.string().describe("PubMed ID"),
-  doi: z.string().optional().describe("DOI — if known, skips PMID→DOI lookup"),
-};
-
-server.registerTool(
-  "pubmed_fulltext",
-  {
-    title: "Fetch full text for a PubMed article",
-    description:
-      "Attempts to fetch the full text of a PubMed article as markdown. " +
-      "Tries Unpaywall (open access), institutional proxy (if configured), " +
-      "and direct DOI access. Falls back to abstract-only if paywalled. " +
-      "Use this when the abstract isn't sufficient — e.g., to verify dosage, " +
-      "check sample sizes, read methods, or detect statistical flaws.",
-    inputSchema: fulltextInputShape,
-    annotations: { readOnlyHint: true, openWorldHint: true },
-  },
-  async (args) => {
-    try {
-      const result = await fetchFulltext({ pmid: args.pmid, ...(args.doi ? { doi: args.doi } : {}) }, cache, ncbi);
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
-    } catch (err) {
-      const payload = isPubMedError(err)
-        ? err.toJSON()
-        : { code: "UNKNOWN", message: err instanceof Error ? err.message : String(err), recoverable: false };
-      return {
-        isError: true,
-        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
-      };
-    }
-  },
-);
 
 // ─── literature_search ──────────────────────────────────────────
 
@@ -282,7 +157,7 @@ server.registerTool(
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
     } catch (err) {
-      const payload = isPubMedError(err)
+      const payload = isMedResearchError(err)
         ? err.toJSON()
         : { code: "UNKNOWN", message: err instanceof Error ? err.message : String(err), recoverable: false };
       return {
@@ -328,7 +203,7 @@ server.registerTool(
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
     } catch (err) {
-      const payload = isPubMedError(err)
+      const payload = isMedResearchError(err)
         ? err.toJSON()
         : { code: "UNKNOWN", message: err instanceof Error ? err.message : String(err), recoverable: false };
       return {
@@ -368,7 +243,7 @@ server.registerTool(
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
     } catch (err) {
-      const payload = isPubMedError(err)
+      const payload = isMedResearchError(err)
         ? err.toJSON()
         : { code: "UNKNOWN", message: err instanceof Error ? err.message : String(err), recoverable: false };
       return {

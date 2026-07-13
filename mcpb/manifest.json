@@ -2,8 +2,8 @@
   "$schema": "https://raw.githubusercontent.com/anthropics/mcpb/main/schemas/mcpb-manifest-v0.4.schema.json",
   "manifest_version": "0.4",
   "name": "med-research-mcp",
-  "version": "0.2.0",
-  "description": "Evidence-graded PubMed search for AI agents — biohacking, supplementation, and clinical decision support.",
+  "version": "0.3.0",
+  "description": "Evidence-graded scientific literature search for AI agents — multi-database (PubMed, Europe PMC, ChinaRXiv, RussiaRXiv), built for biohacking, supplementation, and clinical decision support.",
   "author": {
     "name": "Emil Krebs",
     "email": "emilkrebz@gmail.com"
@@ -43,13 +43,13 @@
     "unpaywallEmail": {
       "type": "string",
       "title": "Unpaywall contact email (optional)",
-      "description": "Used by pubmed_fulltext to query Unpaywall for open-access copies. Unpaywall asks for a contact email on every request. Falls back to the NCBI email if left blank.",
+      "description": "Used by literature_fulltext to query Unpaywall for open-access copies. Unpaywall asks for a contact email on every request. Falls back to the NCBI email if left blank.",
       "required": false
     },
     "proxyPrefix": {
       "type": "string",
       "title": "Institutional proxy prefix (optional)",
-      "description": "EZproxy-style DOI prefix for off-campus access, e.g. https://doi-org.ezproxy.uni-kiel.de — pubmed_fulltext prepends it to the DOI. Requires an existing proxy session on the machine.",
+      "description": "EZproxy-style DOI prefix for off-campus access, e.g. https://doi-org.ezproxy.uni-kiel.de — literature_fulltext prepends it to the DOI. Requires an existing proxy session on the machine.",
       "required": false
     }
   },
