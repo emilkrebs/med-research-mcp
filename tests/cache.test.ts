@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { LRUBackend, NullCache, createCache } from "../src/core/cache";
+import { LRUBackend, NullCache, SQLiteBackend, createCache } from "../src/core/cache";
 import type { NcbiArticle } from "../src/core/types";
 
 const article: NcbiArticle = {
@@ -52,7 +52,11 @@ describe("createCache", () => {
     expect(c.getAbstract("1")).toBe("x");
   });
 
-  it("throws for the unimplemented sqlite backend", () => {
-    expect(() => createCache({ backend: "sqlite" })).toThrow(/not implemented/i);
+  it("builds a working sqlite backend", () => {
+    // ":memory:" keeps the test from leaving a database file behind.
+    const c = createCache({ backend: "sqlite", path: ":memory:" }) as SQLiteBackend;
+    c.setAbstract("1", "x");
+    expect(c.getAbstract("1")).toBe("x");
+    c.close();
   });
 });

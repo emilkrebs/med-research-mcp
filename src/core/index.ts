@@ -17,7 +17,7 @@ export type { FulltextDeps, FetchedResource } from "./fulltext.js";
 export { UnpaywallClient } from "./unpaywall.js";
 export type { UnpaywallConfig, UnpaywallResult } from "./unpaywall.js";
 
-export { createCache, LRUBackend, NullCache, FULLTEXT_TTL_MS } from "./cache.js";
+export { createCache, LRUBackend, NullCache, SQLiteBackend, FULLTEXT_TTL_MS } from "./cache.js";
 export type { Cache, CacheBackend, CacheOptions } from "./cache.js";
 
 export { PubMedException, isPubMedError, errors } from "./errors.js";
