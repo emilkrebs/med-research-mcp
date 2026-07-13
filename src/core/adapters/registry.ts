@@ -9,19 +9,13 @@
 
 import type { DatabaseAdapter } from "./types.js";
 import { PubMedAdapter } from "./pubmed.js";
-import { SciELOAdapter } from "./scielo.js";
-import { CyberLeninkaAdapter } from "./cyberleninka.js";
 import { EuropePmcAdapter } from "./europepmc.js";
 import { ChinaXivAdapter } from "./chinaxiv.js";
-import { JStageAdapter } from "./jstage.js";
 
 export const ADAPTERS: Record<string, DatabaseAdapter> = {
   pubmed: new PubMedAdapter(),
-  scielo: new SciELOAdapter(),
-  cyberleninka: new CyberLeninkaAdapter(),
   europepmc: new EuropePmcAdapter(),
   chinaxiv: new ChinaXivAdapter(),
-  jstage: new JStageAdapter(),
 };
 
 /**

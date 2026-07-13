@@ -13,11 +13,8 @@ export { searchLiterature, fetchLiterature } from "./literature.js";
 export { ADAPTERS, getAdapters, getAdapter } from "./adapters/registry.js";
 export type { DatabaseAdapter } from "./adapters/types.js";
 export { PubMedAdapter } from "./adapters/pubmed.js";
-export { SciELOAdapter, parseScielo } from "./adapters/scielo.js";
 export { EuropePmcAdapter, parseEuropePmc } from "./adapters/europepmc.js";
 export { ChinaXivAdapter, parseChinaXiv } from "./adapters/chinaxiv.js";
-export { JStageAdapter, parseJStage } from "./adapters/jstage.js";
-export { CyberLeninkaAdapter, parseCyberLeninkaHtml } from "./adapters/cyberleninka.js";
 export { defaultHttp } from "./adapters/http.js";
 export type { AdapterHttp, HttpOptions } from "./adapters/http.js";
 
