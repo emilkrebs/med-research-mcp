@@ -3,12 +3,12 @@ import { fetchFulltext, type FetchedResource, type FulltextDeps } from "../src/c
 import { UnpaywallClient, type UnpaywallResult } from "../src/core/unpaywall";
 import { FULLTEXT_TTL_MS, LRUBackend } from "../src/core/cache";
 import { NcbiClient } from "../src/core/pubmed";
-import { PubMedException } from "../src/core/errors";
-import type { NcbiArticle } from "../src/core/types";
+import { ResearchApiException } from "../src/core/errors";
+import type { Article } from "../src/core/types";
 
 const DOI = "10.1000/xyz123";
 
-const ARTICLE: NcbiArticle = {
+const ARTICLE: Article = {
   pmid: "12345678",
   title: "Creatine and cognition",
   authors: ["Doe J"],
@@ -24,12 +24,12 @@ const LONG_MARKDOWN = "# Methods\n\n" + "word ".repeat(300);
 
 /** A stand-in NCBI client. esummary/efetch are the only methods fetchFulltext touches. */
 function fakeClient(
-  opts: { summary?: NcbiArticle | null; abstract?: string; onEsummary?: () => void } = {},
+  opts: { summary?: Article | null; abstract?: string; onEsummary?: () => void } = {},
 ): NcbiClient {
   return {
     esummary: async (pmids: string[]) => {
       opts.onEsummary?.();
-      const m = new Map<string, NcbiArticle>();
+      const m = new Map<string, Article>();
       if (opts.summary) m.set(pmids[0]!, opts.summary);
       return m;
     },
@@ -192,7 +192,7 @@ describe("fetchFulltext resolution strategy", () => {
 
   it("throws NOT_FOUND for a non-numeric PMID", async () => {
     await expect(fetchFulltext({ pmid: "not-a-pmid" }, new LRUBackend(), fakeClient())).rejects.toBeInstanceOf(
-      PubMedException,
+      ResearchApiException,
     );
   });
 

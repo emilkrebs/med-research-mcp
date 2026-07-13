@@ -4,34 +4,44 @@ import type { AdapterHttp } from "../src/core/adapters/http";
 import { LRUBackend } from "../src/core/cache";
 
 const RESPONSE = {
-  total: 1,
-  data: [
-    {
-      id: "chinaxiv:202101.00001",
-      title: "Exercise physiology in high altitude",
-      abstract: "English abstract of a Chinese paper.",
-      authors: ["Wang L", "Li M"],
-      journal: "ChinaXiv",
-      year: "2021",
-      doi: "10.12074/202101.00001",
-    },
-  ],
+  success: true,
+  code: 200,
+  data: {
+    total: 1,
+    content: [
+      {
+        id: "chinaxiv:202101.00001",
+        entitle: "Exercise physiology in high altitude",
+        enabstract: "English abstract of a Chinese paper.",
+        authors: ["Wang L", "Li M"],
+        journal: "ChinaXiv",
+        year: "2021",
+        doi: "10.12074/202101.00001",
+      },
+    ],
+  },
 };
 
-function fakeHttp(payload: unknown): { http: AdapterHttp; urls: string[] } {
+function fakeHttp(payload: unknown): { http: AdapterHttp; urls: string[]; bodies: unknown[] } {
   const urls: string[] = [];
+  const bodies: unknown[] = [];
   const http: AdapterHttp = {
     json: async <T>(url: string): Promise<T> => {
       urls.push(url);
       return payload as T;
     },
     text: async () => "",
+    post: async <T>(url: string, body?: unknown): Promise<T> => {
+      urls.push(url);
+      bodies.push(body);
+      return payload as T;
+    },
   };
-  return { http, urls };
+  return { http, urls, bodies };
 }
 
 describe("parseChinaXiv", () => {
-  it("maps records and tags language zh", () => {
+  it("maps records from data.content and tags language zh", () => {
     const { count, articles } = parseChinaXiv(RESPONSE);
     expect(count).toBe(1);
     const a = articles[0]!;
@@ -41,32 +51,31 @@ describe("parseChinaXiv", () => {
     expect(a.doi).toBe("10.12074/202101.00001");
     expect(a.database).toBe("chinaxiv");
     expect(a.language).toBe("zh");
-    expect(a.url).toBe("http://chinaxiv.org/abs/chinaxiv:202101.00001");
+    expect(a.url).toBe("https://chinaxiv.org/abs/chinaxiv:202101.00001");
   });
 
-  it("accepts the alternative count/records envelope", () => {
-    const { count, articles } = parseChinaXiv({
-      count: 3,
-      records: [{ id: "x", title: "T", url: "http://chinaxiv.org/abs/x" }],
-    });
-    expect(count).toBe(3);
-    expect(articles[0]!.url).toBe("http://chinaxiv.org/abs/x");
+  it("returns empty results for empty response", () => {
+    const { count, articles } = parseChinaXiv({});
+    expect(count).toBe(0);
+    expect(articles).toEqual([]);
   });
 });
 
 describe("ChinaXivAdapter", () => {
-  it("search() sends the size param and remembers results", async () => {
-    const { http, urls } = fakeHttp(RESPONSE);
+  it("search() uses POST with JSON body and remembers results", async () => {
+    const { http, urls, bodies } = fakeHttp(RESPONSE);
     const adapter = new ChinaXivAdapter(http);
     const cache = new LRUBackend();
 
     const { count, ids } = await adapter.search({ query: "exercise", maxResults: 8 });
     expect(count).toBe(1);
-    expect(urls[0]).toContain("size=8");
+    // Should be a POST to the API
+    expect(urls[0]).toBe("https://chinaxiv.org/api/search");
+    expect(bodies[0]).toEqual({ q: "exercise", page: 0, size: 8 });
 
     const before = urls.length;
     const fetched = await adapter.fetch(ids, cache);
     expect(fetched[0]?.database).toBe("chinaxiv");
-    expect(urls.length).toBe(before);
+    expect(urls.length).toBe(before); // fetch hits memo, no network call
   });
 });
