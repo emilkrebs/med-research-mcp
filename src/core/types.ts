@@ -30,6 +30,18 @@ export interface NcbiArticle {
   meshHeadings?: string[];
   /** PMIDs cited by this article. */
   references?: string[];
+
+  /**
+   * Source database — one of the adapter ids ("pubmed", "scielo", "cyberleninka",
+   * "europepmc", "chinaxiv", "jstage"). Treated as "pubmed" when absent, so all
+   * existing PubMed code keeps working without setting it. Non-PubMed adapters
+   * always set it. When set, `pmid` holds the database-specific id.
+   */
+  database?: string;
+  /** Direct URL to the article page on the source database. */
+  url?: string;
+  /** Language of the article (ISO 639-1). Treated as "en" when absent. */
+  language?: string;
 }
 
 /** An article with keyword-based evidence classification. */
@@ -54,6 +66,13 @@ export interface DateRange {
 export interface SearchInput {
   /** PubMed query, supports field tags like `[tiab]`, `[mesh]`, `[au]`. */
   query: string;
+  /**
+   * Source database(s) for {@link searchLiterature}. A single id ("pubmed",
+   * "scielo", "cyberleninka", "europepmc", "chinaxiv", "jstage"), an array of
+   * ids, or "all" to fan out to every adapter. Ignored by {@link searchPubMed}
+   * (PubMed-only). Defaults to "pubmed" when omitted.
+   */
+  database?: string | string[];
   /** Results to return. Default 10, hard cap 50. */
   maxResults?: number;
   /** Drop results below this evidence score (0–5). Default 0. */
@@ -63,6 +82,11 @@ export interface SearchInput {
   dateRange?: DateRange;
   /** "relevance" (default) or "date". */
   sort?: "relevance" | "date";
+  /**
+   * Preferred content language (ISO 639-1) — a hint for adapters that can filter
+   * by language (e.g. SciELO). Ignored by adapters that don't support it.
+   */
+  language?: string;
 }
 
 export interface SearchOutput {
@@ -76,6 +100,13 @@ export interface SearchOutput {
 export interface FetchInput {
   /** One or more PMIDs to fetch. */
   pmids: string[];
+}
+
+export interface LiteratureFetchInput {
+  /** One or more database-specific ids to fetch. */
+  ids: string[];
+  /** Which database the ids belong to ("pubmed", "scielo", "europepmc", …). */
+  database: string;
 }
 
 export interface FetchOutput {
