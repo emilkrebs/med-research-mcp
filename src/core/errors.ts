@@ -6,7 +6,6 @@
 export type ResearchErrorCode =
   | "RATE_LIMIT"
   | "QUERY_TOO_BROAD"
-  | "NO_ABSTRACT"
   | "PARSE_FAILURE"
   | "NETWORK_ERROR"
   | "NOT_FOUND";

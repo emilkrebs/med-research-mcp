@@ -331,15 +331,9 @@ async function defaultHtmlToMarkdown(html: string, url: string): Promise<string>
 }
 
 async function defaultPdfToText(bytes: Uint8Array): Promise<string> {
-  // Import the lib entry directly. pdf-parse's package index runs a debug block
-  // that reads a bundled sample PDF when `module.parent` is falsy (i.e. under
-  // ESM or a bundler) and throws; the lib entry has no such side effect. The
-  // computed specifier also keeps bundlers from trying to resolve it at build.
-  const specifier = "pdf-parse/lib/pdf-parse.js";
-  const mod = (await import(specifier)) as {
-    default?: (data: Buffer) => Promise<{ text: string }>;
-  };
-  const pdfParse = mod.default ?? (mod as unknown as (data: Buffer) => Promise<{ text: string }>);
-  const result = await pdfParse(Buffer.from(bytes));
+  const { PDFParse } = await import("pdf-parse");
+  const parser = new PDFParse({ data: bytes });
+  const result = await parser.getText();
+  await parser.destroy();
   return (result.text ?? "").trim();
 }
