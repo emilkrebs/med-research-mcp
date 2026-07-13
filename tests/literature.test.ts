@@ -41,7 +41,7 @@ const chinaxivRct: NcbiArticle = {
   pmid: "C1",
   title: "A randomized controlled trial of a peptide",
   authors: ["Wang L"],
-  journal: "ChinaXiv",
+  journal: "ChinaRXiv",
   pubDate: "2021",
   doi: "10.2074/other",
   publicationTypes: [],
