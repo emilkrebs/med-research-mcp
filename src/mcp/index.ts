@@ -99,7 +99,7 @@ if (!process.env.PUBMED_UNPAYWALL_EMAIL && !process.env.NCBI_EMAIL) {
 
 const server = new McpServer({ name: "pubmed-bio", version: "0.3.0" });
 
-const DATABASES = ["pubmed", "scielo", "cyberleninka", "europepmc", "chinaxiv", "jstage"] as const;
+const DATABASES = ["pubmed", "europepmc", "chinaxiv"] as const;
 
 // ─── pubmed_search ──────────────────────────────────────────────
 
@@ -237,8 +237,8 @@ const literatureSearchShape = {
     .optional()
     .describe(
       'Database(s) to search: a single id, an array of ids, or "all". Default "pubmed". ' +
-        "Options: pubmed, scielo (Latin America/Iberia/South Africa), cyberleninka (Russia/CIS, Cyrillic), " +
-        "europepmc (Europe + preprints), chinaxiv (China preprints, Chinese), jstage (Japan).",
+        "Options: " +
+        "europepmc (Europe + preprints), chinaxiv (China preprints, Chinese).",
     ),
   maxResults: z.number().int().min(1).max(50).optional().describe("Results per database. Default 10, max 50."),
   minEvidenceScore: z
