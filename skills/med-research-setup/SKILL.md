@@ -1,6 +1,6 @@
 ---
-name: pubmed-mcp-setup
-description: Use when helping a user install, configure, or troubleshoot the med-research-mcp MCP server (evidence-graded PubMed search). Walks through building the project, registering it with an MCP client (Claude Code, Claude Desktop via .mcpb, Cursor, Hermes) or importing the core library directly, wiring up NCBI and LLM credentials, and verifying it works. Trigger on "install the pubmed MCP", "set up med-research-mcp", "configure PubMed search", or connection/credential problems with it.
+name: med-research-setup
+description: Use when helping a user install, configure, or troubleshoot the med-research-mcp MCP server (evidence-graded multi-database literature search). Walks through building the project, registering it with an MCP client (Claude Code, Claude Desktop via .mcpb, Cursor, Hermes) or importing the core library directly, wiring up NCBI credentials, and verifying it works. Trigger on "install the med-research MCP", "set up med-research-mcp", "configure literature search", or connection/credential problems with it.
 ---
 
 # Installing & setting up the med-research-mcp MCP
@@ -44,7 +44,7 @@ Tools appear in **new** Claude Code sessions.
 ```bash
 npm run build:mcpb             # produces dist/med-research-mcp.mcpb
 ```
-Drag `dist/med-research-mcp.mcpb` onto Claude Desktop. The installer prompts for the NCBI email and (optional) LLM key — no JSON editing. Note: `.mcpb` installs do **not** auto-load the companion `pubmed-research` skill; copy it in manually (Step 4).
+Drag `dist/med-research-mcp.mcpb` onto Claude Desktop. The installer prompts for the NCBI email — no JSON editing. Note: `.mcpb` installs do **not** auto-load the companion `med-research` skill; copy it in manually (Step 4).
 
 ### Cursor / generic JSON (`mcpServers`)
 ```json
@@ -69,12 +69,10 @@ mcp_servers:
       NCBI_EMAIL: "you@example.com"
       # optional:
       # NCBI_API_KEY: "..."
-      # PUBMED_LLM_PROVIDER: "openai"
-      # PUBMED_LLM_API_KEY: "sk-..."
 ```
 
 ### Direct library import (Biohacking-IDE / any TS project)
-Add as a git submodule (or dependency), then `import { searchPubMed, gradeArticle } from "med-research-mcp/core"` and `import { createCache } from "med-research-mcp/core/cache"`. The dual ESM+CJS build means both ESM and CommonJS consumers work.
+Add as a git submodule (or dependency), then `import { searchLiterature, fetchLiterature, fetchFulltext } from "med-research-mcp/core"` and `import { createCache } from "med-research-mcp/core/cache"`. The dual ESM+CJS build means both ESM and CommonJS consumers work.
 
 ## Step 3 — Environment reference
 
@@ -87,9 +85,9 @@ Add as a git submodule (or dependency), then `import { searchPubMed, gradeArticl
 
 ## Step 4 — Install the companion usage skill
 
-So the AI actually uses the tools well, install `pubmed-research`:
+So the AI actually uses the tools well, install `med-research`:
 ```bash
-mkdir -p ~/.claude/skills && cp -r <REPO>/skills/pubmed-research ~/.claude/skills/
+mkdir -p ~/.claude/skills && cp -r <REPO>/skills/med-research ~/.claude/skills/
 ```
 (Use `.claude/skills/` for a single project.)
 

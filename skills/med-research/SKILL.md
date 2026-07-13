@@ -1,5 +1,5 @@
 ---
-name: pubmed-research
+name: med-research
 description: Use when researching biomedical, supplement, peptide, or biohacking evidence with the med-research-mcp MCP server (tools literature_search, literature_fetch, literature_fulltext). Covers writing precise PubMed queries with field tags, reading the evidence grades (0-5 scores, study types, confidence), choosing between search/fetch/fulltext, and multi-database searches. Trigger on questions about what the research/evidence says for a compound, dose, intervention, or biomarker.
 ---
 

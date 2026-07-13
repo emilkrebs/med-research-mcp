@@ -62,7 +62,7 @@ Fetch full metadata and abstracts for one or more ids from a specific database. 
 
 ### `literature_fulltext`
 
-Fetch an article's full text as markdown via DOI — database-agnostic. Same resolution chain as `pubmed_fulltext` (Unpaywall → proxy → direct DOI), but works for any source. Pass the `doi` from a `literature_search` result for non-PubMed articles.
+Fetch an article's full text as markdown via DOI — database-agnostic. Tries Unpaywall (open access), institutional proxy (if configured), and direct DOI access; falls back to abstract-only if paywalled. Pass the `doi` from a `literature_search` result for non-PubMed articles.
 
 | Parameter | Type | Required | Notes |
 | --- | --- | --- | --- |
@@ -85,7 +85,7 @@ Study types are ordered highest evidence quality first. The keyword grader tries
 
 **Confidence.** When no curated `PublicationType` tag is available, confidence is `positiveHits * 0.4 + 0.2`, capped at `1`. Negative keywords (e.g. `study protocol`, future-tense `we will`, `unlike previous randomized trials…`) halve the confidence and are recorded as a limitation. A curated PubMed tag alone scores `0.85`–`0.95` confidence depending on whether the keyword pass corroborates it.
 
-**Known keyword-path weaknesses** (apply to `pubmed_search` and `literature_search`):
+**Known keyword-path weaknesses** (apply to `literature_search`):
 
 - Protocol papers ("we will randomize...") can misread as completed RCTs.
 - Meta-analyses that pool poor-quality underlying studies still score a flat `5`.
@@ -101,7 +101,7 @@ For papers where the keyword grade is suspicious, fetch the full abstract with `
 | `NCBI_EMAIL` | Recommended | Contact email sent with every NCBI request, as NCBI's usage policy asks. |
 | `NCBI_API_KEY` | No | Raises the NCBI rate limit from 3 to 10 requests/second. |
 | `PUBMED_UNPAYWALL_EMAIL` | No | Contact email for Unpaywall open-access lookups (used by `*_fulltext`). Falls back to `NCBI_EMAIL` if unset. |
-| `PUBMED_CACHE_BACKEND` | No | `memory` (default). `sqlite` is planned for v0.2. |
+| `PUBMED_CACHE_BACKEND` | No | `memory` (default). `sqlite` is planned for a future release. |
 | `PUBMED_CACHE_PATH` | No | Path for the cache file, when using a persistent backend. |
 
 ## MCP client setup
@@ -112,7 +112,7 @@ For papers where the keyword grade is suspicious, fetch the full abstract with `
 mcp_servers:
   med-research-mcp:
     command: npx
-    args: ["tsx", "/path/to/med-research-mcp/src/mcp/index.ts"]
+    args: ["tsx", "/path/to/pubmed-bio-mcp/src/mcp/index.ts"]
     env:
       NCBI_EMAIL: "you@example.com"
       NCBI_API_KEY: ""
@@ -127,7 +127,7 @@ Run `npm run build` first, then point the client at the built output:
   "mcpServers": {
     "med-research-mcp": {
       "command": "node",
-      "args": ["/path/to/med-research-mcp/dist/mcp/index.js"],
+      "args": ["/path/to/pubmed-bio-mcp/dist/mcp/index.js"],
       "env": {
         "NCBI_EMAIL": "you@example.com",
         "NCBI_API_KEY": ""
@@ -149,8 +149,8 @@ Then drag the resulting `dist/med-research-mcp.mcpb` onto Claude Desktop. The in
 
 This repo ships two [Agent Skills](skills/) that make the MCP self-guiding:
 
-- **[pubmed-research](skills/pubmed-research/SKILL.md)** — teaches an AI how to drive the three tools: writing precise PubMed queries with field tags, reading evidence grades (scores, confidence, limitations), when to use `literature_fetch` vs `literature_fulltext`, multi-database searches, and how to report findings (cite PMIDs, surface red flags, not-medical-advice).
-- **[pubmed-mcp-setup](skills/pubmed-mcp-setup/SKILL.md)** — guides an AI helping a user install, configure, and troubleshoot the server across clients (Claude Code, Claude Desktop `.mcpb`, Cursor, Hermes) and credentials.
+- **[med-research](skills/med-research/SKILL.md)** — teaches an AI how to drive the three tools: writing precise PubMed queries with field tags, reading evidence grades (scores, confidence, limitations), when to use `literature_fetch` vs `literature_fulltext`, multi-database searches, and how to report findings (cite PMIDs, surface red flags, not-medical-advice).
+- **[med-research-setup](skills/med-research-setup/SKILL.md)** — guides an AI helping a user install, configure, and troubleshoot the server across clients (Claude Code, Claude Desktop `.mcpb`, Cursor, Hermes) and credentials.
 
 Install them into Claude Code so they activate alongside the MCP:
 
@@ -221,12 +221,11 @@ Every failure path surfaces a typed `PubMedError`:
 
 **Out of scope (for now):**
 - Persistent (SQLite) caching — planned for v0.4.
-- Batch/bulk LLM deep-grading of multiple papers in one call.
 - Any storage or transmission of PHI/patient data.
 
 ## Medical disclaimer
 
-`med-research-mcp` is a research and evidence-triage tool. It does not provide medical advice, diagnosis, or treatment recommendations, and its evidence grades — whether keyword- or LLM-derived — are heuristics, not a substitute for clinical judgement or a qualified professional. Always verify findings against the primary source and consult a healthcare provider before making medical or supplementation decisions.
+`med-research-mcp` is a research and evidence-triage tool. It does not provide medical advice, diagnosis, or treatment recommendations, and its evidence grades are heuristics, not a substitute for clinical judgement or a qualified professional. Always verify findings against the primary source and consult a healthcare provider before making medical or supplementation decisions.
 
 ## License
 
