@@ -50,9 +50,9 @@ export interface FulltextDeps {
   htmlToMarkdown?: (html: string, url: string) => Promise<string>;
   /** Extract plain text from a PDF. */
   pdfToText?: (bytes: Uint8Array) => Promise<string>;
-  /** Institutional proxy prefix. Defaults to $PUBMED_PROXY_PREFIX. */
+  /** Institutional proxy prefix. Defaults to $MED_RESEARCH_PROXY_PREFIX. */
   proxyPrefix?: string;
-  /** Character cap on the returned text. Defaults to $PUBMED_FULLTEXT_MAX_CHARS, then 50000. */
+  /** Character cap on the returned text. Defaults to $MED_RESEARCH_FULLTEXT_MAX_CHARS, then 50000. */
   maxChars?: number;
   /** Per-fetch timeout in ms. Default 20000. */
   timeoutMs?: number;
@@ -78,25 +78,25 @@ export async function fetchFulltext(
   client: NcbiClient = new NcbiClient(),
   deps: FulltextDeps = {},
 ): Promise<FulltextOutput> {
-  const pmid = String(input.pmid ?? "").trim();
+  const id = String(input.id ?? "").trim();
   // A numeric PMID or a supplied DOI is enough to proceed. Non-PubMed ids
   // (SciELO "S0102-…", ChinaRXiv, …) aren't numeric but arrive with a DOI, and
   // DOI-based resolution is database-agnostic — so `literature_fulltext` works
   // for them. Without either, there's nothing to resolve.
-  if (!/^\d+$/.test(pmid) && !normalizeDoi(input.doi)) {
-    throw errors.notFound(String(input.pmid ?? ""));
+  if (!/^\d+$/.test(id) && !normalizeDoi(input.doi)) {
+    throw errors.notFound(String(input.id ?? ""));
   }
 
   const maxChars = deps.maxChars ?? envMaxChars() ?? DEFAULT_MAX_CHARS;
   const now = deps.now ?? Date.now;
 
   // 1. Cache hit — return immediately, re-clamped to the current limit.
-  const cached = cache.getFulltext(pmid);
+  const cached = cache.getFulltext(id);
   if (cached) {
     const { text, truncated } = clamp(cached.fulltext, maxChars);
-    const knownDoi = normalizeDoi(input.doi) ?? normalizeDoi(cache.getSummary(pmid)?.doi);
+    const knownDoi = normalizeDoi(input.doi) ?? normalizeDoi(cache.getSummary(id)?.doi);
     return {
-      pmid,
+      id,
       ...(knownDoi ? { doi: knownDoi } : {}),
       source: cached.source as FulltextSource,
       fulltext: text,
@@ -106,18 +106,18 @@ export async function fetchFulltext(
   }
 
   // 2. Resolve a DOI (from the argument, a cached summary, or a fresh esummary).
-  let article = cache.getSummary(pmid);
+  let article = cache.getSummary(id);
   let doi = normalizeDoi(input.doi) ?? normalizeDoi(article?.doi);
   if (!doi) {
     if (!article) {
-      const summaries = await client.esummary([pmid]);
-      article = summaries.get(pmid) ?? null;
-      if (article) cache.setSummary(pmid, article);
+      const summaries = await client.esummary([id]);
+      article = summaries.get(id) ?? null;
+      if (article) cache.setSummary(id, article);
     }
     doi = normalizeDoi(article?.doi);
   }
 
-  const proxyPrefix = (deps.proxyPrefix ?? process.env.PUBMED_PROXY_PREFIX)?.trim() || undefined;
+  const proxyPrefix = (deps.proxyPrefix ?? process.env.MED_RESEARCH_PROXY_PREFIX)?.trim() || undefined;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const fetchUrl = deps.fetchUrl ?? defaultFetchUrl;
   const htmlToMarkdown = deps.htmlToMarkdown ?? defaultHtmlToMarkdown;
@@ -125,13 +125,13 @@ export async function fetchFulltext(
 
   // No DOI → nothing to hand to a publisher/OA lookup. Degrade to the abstract.
   if (!doi) {
-    if (!article) throw errors.notFound(pmid);
-    const abstract = await resolveAbstract(pmid, article, cache, client);
+    if (!article) throw errors.notFound(id);
+    const abstract = await resolveAbstract(id, article, cache, client);
     return noneResult(
-      pmid,
+      id,
       undefined,
       abstract,
-      "Could not resolve a DOI for this PMID, so no full-text source could be tried. Returned the abstract only.",
+      "Could not resolve a DOI for this id, so no full-text source could be tried. Returned the abstract only.",
     );
   }
 
@@ -174,7 +174,7 @@ export async function fetchFulltext(
     for (const url of attempt.urls) {
       const resolved = await extract(url);
       if (!resolved) continue;
-      cache.setFulltext(pmid, {
+      cache.setFulltext(id, {
         source: attempt.source,
         fulltext: resolved.fulltext,
         format: resolved.format,
@@ -182,7 +182,7 @@ export async function fetchFulltext(
       });
       const { text, truncated } = clamp(resolved.fulltext, maxChars);
       return {
-        pmid,
+        id,
         doi,
         source: attempt.source,
         fulltext: text,
@@ -193,8 +193,8 @@ export async function fetchFulltext(
   }
 
   // 4. Fallback — nothing resolved. Return the abstract with actionable guidance.
-  const abstract = await resolveAbstract(pmid, article, cache, client);
-  return noneResult(pmid, doi, abstract, paywallWarning(Boolean(proxyPrefix)));
+  const abstract = await resolveAbstract(id, article, cache, client);
+  return noneResult(id, doi, abstract, paywallWarning(Boolean(proxyPrefix)));
 }
 
 // ─── Resolution helpers ─────────────────────────────────────────
@@ -212,19 +212,19 @@ function proxyUrl(prefix: string, doi: string): string {
 }
 
 async function resolveAbstract(
-  pmid: string,
+  id: string,
   article: Article | null,
   cache: Cache,
   client: NcbiClient,
 ): Promise<string | undefined> {
-  const cached = cache.getAbstract(pmid);
+  const cached = cache.getAbstract(id);
   if (cached) return cached;
   if (article?.abstract) return article.abstract;
   try {
-    const fetched = await client.efetch([pmid]);
-    const abstract = fetched.get(pmid)?.abstract;
+    const fetched = await client.efetch([id]);
+    const abstract = fetched.get(id)?.abstract;
     if (abstract) {
-      cache.setAbstract(pmid, abstract);
+      cache.setAbstract(id, abstract);
       return abstract;
     }
   } catch {
@@ -234,13 +234,13 @@ async function resolveAbstract(
 }
 
 function noneResult(
-  pmid: string,
+  id: string,
   doi: string | undefined,
   abstract: string | undefined,
   warning: string,
 ): FulltextOutput {
   return {
-    pmid,
+    id,
     ...(doi ? { doi } : {}),
     source: "none",
     ...(abstract ? { fulltext: abstract } : {}),
@@ -253,7 +253,7 @@ function noneResult(
 function paywallWarning(proxyConfigured: boolean): string {
   return proxyConfigured
     ? "Full text unavailable — no open-access copy and the configured proxy did not return the article. Returned the abstract only."
-    : "Full text unavailable — paywalled. Consider adding an institutional proxy via PUBMED_PROXY_PREFIX. Returned the abstract only.";
+    : "Full text unavailable — paywalled. Consider adding an institutional proxy via MED_RESEARCH_PROXY_PREFIX. Returned the abstract only.";
 }
 
 function clamp(text: string, maxChars: number): { text: string; truncated: boolean } {
@@ -273,7 +273,7 @@ function normalizeDoi(doi: string | undefined): string | undefined {
 }
 
 function envMaxChars(): number | undefined {
-  const raw = process.env.PUBMED_FULLTEXT_MAX_CHARS;
+  const raw = process.env.MED_RESEARCH_FULLTEXT_MAX_CHARS;
   if (!raw) return undefined;
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : undefined;

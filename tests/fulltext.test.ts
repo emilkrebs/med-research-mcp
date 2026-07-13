@@ -66,14 +66,14 @@ describe("fetchFulltext resolution strategy", () => {
       htmlToMarkdown: async () => LONG_MARKDOWN,
     };
 
-    const out = await fetchFulltext({ pmid: "12345678" }, cache, client, deps);
+    const out = await fetchFulltext({ id: "12345678" }, cache, client, deps);
     expect(out.source).toBe("unpaywall");
     expect(out.format).toBe("markdown");
     expect(out.doi).toBe(DOI);
     expect(out.truncated).toBe(false);
     expect(out.fulltext).toContain("Methods");
 
-    const out2 = await fetchFulltext({ pmid: "12345678" }, cache, client, deps);
+    const out2 = await fetchFulltext({ id: "12345678" }, cache, client, deps);
     expect(out2.source).toBe("unpaywall");
     expect(out2.doi).toBe(DOI);
     // Cache hit — the network fetch ran only for the first call.
@@ -89,7 +89,7 @@ describe("fetchFulltext resolution strategy", () => {
       htmlToMarkdown: async () => LONG_MARKDOWN,
     };
 
-    const out = await fetchFulltext({ pmid: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), deps);
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), deps);
     expect(out.source).toBe("proxy");
     expect(fetchUrl).toHaveBeenCalledWith("https://doi-org.ezproxy.your-university.edu/10.1000/xyz123", expect.any(Number));
   });
@@ -98,7 +98,7 @@ describe("fetchFulltext resolution strategy", () => {
     const fetchUrl = vi.fn(async (url: string) => (url.startsWith("https://doi.org/") ? htmlResource("<x/>", url) : paywalled()));
     const deps: FulltextDeps = { unpaywall: fakeUnpaywall(null), fetchUrl, htmlToMarkdown: async () => LONG_MARKDOWN };
 
-    const out = await fetchFulltext({ pmid: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), deps);
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), deps);
     expect(out.source).toBe("direct");
     expect(fetchUrl).toHaveBeenCalledWith("https://doi.org/10.1000/xyz123", expect.any(Number));
   });
@@ -110,7 +110,7 @@ describe("fetchFulltext resolution strategy", () => {
       pdfToText: async () => "Full PDF text. " + "content ".repeat(200),
     };
 
-    const out = await fetchFulltext({ pmid: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), deps);
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), deps);
     expect(out.format).toBe("pdf");
     expect(out.source).toBe("unpaywall");
     expect(out.fulltext).toContain("Full PDF text");
@@ -123,7 +123,7 @@ describe("fetchFulltext resolution strategy", () => {
     };
 
     const out = await fetchFulltext(
-      { pmid: "12345678", doi: DOI },
+      { id: "12345678", doi: DOI },
       new LRUBackend(),
       fakeClient({ abstract: "The full abstract text." }),
       deps,
@@ -131,7 +131,7 @@ describe("fetchFulltext resolution strategy", () => {
     expect(out.source).toBe("none");
     expect(out.fulltext).toBe("The full abstract text.");
     expect(out.warning).toMatch(/paywalled/i);
-    expect(out.warning).toMatch(/PUBMED_PROXY_PREFIX/);
+    expect(out.warning).toMatch(/MED_RESEARCH_PROXY_PREFIX/);
   });
 
   it("adjusts the fallback warning when a proxy is already configured", async () => {
@@ -140,9 +140,9 @@ describe("fetchFulltext resolution strategy", () => {
       proxyPrefix: "https://doi-org.ezproxy.your-university.edu",
       fetchUrl: async () => paywalled(),
     };
-    const out = await fetchFulltext({ pmid: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ abstract: "abs" }), deps);
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ abstract: "abs" }), deps);
     expect(out.source).toBe("none");
-    expect(out.warning).not.toMatch(/PUBMED_PROXY_PREFIX/);
+    expect(out.warning).not.toMatch(/MED_RESEARCH_PROXY_PREFIX/);
   });
 
   it("treats a sub-threshold extraction as a paywall stub, not full text", async () => {
@@ -151,7 +151,7 @@ describe("fetchFulltext resolution strategy", () => {
       fetchUrl: async () => htmlResource("<x/>"),
       htmlToMarkdown: async () => "Access this article for $39.95",
     };
-    const out = await fetchFulltext({ pmid: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ abstract: "abs" }), deps);
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ abstract: "abs" }), deps);
     expect(out.source).toBe("none");
   });
 
@@ -162,19 +162,19 @@ describe("fetchFulltext resolution strategy", () => {
       htmlToMarkdown: async () => "A".repeat(5000),
       maxChars: 1000,
     };
-    const out = await fetchFulltext({ pmid: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), deps);
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), deps);
     expect(out.truncated).toBe(true);
     expect(out.fulltext).toHaveLength(1000);
   });
 
-  it("skips the PMID→DOI lookup when a DOI is supplied", async () => {
+  it("skips the id→DOI lookup when a DOI is supplied", async () => {
     const onEsummary = vi.fn();
     const deps: FulltextDeps = {
       unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["u"] }),
       fetchUrl: async () => htmlResource("<x/>"),
       htmlToMarkdown: async () => LONG_MARKDOWN,
     };
-    const out = await fetchFulltext({ pmid: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ onEsummary }), deps);
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ onEsummary }), deps);
     expect(out.source).toBe("unpaywall");
     expect(onEsummary).not.toHaveBeenCalled();
   });
@@ -186,19 +186,19 @@ describe("fetchFulltext resolution strategy", () => {
       fetchUrl: async () => htmlResource("<x/>"),
       htmlToMarkdown: async () => LONG_MARKDOWN,
     };
-    await fetchFulltext({ pmid: "12345678", doi: "https://doi.org/10.1000/xyz123" }, new LRUBackend(), fakeClient(), deps);
+    await fetchFulltext({ id: "12345678", doi: "https://doi.org/10.1000/xyz123" }, new LRUBackend(), fakeClient(), deps);
     expect(resolve).toHaveBeenCalledWith(DOI);
   });
 
-  it("throws NOT_FOUND for a non-numeric PMID", async () => {
-    await expect(fetchFulltext({ pmid: "not-a-pmid" }, new LRUBackend(), fakeClient())).rejects.toBeInstanceOf(
+  it("throws NOT_FOUND for a non-numeric id", async () => {
+    await expect(fetchFulltext({ id: "not-a-pmid" }, new LRUBackend(), fakeClient())).rejects.toBeInstanceOf(
       ResearchApiException,
     );
   });
 
-  it("throws NOT_FOUND when the PMID has no summary and no DOI", async () => {
+  it("throws NOT_FOUND when the id has no summary and no DOI", async () => {
     await expect(
-      fetchFulltext({ pmid: "99999999" }, new LRUBackend(), fakeClient({ summary: null })),
+      fetchFulltext({ id: "99999999" }, new LRUBackend(), fakeClient({ summary: null })),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });
@@ -230,7 +230,7 @@ describe("UnpaywallClient", () => {
   });
 
   it("does not query without a contact email", async () => {
-    vi.stubEnv("PUBMED_UNPAYWALL_EMAIL", "");
+    vi.stubEnv("MED_RESEARCH_UNPAYWALL_EMAIL", "");
     vi.stubEnv("NCBI_EMAIL", "");
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
@@ -286,7 +286,7 @@ describe("default extraction (real libraries)", () => {
       "<p>Creatine improved memory in a randomized controlled trial with 40 healthy adults over 12 weeks.</p>";
     const html = `<html><body><nav>menu</nav><article><h1>Study Title</h1>${paragraph.repeat(20)}</article><footer>ads</footer></body></html>`;
 
-    const out = await fetchFulltext({ pmid: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), {
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), {
       unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://oa.example/article"] }),
       fetchUrl: async () => htmlResource(html),
       // htmlToMarkdown left as the real default (jsdom + readability + turndown)

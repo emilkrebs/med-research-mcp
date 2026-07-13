@@ -40,11 +40,11 @@ const STUDY_TYPES = [
 ] as const;
 
 function buildCache(): Cache {
-  const backend = (process.env.PUBMED_CACHE_BACKEND ?? "memory") as CacheBackend;
+  const backend = (process.env.MED_RESEARCH_CACHE_BACKEND ?? "memory") as CacheBackend;
   try {
     return createCache({
       backend,
-      ...(process.env.PUBMED_CACHE_PATH ? { path: process.env.PUBMED_CACHE_PATH } : {}),
+      ...(process.env.MED_RESEARCH_CACHE_PATH ? { path: process.env.MED_RESEARCH_CACHE_PATH } : {}),
     });
   } catch (err) {
     console.error(
@@ -61,10 +61,10 @@ const cache = buildCache();
 // spaces *every* request so concurrent tool calls don't blow past NCBI's limit.
 const ncbi = new NcbiClient();
 
-// PubMed adapter bound to the shared NcbiClient so the literature_* tools reuse
-// the same rate limiter as the pubmed_* tools (the registry's default adapter
-// would otherwise create a second one).
-const pubmedAdapter = new PubMedAdapter(ncbi);
+// NCBI adapter bound to the shared NcbiClient so all literature_* tools reuse
+// the same rate limiter (the registry's default adapter would otherwise create
+// a second client).
+const ncbiAdapter = new PubMedAdapter(ncbi);
 
 function toIdList(database?: string | string[]): string[] {
   if (database == null) return ["pubmed"];
@@ -74,12 +74,12 @@ function toIdList(database?: string | string[]): string[] {
 
 /** Adapters for a search, with the shared-client PubMed adapter swapped in. */
 function resolveAdapters(database?: string | string[]): DatabaseAdapter[] {
-  return getAdapters(toIdList(database)).map((a) => (a.id === "pubmed" ? pubmedAdapter : a));
+  return getAdapters(toIdList(database)).map((a) => (a.id === "pubmed" ? ncbiAdapter : a));
 }
 
 /** Single adapter for a fetch, with the shared-client PubMed adapter swapped in. */
 function resolveAdapter(database: string): DatabaseAdapter | undefined {
-  if (database === "pubmed") return pubmedAdapter;
+  if (database === "pubmed") return ncbiAdapter;
   return getAdapters([database])[0];
 }
 
@@ -89,9 +89,9 @@ if (!process.env.NCBI_EMAIL) {
   );
 }
 
-if (!process.env.PUBMED_UNPAYWALL_EMAIL && !process.env.NCBI_EMAIL) {
+if (!process.env.MED_RESEARCH_UNPAYWALL_EMAIL && !process.env.NCBI_EMAIL) {
   console.error(
-    "[med-research-mcp] Neither PUBMED_UNPAYWALL_EMAIL nor NCBI_EMAIL is set. literature_fulltext needs a contact email to query Unpaywall for open-access copies; without one it can only try the institutional proxy and direct DOI access.",
+    "[med-research-mcp] Neither MED_RESEARCH_UNPAYWALL_EMAIL nor NCBI_EMAIL is set. literature_fulltext needs a contact email to query Unpaywall for open-access copies; without one it can only try the institutional proxy and direct DOI access.",
   );
 }
 
@@ -217,7 +217,7 @@ server.registerTool(
 // ─── literature_fulltext ────────────────────────────────────────
 
 const literatureFulltextShape = {
-  pmid: z.string().describe("Article id — a PMID, or a non-PubMed database's id (then a DOI is required below)."),
+  id: z.string().describe("Article id — a database-specific identifier (PMID, SciELO id, etc.). When the id is not a numeric PMID, a DOI is required below."),
   doi: z
     .string()
     .optional()
@@ -238,7 +238,7 @@ server.registerTool(
   },
   async (args) => {
     try {
-      const result = await fetchFulltext({ pmid: args.pmid, ...(args.doi ? { doi: args.doi } : {}) }, cache, ncbi);
+      const result = await fetchFulltext({ id: args.id, ...(args.doi ? { doi: args.doi } : {}) }, cache, ncbi);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };

@@ -35,7 +35,7 @@ export interface UnpaywallResult {
 }
 
 export interface UnpaywallConfig {
-  /** Contact email required by Unpaywall. Defaults to $PUBMED_UNPAYWALL_EMAIL, then $NCBI_EMAIL. */
+  /** Contact email required by Unpaywall. Defaults to $MED_RESEARCH_UNPAYWALL_EMAIL, then $NCBI_EMAIL. */
   email?: string;
   /** Per-request timeout in ms. Default 15000. */
   timeoutMs?: number;
@@ -46,7 +46,7 @@ export class UnpaywallClient {
   private readonly timeoutMs: number;
 
   constructor(config: UnpaywallConfig = {}) {
-    this.email = config.email ?? process.env.PUBMED_UNPAYWALL_EMAIL ?? process.env.NCBI_EMAIL;
+    this.email = config.email ?? process.env.MED_RESEARCH_UNPAYWALL_EMAIL ?? process.env.NCBI_EMAIL;
     this.timeoutMs = config.timeoutMs ?? 15_000;
   }
 

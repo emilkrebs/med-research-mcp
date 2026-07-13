@@ -2,12 +2,11 @@
  * Multi-database dispatch layer.
  *
  * `searchLiterature` fans a query out to one or more {@link DatabaseAdapter}s,
- * grades every result with the same keyword grader used for PubMed, merges the
+ * grades every result with the same keyword grader, merges the
  * lists, de-duplicates by DOI (keeping the higher-scored copy), and sorts by
  * evidence score. `fetchLiterature` fetches specific ids from one database.
  *
- * This is a new, parallel code path — the v0.2.0 `searchPubMed`/`fetchPubMed`
- * functions are untouched. Non-PubMed articles lack NLM PublicationType tags, so
+ * Non-PubMed articles lack NLM PublicationType tags, so
  * they are graded keyword-only (lower confidence) and PubMed results typically
  * rank higher in the merged list. Callers should treat non-PubMed scores as less
  * reliable.
@@ -28,7 +27,7 @@ import type {
 
 const MAX_RESULTS_CAP = 50;
 
-/** Database omitted → PubMed only. Explicit "all" (handled by getAdapters) fans out. */
+/** Database omitted → defaults to pubmed. Explicit "all" (handled by getAdapters) fans out. */
 function toIdList(database: SearchInput["database"]): string[] {
   if (database == null) return ["pubmed"];
   const list = Array.isArray(database) ? database : [database];
@@ -126,7 +125,7 @@ export async function searchLiterature(
 
 /**
  * Fetch full metadata for specific ids from a single database.
- * Pure data — no grading — mirroring `fetchPubMed`.
+ * Pure data — no grading.
  *
  * @param adapter explicit adapter; defaults to the one named by `input.database`.
  */
@@ -140,7 +139,7 @@ export async function fetchLiterature(
     return {
       articles: [],
       missing: input.ids,
-      warnings: [`Unknown database: ${input.database}. Known: pubmed, scielo, cyberleninka, europepmc, chinaxiv, jstage.`],
+      warnings: [`Unknown database: ${input.database}. Known: pubmed, scielo, europepmc, chinaxiv, russiarxiv.`],
     };
   }
 

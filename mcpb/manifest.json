@@ -20,9 +20,9 @@
       "env": {
         "NCBI_EMAIL": "${user_config.ncbiEmail}",
         "NCBI_API_KEY": "${user_config.ncbiApiKey}",
-        "PUBMED_UNPAYWALL_EMAIL": "${user_config.unpaywallEmail}",
-        "PUBMED_PROXY_PREFIX": "${user_config.proxyPrefix}",
-        "PUBMED_CACHE_BACKEND": "memory"
+        "MED_RESEARCH_UNPAYWALL_EMAIL": "${user_config.unpaywallEmail}",
+        "MED_RESEARCH_PROXY_PREFIX": "${user_config.proxyPrefix}",
+        "MED_RESEARCH_CACHE_BACKEND": "memory"
       }
     }
   },

@@ -408,7 +408,7 @@ export async function fetchPubMed(
   const missing: string[] = [];
 
   // Summaries first (cache-aware).
-  const needSummary = input.pmids.filter((pmid) => {
+  const needSummary = input.ids.filter((pmid) => {
     const cached = cache.getSummary(pmid);
     if (cached) {
       allArticles.set(pmid, cached);
@@ -426,7 +426,7 @@ export async function fetchPubMed(
   }
 
   // Check which PMIDs we couldn't get summaries for.
-  for (const pmid of input.pmids) {
+  for (const pmid of input.ids) {
     if (!allArticles.has(pmid)) missing.push(pmid);
   }
 
@@ -464,7 +464,7 @@ export async function fetchPubMed(
 
   // Assemble in input order.
   const articles: Article[] = [];
-  for (const pmid of input.pmids) {
+  for (const pmid of input.ids) {
     const article = allArticles.get(pmid);
     if (article) articles.push(article);
   }
