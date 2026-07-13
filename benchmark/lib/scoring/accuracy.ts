@@ -105,20 +105,31 @@ function parseJudgeScore(raw: string): number {
   return loose ? Math.max(0, Math.min(10, Number(loose[1]))) : 0;
 }
 
+/** In-process cache so identical (query + answer) pairs are judged only once. */
+const judgeCache = new Map<string, Promise<number>>();
+
 async function scoreRubric(rubric: string, query: BenchmarkQuery, answer: string, audit: CitationAudit): Promise<number> {
   if (!answer.trim()) return 0;
-  const prompt =
-    `QUESTION:\n${query.prompt}\n\n` +
-    `RUBRIC:\n${rubric}\n\n` +
-    `CANDIDATE ANSWER:\n${answer}\n\n` +
-    `VERIFIED SOURCES:\n${sourcesBlock(audit)}`;
-  const result = await generateText({
-    model: await judgeModel(),
-    system: JUDGE_SYSTEM,
-    prompt,
-    temperature: 0,
-  });
-  return parseJudgeScore(result.text);
+  // Key on query id + full answer text — audit is deterministic from the answer.
+  const cacheKey = `${query.id}\0${answer}`;
+  const cached = judgeCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const promise = (async () => {
+    const prompt =
+      `QUESTION:\n${query.prompt}\n\n` +
+      `RUBRIC:\n${rubric}\n\n` +
+      `CANDIDATE ANSWER:\n${answer}\n\n` +
+      `VERIFIED SOURCES:\n${sourcesBlock(audit)}`;
+    const result = await generateText({
+      model: await judgeModel(),
+      system: JUDGE_SYSTEM,
+      prompt,
+      temperature: 0,
+    });
+    return parseJudgeScore(result.text);
+  })();
+  judgeCache.set(cacheKey, promise);
+  return promise;
 }
 
 /** Compute the 0–10 accuracy for a (non-bullshit) run. Bullshit queries score in score.ts. */

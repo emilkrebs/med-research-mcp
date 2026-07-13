@@ -16,7 +16,7 @@
 
 import "./lib/loadenv.js"; // MUST be first — populates process.env before config/providers read it
 import { parseArgs } from "node:util";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CONDITIONS, DEFAULTS, JUDGE, MODELS, NORMALIZATION, WEIGHTS, type ModelSpec } from "./lib/config.js";
 import { QUERIES, queryById } from "./lib/queries.js";
@@ -43,6 +43,7 @@ Usage: npx tsx benchmark/run.ts [options]
   --max-steps <n>     agent tool-call rounds (default ${DEFAULTS.maxSteps})
   --concurrency <n>   parallel runs (default 1; NCBI rate limits favor 1)
   --out <dir>         output root (default benchmark/results)
+  --resume <dir>      reuse raw RunRecord JSONs from an existing results dir; only re-run missing jobs
   --publish           full run (3 runs, all models/conditions) + report
   --dry-run           print the plan and preflight, make no API calls
   --help
@@ -168,6 +169,7 @@ async function main(): Promise<void> {
       "max-steps": { type: "string" },
       concurrency: { type: "string" },
       out: { type: "string" },
+      resume: { type: "string" },
       publish: { type: "boolean" },
       "dry-run": { type: "boolean" },
       help: { type: "boolean" },
@@ -186,6 +188,7 @@ async function main(): Promise<void> {
   const maxSteps = Number(values["max-steps"] ?? DEFAULTS.maxSteps);
   const concurrency = Math.max(1, Number(values.concurrency ?? 1));
   const outRoot = values.out ?? join("benchmark", "results");
+  const resumeDir = values.resume as string | undefined;
 
   // Build the job matrix.
   const jobs: Job[] = [];
@@ -193,6 +196,23 @@ async function main(): Promise<void> {
     for (const condition of conditions) for (const model of models) for (let run = 1; run <= runs; run++) jobs.push({ query, condition, model, run });
 
   const unverified = queries.filter((q) => !q.verified).map((q) => q.id);
+
+  // Load existing raw records if --resume was specified.
+  const resumeRecords = new Map<string, RunRecord>();
+  if (resumeDir) {
+    const resumeRawDir = join(resumeDir, "raw");
+    try {
+      const files = await readdir(resumeRawDir);
+      for (const file of files) {
+        if (!file.endsWith(".json")) continue;
+        const content = await readFile(join(resumeRawDir, file), "utf-8");
+        resumeRecords.set(file, JSON.parse(content) as RunRecord);
+      }
+      console.log(`Loaded ${resumeRecords.size} existing records from ${resumeRawDir}`);
+    } catch {
+      console.warn(`⚠️  Could not read resume dir: ${resumeDir}`);
+    }
+  }
 
   console.log(
     `Plan: ${queries.length} queries × ${conditions.length} conditions × ${models.length} models × ${runs} runs = ${jobs.length} responses`,
@@ -230,8 +250,10 @@ async function main(): Promise<void> {
   let done = 0;
 
   await mapPool(jobs, concurrency, async (job) => {
-    const record: RunRecord = await runOne(job.query, job.condition, job.model, job.run, { temperature, maxSteps });
     const filename = `${job.query.id}-${job.condition}-${job.model.label}-run-${String(job.run).padStart(2, "0")}.json`;
+    const resumed = resumeRecords.get(filename);
+    const record: RunRecord = resumed ?? await runOne(job.query, job.condition, job.model, job.run, { temperature, maxSteps });
+    if (resumed) console.log(`  ↩  Reusing existing: ${filename}`);
     await writeFile(join(rawDir, filename), JSON.stringify(record, null, 2));
 
     // Scoring hits the network (PubMed verification, LLM judge). A transient

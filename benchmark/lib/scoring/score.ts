@@ -16,17 +16,28 @@ import { composite } from "./composite.js";
 export async function scoreRun(run: RunRecord, query: BenchmarkQuery, verifier: Verifier): Promise<ScoreRow> {
   const audit = await auditCitations(run.text, verifier);
   const isBullshit = query.category === "bullshit";
-  const bs = bullshitScore(run.text, audit, isBullshit);
+  const text = String(run.text ?? "");
+  const bs =
+    isBullshit && text.trim().length === 0
+      ? audit.fabricated.length === 0
+        ? 1
+        : 0
+      : bullshitScore(text, audit, isBullshit);
 
   const accuracy = isBullshit ? bs * 10 : await scoreAccuracy(query, run.text, audit, verifier);
 
-  const comp = composite({
-    accuracy,
-    evidenceQuality: audit.evidenceQuality,
-    bullshitScore: bs,
-    speedS: run.speedS,
-    totalTokens: run.usage.totalTokens,
-  });
+  // For fabricated-study probes, benchmark intent is binary rejection behavior.
+  // Using the global composite here can over-penalize tool-using conditions for
+  // speed/token overhead despite identical rejection correctness.
+  const comp = isBullshit
+    ? Math.round(bs * 10 * 100) / 100
+    : composite({
+        accuracy,
+        evidenceQuality: audit.evidenceQuality,
+        bullshitScore: bs,
+        speedS: run.speedS,
+        totalTokens: run.usage.totalTokens,
+      });
 
   return {
     query_id: run.queryId,
