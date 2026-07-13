@@ -24,6 +24,12 @@ export interface ModelSpec {
   apiKeyEnv: string;
   /** Optional env var holding a custom base URL (proxy, local server, Azure, etc.). */
   baseUrlEnv?: string;
+  /**
+   * OpenAI-provider compatibility mode. Set to `'compatible'` for endpoints that
+   * use the legacy `role:"function"` tool format (e.g. DashScope, Ollama).
+   * Defaults to `'strict'` (standard OpenAI tool-call format).
+   */
+  compatibility?: "strict" | "compatible";
 }
 
 /**
@@ -54,6 +60,14 @@ export const MODELS: ModelSpec[] = [
     modelId: "deepseek-v4-flash",
     apiKeyEnv: "DEEPSEEK_API_KEY",
   },
+  {
+    label: "qwen-plus-2025-07-28",
+    provider: "openai",
+    modelId: "qwen-plus-2025-07-28",
+    apiKeyEnv: "OPENAI_API_KEY",
+    baseUrlEnv: "OPENAI_BASE_URL",
+    compatibility: "compatible",
+  },
 ];
 
 /** The three conditions and the CLI letters that select them. */
@@ -75,7 +89,9 @@ export const CONDITION_LETTER: Record<ConditionId, ConditionLetter> = {
  */
 export const SYSTEM_PROMPT =
   "Answer the following question. Support claims with specific evidence. " +
-  "Cite papers by PMID where available.";
+  "Cite papers by PMID where available. Give your best answer with the " +
+  "evidence you have gathered so far rather than continuing to search for " +
+  "certainty — an answer with caveats beats no answer.";
 
 /** Composite-score weights. Must sum to 1. (Spec §"Composite Score".) */
 export const WEIGHTS = {
@@ -101,8 +117,14 @@ export const NORMALIZATION = {
 
 export const DEFAULTS = {
   runs: 3,
-  /** Steps in the agent loop (tool-call rounds) before it must answer. */
-  maxSteps: 10,
+  /**
+   * Steps in the agent loop (tool-call rounds) before it must answer. 10 was
+   * too tight for the mcp condition: models that hit zero results kept
+   * reformulating queries across providers/languages and got cut off with an
+   * empty final answer before ever synthesizing one (0% fabrication but 0
+   * accuracy). 16 gives more room to converge without materially changing cost.
+   */
+  maxSteps: 16,
   temperature: 0,
   /** Retries on a transient provider/network error, with backoff. */
   providerRetries: 2,
