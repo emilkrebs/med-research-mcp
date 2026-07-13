@@ -38,6 +38,7 @@ export type {
   StudyType,
   Article as NcbiArticle,
   GradedArticle,
+  PopulationDiversity,
   DateRange,
   SearchInput,
   SearchOutput,
