@@ -66,7 +66,7 @@ Fetch an article's full text as markdown via DOI — database-agnostic. Tries Un
 
 | Parameter | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `pmid` | `string` | yes | Article id (a PMID, or a non-PubMed database's id). |
+| `id` | `string` | yes | Article id (a PMID, or a non-PubMed database's id). |
 | `doi` | `string` | no | DOI — database-agnostic. Required when the id is not a numeric PMID. |
 
 ## Evidence grading system
@@ -169,23 +169,22 @@ Skills take effect in new Claude Code sessions. (Claude Desktop `.mcpb` installs
 The `core/` library has no MCP dependency and can be imported directly:
 
 ```ts
-import { searchPubMed, searchLiterature, fetchPubMed, fetchLiterature, fetchFulltext } from "med-research-mcp/core";
+import { searchLiterature, fetchLiterature, fetchFulltext } from "med-research-mcp/core";
 import { createCache } from "med-research-mcp/core/cache";
 
 const cache = createCache({ backend: "memory" });
 
-// PubMed only
-const results = await searchPubMed(
-  { query: "creatine AND cognition[tiab]", maxResults: 10 },
-  cache,
-);
-
-// Multi-database
-const multi = await searchLiterature(
+// Multi-database (primary API)
+const results = await searchLiterature(
   { query: "creatine AND cognition", database: ["pubmed", "europepmc"], maxResults: 10 },
   cache,
 );
+
+// Fetch full text for a result
+const article = await fetchLiterature({ ids: [results[0].id], database: "pubmed" }, cache);
 ```
+
+> **PubMed-only aliases:** `searchPubMed` and `fetchPubMed` remain available for PubMed-specific use cases — they are thin wrappers around the primary API.
 
 Thanks to the dual ESM/CJS build, this works whether the consuming project uses `import` or `require`.
 

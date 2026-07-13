@@ -1,8 +1,12 @@
 {
   "name": "med-research-mcp",
   "version": "0.3.0",
-  "description": "Evidence-graded scientific literature search for AI agents — multi-database (PubMed, SciELO, Europe PMC, CyberLeninka, ChinaRXiv, J-STAGE), built for biohacking, supplementation, and clinical decision support.",
+  "description": "Evidence-graded scientific literature search for AI agents — multi-database (PubMed, SciELO, Europe PMC, ChinaXiv, russiarxiv), built for biohacking, supplementation, and clinical decision support.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/emilkrebs/med-research-mcp.git"
+  },
   "author": {
     "name": "Emil Krebs",
     "email": "hello@emilkrebs.dev"
@@ -49,7 +53,8 @@
     "start": "node dist/mcp/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "build:mcpb": "node scripts/build-mcpb.mjs"
+    "build:mcpb": "node scripts/build-mcpb.mjs",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
