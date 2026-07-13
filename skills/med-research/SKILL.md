@@ -40,7 +40,7 @@ Each result from `literature_search` is a `GradedArticle`. Evidence scale (highe
 
 | Score | Study type | Reading |
 |-------|-----------|---------|
-| 5 | meta-analysis / systematic review | strongest; but a meta-analysis of weak studies is still weak — verify with `pubmed_grade` if it's pivotal |
+| 5 | meta-analysis / systematic review | strongest; but a meta-analysis of weak studies is still weak — fetch the full text and read the methods if it’s pivotal |
 | 4 | randomized-controlled-trial | strong causal evidence |
 | 3 | cohort **or** review | observational or narrative; useful, not causal |
 | 2 | case-control | hypothesis-generating |
@@ -68,7 +68,7 @@ Pass a `pmid` (or non-PubMed id) and optionally a `doi` (required for non-numeri
 
 ## Rate limits & parallel calls
 
-The server shares one NCBI client across all tool calls and serializes its requests to stay under NCBI's limit (3 req/s anonymous, 10 with `NCBI_API_KEY`). So firing several `pubmed_search`/`pubmed_grade` calls at once is **safe** — they queue rather than fail — but they don't run faster, and a big fan-out adds latency. Prefer a few precise queries over many broad ones. If you still see `RATE_LIMIT`, the client is shared PubMed traffic; back off per `retryAfter`.
+The server shares one NCBI client across all tool calls and serializes its requests to stay under NCBI's limit (3 req/s anonymous, 10 with `NCBI_API_KEY`). So firing several `literature_search`/`literature_fetch` calls at once is **safe** — they queue rather than fail — but they don't run faster, and a big fan-out adds latency. Prefer a few precise queries over many broad ones. If you still see `RATE_LIMIT`, back off per `retryAfter`.
 
 ## Errors (returned as typed `PubMedError`)
 
