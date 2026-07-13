@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ChinaRXivAdapter, parsePapers } from "../src/core/adapters/chinaxiv";
+import { ChinaRXivAdapter, parsePapers } from "../src/core/adapters/chinarxiv";
 import type { AdapterHttp } from "../src/core/adapters/http";
 import { LRUBackend } from "../src/core/cache";
 
@@ -27,7 +27,6 @@ function fakeHttp(payload: unknown): { http: AdapterHttp; urls: string[] } {
       return payload as T;
     },
     text: async () => "",
-    post: async <T>() => payload as T,
   };
   return { http, urls };
 }

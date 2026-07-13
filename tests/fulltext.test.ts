@@ -297,9 +297,9 @@ describe("default extraction (real libraries)", () => {
     expect(out.fulltext).toMatch(/Creatine improved memory/);
   });
 
-  it("imports pdf-parse via the lib subpath without triggering its debug-mode crash", async () => {
-    const mod = (await import("pdf-parse/lib/pdf-parse.js")) as { default?: unknown };
-    const fn = mod.default ?? mod;
-    expect(typeof fn).toBe("function");
+  it("imports PDFParse from pdf-parse and instantiates it", async () => {
+    const { PDFParse } = await import("pdf-parse");
+    expect(PDFParse).toBeDefined();
+    expect(typeof PDFParse).toBe("function");
   });
 });

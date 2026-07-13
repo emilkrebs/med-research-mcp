@@ -74,16 +74,4 @@ export function toIso1(lang: string | undefined): string | undefined {
   return ISO_639_2_TO_1[l] ?? l;
 }
 
-/** Strip HTML tags and collapse whitespace — for scraped text. */
-export function stripHtml(html: string): string {
-  return html
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#(\d+);/g, (_, d: string) => String.fromCharCode(Number(d)))
-    .replace(/\s+/g, " ")
-    .trim();
-}
+
