@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Benchmark harness: does med-research-mcp improve AI biomedical research vs closed-book and web search?",
+  "description": "Benchmark harness for med-research-mcp. Default run tests the MCP; optional closed-book and web-search baselines are available for comparison.",
   "engines": {
     "node": ">=18"
   },
   "scripts": {
     "bench": "tsx run.ts",
-    "smoke": "tsx run.ts --runs 1 --conditions C --queries factual-01",
+    "smoke": "tsx run.ts --runs 1 --queries factual-01",
+    "smoke-baselines": "tsx run.ts --runs 1 --with-baselines --queries factual-01",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -4,10 +4,63 @@
  * Provider packages are imported lazily and cached, so a run that only touches
  * DeepSeek never needs `@ai-sdk/openai` or `@ai-sdk/anthropic` installed — and a
  * missing key or package fails loudly with an actionable message, not a stack trace.
+ *
+ * When `compatibility:"compatible"` is set on a model spec, a custom fetch
+ * interceptor rewrites `role:"tool"` result messages to the legacy
+ * `role:"function"` format required by endpoints like DashScope MaaS that don't
+ * fully implement the newer OpenAI tool-calling spec.
  */
 
 import type { LanguageModel } from "ai";
 import type { ModelSpec, Provider } from "./config.js";
+
+// ─── Legacy function-calling fetch interceptor ───────────────────────────────
+
+type AnyMsg = {
+  role: string;
+  content?: unknown;
+  tool_call_id?: string;
+  tool_calls?: Array<{ id: string; function: { name: string } }>;
+};
+
+/**
+ * Returns a `fetch` replacement that transforms tool-result messages
+ * (`role:"tool"`) into legacy function-result messages (`role:"function"`)
+ * before each request is sent.  The function name is recovered from the
+ * preceding assistant message's `tool_calls` list.
+ */
+function makeLegacyFetch(): typeof fetch {
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    if (init?.body && typeof init.body === "string") {
+      try {
+        const body = JSON.parse(init.body) as { messages?: AnyMsg[] };
+        if (body.messages?.some((m) => m.role === "tool")) {
+          // Build tool_call_id → function name from preceding assistant turns.
+          const nameById = new Map<string, string>();
+          for (const msg of body.messages) {
+            if (msg.role === "assistant" && msg.tool_calls) {
+              for (const tc of msg.tool_calls) nameById.set(tc.id, tc.function.name);
+            }
+          }
+          body.messages = body.messages.map((msg) => {
+            if (msg.role !== "tool") return msg;
+            return {
+              role: "function",
+              name: (msg.tool_call_id ? nameById.get(msg.tool_call_id) : undefined) ?? "tool",
+              content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+            };
+          });
+          init = { ...init, body: JSON.stringify(body) };
+        }
+      } catch {
+        /* JSON parse error — send as-is */
+      }
+    }
+    return globalThis.fetch(input, init);
+  };
+}
+
+// ─── Provider factory ─────────────────────────────────────────────────────────
 
 type ProviderFactory = (apiKey: string, baseURL?: string, compatibility?: "strict" | "compatible") => (modelId: string) => LanguageModel;
 
@@ -23,7 +76,12 @@ async function loadProvider(provider: Provider): Promise<ProviderFactory> {
       case "openai": {
         const { createOpenAI } = await import("@ai-sdk/openai");
         factory = (apiKey, baseURL, compatibility) =>
-          createOpenAI({ apiKey, ...(baseURL ? { baseURL } : {}), ...(compatibility ? { compatibility } : {}) });
+          createOpenAI({
+            apiKey,
+            ...(baseURL ? { baseURL } : {}),
+            ...(compatibility ? { compatibility } : {}),
+            ...(compatibility === "compatible" ? { fetch: makeLegacyFetch() } : {}),
+          });
         break;
       }
       case "anthropic": {
@@ -62,3 +120,4 @@ export async function resolveModel(spec: ModelSpec): Promise<LanguageModel> {
   const factory = await loadProvider(spec.provider);
   return factory(apiKey, baseURL, spec.compatibility)(spec.modelId);
 }
+

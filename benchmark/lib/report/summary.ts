@@ -96,7 +96,7 @@ export function buildSummary(rows: ScoreRow[], meta: SummaryMeta): Summary {
 
   for (const model of meta.models) {
     const perCondition: Record<string, ConditionSummary> = {};
-    for (const condition of CONDITION_ORDER) {
+    for (const condition of meta.conditions) {
       const subset = rows.filter((r) => r.model === model && r.condition === condition);
       if (subset.length > 0) perCondition[condition] = summarizeCondition(subset);
     }
@@ -105,9 +105,10 @@ export function buildSummary(rows: ScoreRow[], meta: SummaryMeta): Summary {
 
   const tests: Record<string, unknown> = {};
   for (const model of meta.models) {
+    const mcpRows = rows.some((r) => r.model === model && r.condition === "mcp");
     tests[model] = {
-      composite_mcp_vs_web: pairedTest(rows, model, "web-search"),
-      composite_mcp_vs_closed: pairedTest(rows, model, "closed-book"),
+      composite_mcp_vs_web: mcpRows && meta.conditions.includes("web-search") ? pairedTest(rows, model, "web-search") : null,
+      composite_mcp_vs_closed: mcpRows && meta.conditions.includes("closed-book") ? pairedTest(rows, model, "closed-book") : null,
     };
   }
   summary.statistical_tests = tests;
@@ -124,8 +125,8 @@ function fmt(s: Stat): string {
 function conditionTable(perCondition: Record<string, ConditionSummary>): string {
   const header =
     "| Condition | n | Composite | Accuracy | Evidence (0–5) | Bullshit (0–1) | Speed (s) | Fabrication rate |\n" +
-    "|---|--:|--:|--:|--:|--:|--:|--:|";
-  const rows = CONDITION_ORDER.filter((c) => perCondition[c]).map((c) => {
+    "|---|---|--:|--:|--:|--:|--:|--:|";
+  const rows = Object.keys(perCondition).map((c) => {
     const s = perCondition[c]!;
     return `| ${c} | ${s.n} | ${fmt(s.composite)} | ${fmt(s.accuracy)} | ${fmt(s.evidence_quality)} | ${fmt(
       s.bullshit,
@@ -168,12 +169,18 @@ export function toMarkdown(summary: Summary): string {
     parts.push(conditionTable(summary[model] as Record<string, ConditionSummary>));
   }
 
-  parts.push(`## Significance (composite, paired on query×run)`);
-  const tests = summary.statistical_tests as Record<string, { composite_mcp_vs_web: PairedResult | null; composite_mcp_vs_closed: PairedResult | null }>;
-  for (const model of meta.models) {
-    parts.push(`**${model}**`);
-    parts.push(testLine("mcp vs web-search", tests[model]!.composite_mcp_vs_web));
-    parts.push(testLine("mcp vs closed-book", tests[model]!.composite_mcp_vs_closed));
+  const hasBaselineComparison =
+    meta.conditions.includes("mcp") &&
+    (meta.conditions.includes("web-search") || meta.conditions.includes("closed-book"));
+
+  if (hasBaselineComparison) {
+    parts.push(`## Significance (composite, paired on query×run)`);
+    const tests = summary.statistical_tests as Record<string, { composite_mcp_vs_web: PairedResult | null; composite_mcp_vs_closed: PairedResult | null }>;
+    for (const model of meta.models) {
+      parts.push(`**${model}**`);
+      parts.push(testLine("mcp vs web-search", tests[model]!.composite_mcp_vs_web));
+      parts.push(testLine("mcp vs closed-book", tests[model]!.composite_mcp_vs_closed));
+    }
   }
 
   return parts.join("\n\n") + "\n";

@@ -35,16 +35,17 @@ function help(): void {
 
 Usage: npx tsx benchmark/run.ts [options]
 
-  --runs <n>          runs per query per condition per model (default ${DEFAULTS.runs})
+  --runs <n>          runs per query per model (default ${DEFAULTS.runs})
   --models <list>     comma-separated model labels (default: all in config)
-  --conditions <list> comma-separated A|B|C or closed-book|web-search|mcp (default: all)
+  --conditions <list> comma-separated A|B|C or closed-book|web-search|mcp (default: mcp)
+  --with-baselines    include closed-book and web-search conditions (A and B)
   --queries <list>    comma-separated query ids and/or categories (default: all 24)
   --temperature <t>   sampling temperature (default ${DEFAULTS.temperature})
   --max-steps <n>     agent tool-call rounds (default ${DEFAULTS.maxSteps})
   --concurrency <n>   parallel runs (default 1; NCBI rate limits favor 1)
   --out <dir>         output root (default benchmark/results)
   --resume <dir>      reuse raw RunRecord JSONs from an existing results dir; only re-run missing jobs
-  --publish           full run (3 runs, all models/conditions) + report
+  --publish           full MCP run (3 runs, all models, MCP condition) + report
   --dry-run           print the plan and preflight, make no API calls
   --help
 
@@ -53,8 +54,10 @@ Known categories: ${CATEGORIES.join(", ")}
 `);
 }
 
-function resolveConditions(input?: string): ConditionId[] {
-  if (!input) return ["closed-book", "web-search", "mcp"];
+function resolveConditions(input?: string, withBaselines = false): ConditionId[] {
+  if (!input) {
+    return withBaselines ? ["closed-book", "web-search", "mcp"] : ["mcp"];
+  }
   const byLetter = CONDITIONS as Record<string, ConditionId>;
   const all: ConditionId[] = ["closed-book", "web-search", "mcp"];
   return input.split(",").map((raw) => {
@@ -152,7 +155,7 @@ function preflight(models: ModelSpec[], conditions: ConditionId[], queries: Benc
   for (const m of models) need.add(m.apiKeyEnv);
   for (const env of need) if (!process.env[env]) problems.push(`Missing ${env}`);
   if (conditions.includes("web-search") && !process.env.BRAVE_API_KEY) problems.push("Missing BRAVE_API_KEY (condition B)");
-  if (!process.env.NCBI_EMAIL) console.warn("⚠️  NCBI_EMAIL not set — NCBI may throttle. Set it to a contact email.");
+  if (conditions.includes("mcp") && !process.env.NCBI_EMAIL) console.warn("⚠️  NCBI_EMAIL not set — NCBI may throttle. Set it to a contact email.");
   return problems;
 }
 
@@ -162,6 +165,7 @@ async function main(): Promise<void> {
       runs: { type: "string" },
       models: { type: "string" },
       conditions: { type: "string" },
+      "with-baselines": { type: "boolean" },
       queries: { type: "string" },
       temperature: { type: "string" },
       "max-steps": { type: "string" },
@@ -178,9 +182,10 @@ async function main(): Promise<void> {
   if (values.help) return help();
 
   const publish = Boolean(values.publish);
+  const withBaselines = Boolean(values["with-baselines"]);
   const runs = publish ? DEFAULTS.runs : Number(values.runs ?? DEFAULTS.runs);
   const models = publish ? MODELS : resolveModels(values.models);
-  const conditions = publish ? (["closed-book", "web-search", "mcp"] as ConditionId[]) : resolveConditions(values.conditions);
+  const conditions = resolveConditions(values.conditions, withBaselines);
   const queries = resolveQueries(values.queries);
   const temperature = Number(values.temperature ?? DEFAULTS.temperature);
   const maxSteps = Number(values["max-steps"] ?? DEFAULTS.maxSteps);
@@ -204,7 +209,8 @@ async function main(): Promise<void> {
       for (const file of files) {
         if (!file.endsWith(".json")) continue;
         const content = await readFile(join(resumeRawDir, file), "utf-8");
-        resumeRecords.set(file, JSON.parse(content) as RunRecord);
+        const record = JSON.parse(content) as RunRecord;
+        if (!record.error) resumeRecords.set(file, record);
       }
       console.log(`Loaded ${resumeRecords.size} existing records from ${resumeRawDir}`);
     } catch {

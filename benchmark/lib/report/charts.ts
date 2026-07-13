@@ -11,12 +11,24 @@ import type { ConditionId, ScoreRow } from "../types.js";
 import { mean, sd } from "../stats.js";
 import { speedScore, costScore } from "../scoring/composite.js";
 
-const CONDITIONS: ConditionId[] = ["closed-book", "web-search", "mcp"];
 const COLOR: Record<ConditionId, string> = {
   "closed-book": "#E69F00",
   "web-search": "#56B4E9",
   mcp: "#009E73",
 };
+
+const FALLBACK_COLORS = ["#CC79A7", "#F0E442", "#0072B2", "#D55E00", "#999999"];
+
+function conditions(rows: ScoreRow[]): ConditionId[] {
+  return [...new Set(rows.map((r) => r.condition))];
+}
+
+function colorFor(condition: ConditionId): string {
+  const c = COLOR[condition];
+  if (c) return c;
+  const idx = condition.split("").reduce((acc, ch) => acc + ch.charCodeAt(0), 0) % FALLBACK_COLORS.length;
+  return FALLBACK_COLORS[idx]!;
+}
 
 const FONT = "font-family='ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif'";
 
@@ -79,7 +91,8 @@ function groupedBars(rows: ScoreRow[], spec: BarSpec): string {
   const plotW = W - pad.l - pad.r;
   const plotH = H - pad.t - pad.b;
   const ms = models(rows);
-  const groupW = plotW / CONDITIONS.length;
+  const conds = conditions(rows);
+  const groupW = plotW / Math.max(conds.length, 1);
   const barW = Math.min(48, (groupW * 0.7) / Math.max(ms.length, 1));
 
   const y = (v: number) => pad.t + plotH * (1 - v / spec.yMax);
@@ -93,7 +106,7 @@ function groupedBars(rows: ScoreRow[], spec: BarSpec): string {
     body += text(pad.l - 8, yy + 4, spec.format ? spec.format(v) : String(Math.round(v * 100) / 100), { size: 10, anchor: "end", color: "#666" });
   }
 
-  CONDITIONS.forEach((condition, ci) => {
+  conds.forEach((condition, ci) => {
     const gx = pad.l + ci * groupW + groupW / 2;
     const clusterW = ms.length * barW + (ms.length - 1) * 6;
     ms.forEach((model, mi) => {
@@ -103,7 +116,7 @@ function groupedBars(rows: ScoreRow[], spec: BarSpec): string {
       const bx = gx - clusterW / 2 + mi * (barW + 6);
       const by = y(m);
       const opacity = ms.length > 1 ? 0.55 + (0.45 * mi) / (ms.length - 1) : 1;
-      body += `<rect x='${bx}' y='${by}' width='${barW}' height='${pad.t + plotH - by}' fill='${COLOR[condition]}' fill-opacity='${opacity.toFixed(2)}'/>`;
+      body += `<rect x='${bx}' y='${by}' width='${barW}' height='${pad.t + plotH - by}' fill='${colorFor(condition)}' fill-opacity='${opacity.toFixed(2)}'/>`;
       if (spec.errorBars) {
         const s = sd(values);
         const yTop = y(Math.min(spec.yMax, m + s));
@@ -123,12 +136,12 @@ function groupedBars(rows: ScoreRow[], spec: BarSpec): string {
   body += legend(
     pad.l + plotW + 24,
     pad.t + 10,
-    CONDITIONS.map((c) => ({ label: c, color: COLOR[c] })),
+    conds.map((c) => ({ label: c, color: colorFor(c) })),
   );
   if (ms.length > 1) {
-    body += text(pad.l + plotW + 24, pad.t + 10 + CONDITIONS.length * 18 + 14, "Bars per group = models", { size: 10, color: "#666" });
+    body += text(pad.l + plotW + 24, pad.t + 10 + conds.length * 18 + 14, "Bars per group = models", { size: 10, color: "#666" });
     body += ms
-      .map((m, i) => text(pad.l + plotW + 24, pad.t + 10 + CONDITIONS.length * 18 + 30 + i * 15, `${i + 1}. ${m}`, { size: 10, color: "#666" }))
+      .map((m, i) => text(pad.l + plotW + 24, pad.t + 10 + conds.length * 18 + 30 + i * 15, `${i + 1}. ${m}`, { size: 10, color: "#666" }))
       .join("");
   }
   return doc(W, H, body, spec.title);
@@ -169,7 +182,8 @@ function radar(rows: ScoreRow[]): string {
   });
 
   // One polygon per condition, averaged across models.
-  for (const condition of CONDITIONS) {
+  const conds = conditions(rows);
+  for (const condition of conds) {
     const subset = rows.filter((r) => r.condition === condition);
     if (subset.length === 0) continue;
     const pts = dims
@@ -178,12 +192,12 @@ function radar(rows: ScoreRow[]): string {
         return point(i, R * v).join(",");
       })
       .join(" ");
-    body += `<polygon points='${pts}' fill='${COLOR[condition]}' fill-opacity='0.14' stroke='${COLOR[condition]}' stroke-width='2'/>`;
+    body += `<polygon points='${pts}' fill='${colorFor(condition)}' fill-opacity='0.14' stroke='${colorFor(condition)}' stroke-width='2'/>`;
   }
   body += legend(
     24,
     H - 60,
-    CONDITIONS.map((c) => ({ label: c, color: COLOR[c] })),
+    conds.map((c) => ({ label: c, color: colorFor(c) })),
   );
   return doc(W, H, body, "Condition radar");
 }
@@ -199,21 +213,20 @@ function evidenceHistogram(rows: ScoreRow[]): string {
   const buckets = ["0–1", "1–2", "2–3", "3–4", "4–5"];
   const bucketOf = (v: number) => Math.min(4, Math.max(0, Math.floor(v)));
 
-  const counts: Record<ConditionId, number[]> = {
-    "closed-book": [0, 0, 0, 0, 0],
-    "web-search": [0, 0, 0, 0, 0],
-    mcp: [0, 0, 0, 0, 0],
-  };
+  const conds = conditions(rows);
+  const counts = new Map<ConditionId, number[]>(conds.map((c) => [c, [0, 0, 0, 0, 0]]));
   let maxCount = 1;
   for (const r of rows) {
     if (r.pmids_valid === 0) continue; // only rows that actually cited real evidence
     const b = bucketOf(r.evidence_quality);
-    counts[r.condition][b] = (counts[r.condition][b] ?? 0) + 1;
+    const rowCounts = counts.get(r.condition);
+    if (!rowCounts) continue;
+    rowCounts[b] = (rowCounts[b] ?? 0) + 1;
   }
-  for (const c of CONDITIONS) maxCount = Math.max(maxCount, ...counts[c]);
+  for (const c of conds) maxCount = Math.max(maxCount, ...counts.get(c)!);
 
   const groupW = plotW / buckets.length;
-  const barW = Math.min(36, (groupW * 0.7) / CONDITIONS.length);
+  const barW = Math.min(36, (groupW * 0.7) / Math.max(conds.length, 1));
   const y = (v: number) => pad.t + plotH * (1 - v / maxCount);
   let body = text(pad.l, 26, "Evidence-quality distribution (mean score of cited PMIDs)", { size: 15, weight: "700" });
 
@@ -226,12 +239,12 @@ function evidenceHistogram(rows: ScoreRow[]): string {
 
   buckets.forEach((label, bi) => {
     const gx = pad.l + bi * groupW + groupW / 2;
-    const clusterW = CONDITIONS.length * barW + (CONDITIONS.length - 1) * 4;
-    CONDITIONS.forEach((condition, ci) => {
-      const count = counts[condition][bi]!;
+    const clusterW = conds.length * barW + (conds.length - 1) * 4;
+    conds.forEach((condition, ci) => {
+      const count = counts.get(condition)![bi]!;
       const bx = gx - clusterW / 2 + ci * (barW + 4);
       const by = y(count);
-      body += `<rect x='${bx}' y='${by}' width='${barW}' height='${pad.t + plotH - by}' fill='${COLOR[condition]}'/>`;
+      body += `<rect x='${bx}' y='${by}' width='${barW}' height='${pad.t + plotH - by}' fill='${colorFor(condition)}'/>`;
     });
     body += text(gx, pad.t + plotH + 20, label, { size: 11, anchor: "middle" });
   });
@@ -240,7 +253,7 @@ function evidenceHistogram(rows: ScoreRow[]): string {
   body += legend(
     pad.l + plotW + 24,
     pad.t + 10,
-    CONDITIONS.map((c) => ({ label: c, color: COLOR[c] })),
+    conds.map((c) => ({ label: c, color: colorFor(c) })),
   );
   return doc(W, H, body, "Evidence histogram");
 }
@@ -256,6 +269,7 @@ function scatter(rows: ScoreRow[]): string {
   const maxSpeed = Math.max(1, ...rows.map((r) => r.speed_s));
   const x = (s: number) => pad.l + plotW * (s / maxSpeed);
   const y = (a: number) => pad.t + plotH * (1 - a / 10);
+  const conds = conditions(rows);
 
   let body = text(pad.l, 26, "Speed vs accuracy (each dot = one run)", { size: 15, weight: "700" });
   for (let i = 0; i <= 5; i++) {
@@ -270,7 +284,7 @@ function scatter(rows: ScoreRow[]): string {
     body += text(xx, pad.t + plotH + 18, `${s.toFixed(0)}s`, { size: 10, anchor: "middle", color: "#666" });
   }
   for (const r of rows) {
-    body += `<circle cx='${x(r.speed_s).toFixed(1)}' cy='${y(r.accuracy).toFixed(1)}' r='4' fill='${COLOR[r.condition]}' fill-opacity='0.65'/>`;
+    body += `<circle cx='${x(r.speed_s).toFixed(1)}' cy='${y(r.accuracy).toFixed(1)}' r='4' fill='${colorFor(r.condition)}' fill-opacity='0.65'/>`;
   }
   body += text(pad.l - 40, pad.t + plotH / 2, "accuracy", { size: 11, anchor: "middle", color: "#666" });
   body += text(pad.l + plotW / 2, H - 12, "wall-clock time", { size: 11, anchor: "middle", color: "#666" });
@@ -279,7 +293,7 @@ function scatter(rows: ScoreRow[]): string {
   body += legend(
     pad.l + plotW + 20,
     pad.t + 10,
-    CONDITIONS.map((c) => ({ label: c, color: COLOR[c] })),
+    conds.map((c) => ({ label: c, color: colorFor(c) })),
   );
   return doc(W, H, body, "Speed vs accuracy");
 }
