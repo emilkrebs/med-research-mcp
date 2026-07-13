@@ -13,7 +13,7 @@
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
 import { cleanDoi, first, splitAuthors, strArray, toIso1 } from "./util.js";
-import type { NcbiArticle, SearchInput } from "../types.js";
+import type { Article, SearchInput } from "../types.js";
 
 const BASE = "https://www.jstage.jst.go.jp/api/records";
 const MAX_RESULTS_CAP = 50;
@@ -35,14 +35,14 @@ function authors(r: Record_): string[] {
   return arr.length === 1 ? splitAuthors(arr[0]) : splitAuthors(r.authorString);
 }
 
-function toArticle(r: Record_): NcbiArticle | null {
+function toArticle(r: Record_): Article | null {
   const doi = cleanDoi(first(r.doi));
   const id = first(r.id) ?? first(r.articleId) ?? doi;
   if (!id) return null;
   const language = toIso1(first(r.language)) ?? "ja";
   const url = first(r.url) ?? first(r.link) ?? (doi ? `https://doi.org/${doi}` : `https://www.jstage.jst.go.jp/`);
 
-  const article: NcbiArticle = {
+  const article: Article = {
     pmid: id,
     title: (first(r.title) ?? "").replace(/\.$/, ""),
     authors: authors(r),
@@ -60,10 +60,10 @@ function toArticle(r: Record_): NcbiArticle | null {
 }
 
 /** Pure parser — exposed for testing without the network. */
-export function parseJStage(data: JStageResponse): { count: number; articles: NcbiArticle[] } {
+export function parseJStage(data: JStageResponse): { count: number; articles: Article[] } {
   const records = data?.records ?? data?.data ?? data?.results ?? [];
   const count = Number(data?.total ?? data?.count ?? records.length);
-  const articles: NcbiArticle[] = [];
+  const articles: Article[] = [];
   for (const r of records) {
     const a = toArticle(r);
     if (a) articles.push(a);
@@ -88,7 +88,7 @@ export class JStageAdapter extends RestAdapter {
     return { count: parsed.count, ids: parsed.articles.map((a) => a.pmid) };
   }
 
-  protected async fetchOne(id: string): Promise<NcbiArticle | null> {
+  protected async fetchOne(id: string): Promise<Article | null> {
     const params = new URLSearchParams({ q: id, page: "1", count: "1" });
     const data = await this.http.json<JStageResponse>(`${BASE}?${params.toString()}`);
     return parseJStage(data).articles[0] ?? null;

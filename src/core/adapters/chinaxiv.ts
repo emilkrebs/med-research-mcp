@@ -15,7 +15,7 @@
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
 import { cleanDoi, first, strArray, toIso1 } from "./util.js";
-import type { NcbiArticle, SearchInput } from "../types.js";
+import type { Article, SearchInput } from "../types.js";
 
 const BASE = "http://chinaxiv.org/api/search";
 const MAX_RESULTS_CAP = 50;
@@ -30,14 +30,14 @@ interface ChinaXivResponse {
   results?: Record_[];
 }
 
-function toArticle(r: Record_): NcbiArticle | null {
+function toArticle(r: Record_): Article | null {
   const id = first(r.id) ?? first(r.identifier) ?? first(r.doi);
   if (!id) return null;
   const doi = cleanDoi(first(r.doi));
   const language = toIso1(first(r.language)) ?? "zh";
   const url = first(r.url) ?? first(r.link) ?? `http://chinaxiv.org/abs/${id}`;
 
-  const article: NcbiArticle = {
+  const article: Article = {
     pmid: id,
     title: (first(r.title) ?? "").replace(/\.$/, ""),
     authors: strArray(r.authors ?? r.author ?? r.creators),
@@ -55,10 +55,10 @@ function toArticle(r: Record_): NcbiArticle | null {
 }
 
 /** Pure parser — exposed for testing without the network. */
-export function parseChinaXiv(data: ChinaXivResponse): { count: number; articles: NcbiArticle[] } {
+export function parseChinaXiv(data: ChinaXivResponse): { count: number; articles: Article[] } {
   const records = data?.data ?? data?.records ?? data?.results ?? [];
   const count = Number(data?.total ?? data?.count ?? records.length);
-  const articles: NcbiArticle[] = [];
+  const articles: Article[] = [];
   for (const r of records) {
     const a = toArticle(r);
     if (a) articles.push(a);
@@ -83,7 +83,7 @@ export class ChinaXivAdapter extends RestAdapter {
     return { count: parsed.count, ids: parsed.articles.map((a) => a.pmid) };
   }
 
-  protected async fetchOne(id: string): Promise<NcbiArticle | null> {
+  protected async fetchOne(id: string): Promise<Article | null> {
     const params = new URLSearchParams({ q: id, page: "1", size: "1" });
     const data = await this.http.json<ChinaXivResponse>(`${BASE}?${params.toString()}`);
     return parseChinaXiv(data).articles[0] ?? null;

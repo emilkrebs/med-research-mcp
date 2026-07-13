@@ -38,7 +38,7 @@ export type { PubMedError, PubMedErrorCode } from "./errors.js";
 
 export type {
   StudyType,
-  NcbiArticle,
+  Article as NcbiArticle,
   GradedArticle,
   DateRange,
   SearchInput,

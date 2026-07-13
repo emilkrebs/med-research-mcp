@@ -9,7 +9,7 @@
  * patterns and surfaced in `limitations`.
  */
 
-import type { GradedArticle, NcbiArticle, StudyType } from "./types.js";
+import type { GradedArticle, Article, StudyType } from "./types.js";
 
 export const SCORE_BY_TYPE: Record<StudyType, number> = {
   "meta-analysis": 5,
@@ -203,7 +203,7 @@ export function gradeText(
 }
 
 /** Grade an article fetched from NCBI. */
-export function keywordGrade(article: NcbiArticle): GradedArticle {
+export function keywordGrade(article: Article): GradedArticle {
   const grade = gradeText(article.title, article.abstract, article.publicationTypes);
   return {
     ...article,

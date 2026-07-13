@@ -13,7 +13,7 @@
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
 import { cleanDoi, first, splitAuthors, toIso1 } from "./util.js";
-import type { NcbiArticle, SearchInput } from "../types.js";
+import type { Article, SearchInput } from "../types.js";
 
 const BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest/search";
 const MAX_RESULTS_CAP = 50;
@@ -37,7 +37,7 @@ interface EpmcResponse {
   resultList?: { result?: EpmcResult[] };
 }
 
-function toArticle(r: EpmcResult): NcbiArticle | null {
+function toArticle(r: EpmcResult): Article | null {
   const id = first(r.id) ?? first(r.pmid);
   if (!id) return null;
   const source = first(r.source) ?? "MED";
@@ -46,7 +46,7 @@ function toArticle(r: EpmcResult): NcbiArticle | null {
   const url =
     first(r.fullTextUrlList?.fullTextUrl?.[0]?.url) ?? `https://europepmc.org/article/${source}/${id}`;
 
-  const article: NcbiArticle = {
+  const article: Article = {
     pmid: id,
     title: (first(r.title) ?? "").replace(/\.$/, ""),
     authors: splitAuthors(r.authorString),
@@ -64,10 +64,10 @@ function toArticle(r: EpmcResult): NcbiArticle | null {
 }
 
 /** Pure parser — exposed for testing without the network. */
-export function parseEuropePmc(data: EpmcResponse): { count: number; articles: NcbiArticle[] } {
+export function parseEuropePmc(data: EpmcResponse): { count: number; articles: Article[] } {
   const count = Number(data?.hitCount ?? 0);
   const results = data?.resultList?.result ?? [];
-  const articles: NcbiArticle[] = [];
+  const articles: Article[] = [];
   for (const r of results) {
     const a = toArticle(r);
     if (a) articles.push(a);
@@ -108,7 +108,7 @@ export class EuropePmcAdapter extends RestAdapter {
     return { count, ids: articles.map((a) => a.pmid) };
   }
 
-  protected async fetchOne(id: string): Promise<NcbiArticle | null> {
+  protected async fetchOne(id: string): Promise<Article | null> {
     const params = new URLSearchParams({ query: id, format: "json", resultType: "core", pageSize: "1" });
     const data = await this.http.json<EpmcResponse>(`${BASE}?${params.toString()}`);
     return parseEuropePmc(data).articles[0] ?? null;

@@ -14,7 +14,7 @@ Ask the user (or infer from context):
 2. **NCBI contact email** — strongly recommended; NCBI asks for one on every request and throttles anonymous traffic. (Optional: an NCBI API key, which raises the rate limit from 3 to 10 req/s.)
 3. **LLM for deep grading?** Optional. Provider (`openai` / `anthropic` / `local`) + API key enables the `pubmed_grade` tool. Without it, `pubmed_grade` falls back to keyword grading — perfectly fine to skip at first.
 
-Find the repo's absolute path (`pwd` inside it, or locate `pubmed-bio-mcp`). Substitute it for `<REPO>` below.
+Find the repo's absolute path (`pwd` inside it, or locate `med-research-mcp`). Substitute it for `<REPO>` below.
 
 ## Step 1 — Build
 

@@ -21,7 +21,7 @@
     "node": ">=18"
   },
   "bin": {
-    "pubmed-bio-mcp": "./dist/mcp/index.js"
+    "med-research-mcp": "./dist/mcp/index.js"
   },
   "exports": {
     "./core": {
