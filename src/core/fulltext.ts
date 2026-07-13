@@ -79,7 +79,11 @@ export async function fetchFulltext(
   deps: FulltextDeps = {},
 ): Promise<FulltextOutput> {
   const pmid = String(input.pmid ?? "").trim();
-  if (!/^\d+$/.test(pmid)) {
+  // A numeric PMID or a supplied DOI is enough to proceed. Non-PubMed ids
+  // (SciELO "S0102-…", ChinaXiv, …) aren't numeric but arrive with a DOI, and
+  // DOI-based resolution is database-agnostic — so `literature_fulltext` works
+  // for them. Without either, there's nothing to resolve.
+  if (!/^\d+$/.test(pmid) && !normalizeDoi(input.doi)) {
     throw errors.notFound(String(input.pmid ?? ""));
   }
 
