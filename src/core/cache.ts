@@ -137,7 +137,7 @@ interface FulltextRow {
  * Loads the native better-sqlite3 module on first use (see the module header).
  *
  * Resolves from this module's own location so better-sqlite3 is found even when
- * pubmed-bio is a nested dependency. `__filename` exists in the CJS build;
+ * med-research-mcp is a nested dependency. `__filename` exists in the CJS build;
  * `import.meta.url` exists in the ESM build — esbuild leaves the other one
  * undefined per format, so `typeof` picks whichever is real. (`typeof` on an
  * undeclared identifier is safe — it evaluates to "undefined" rather than

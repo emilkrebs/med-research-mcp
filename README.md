@@ -1,8 +1,8 @@
-# pubmed-bio
+# med-research-mcp
 
 **Evidence-graded PubMed search for AI agents.**
 
-`pubmed-bio` searches PubMed and grades the evidence quality of every result — study type, evidence score, confidence, dosage, population, and limitations — so an AI agent (or a human) can tell a meta-analysis from a case report at a glance. It's built for optimizing biology, supplementation research, and clinical decision support, where "what does the evidence actually say" matters more than a raw list of abstracts.
+`med-research-mcp` searches PubMed and grades the evidence quality of every result — study type, evidence score, confidence, dosage, population, and limitations — so an AI agent (or a human) can tell a meta-analysis from a case report at a glance. It's built for optimizing biology, supplementation research, and clinical decision support, where "what does the evidence actually say" matters more than a raw list of abstracts.
 
 It ships as a small, dependency-light TypeScript library (`core/`) with a thin [MCP](https://modelcontextprotocol.io) stdio adapter on top, plus a `.mcpb` bundle for one-click install into Claude Desktop. It's a personal, open-source tool, and the `core/` library is designed to be embedded directly into other projects — including Biohacking-IDE, without going through MCP at all.
 
@@ -10,7 +10,7 @@ This is a research aid, not a diagnostic tool. See [Medical disclaimer](#medical
 
 ## Two-path grading model
 
-`pubmed-bio` grades evidence quality via two complementary paths:
+`med-research-mcp` grades evidence quality via two complementary paths:
 
 - **`pubmed_search` — fast keyword grading.** Every search result is graded immediately using PubMed's own curated `PublicationType` tags (assigned by NLM indexers) where available, falling back to regex rules over the title/abstract otherwise. No network calls beyond PubMed itself, no LLM tokens. Always cheap, always available.
 - **`pubmed_grade` — precise LLM grading.** Given a single PMID, an LLM verifies the study-type classification, extracts PICO (population/intervention/comparison/outcome), sample size, effect size, funding source, and red flags (conflicts of interest, tiny samples, preprints, retractions). Costs tokens, and is meant to be used selectively on the papers that matter. If the LLM is unavailable or times out, it transparently falls back to the keyword grade instead of failing.
@@ -29,9 +29,9 @@ npm install
 | `npm run build` | Build `dist/` with [tsup](https://tsup.egoist.dev/). |
 | `npm start` | Run the built server: `node dist/mcp/index.js`. |
 | `npm test` | Run the test suite with [vitest](https://vitest.dev/). |
-| `npm run build:mcpb` | Package `dist/pubmed-bio.mcpb` for Claude Desktop. |
+| `npm run build:mcpb` | Package `dist/med-research-mcp.mcpb` for Claude Desktop. |
 
-The build uses **tsup**, not plain `tsc`. tsup emits dual **ESM + CJS** output for every entry point (`dist/core/index.js` / `.cjs`, etc.), which is what lets both the ESM MCP server (`dist/mcp/index.js`) and CommonJS consumers — such as Biohacking-IDE / Theia — `require()` or `import` `pubmed-bio/core` from the same package. A plain `tsc` build would only produce one module format and break one side of that split.
+The build uses **tsup**, not plain `tsc`. tsup emits dual **ESM + CJS** output for every entry point (`dist/core/index.js` / `.cjs`, etc.), which is what lets both the ESM MCP server (`dist/mcp/index.js`) and CommonJS consumers — such as Biohacking-IDE / Theia — `require()` or `import` `med-research-mcp/core` from the same package. A plain `tsc` build would only produce one module format and break one side of that split.
 
 ## Tools reference
 
@@ -131,7 +131,7 @@ Study types are ordered highest evidence quality first. The keyword grader tries
 
 ```yaml
 mcp_servers:
-  pubmed-bio:
+  med-research-mcp:
     command: npx
     args: ["tsx", "/path/to/med-research-mcp/src/mcp/index.ts"]
     env:
@@ -148,7 +148,7 @@ Run `npm run build` first, then point the client at the built output:
 ```json
 {
   "mcpServers": {
-    "pubmed-bio": {
+    "med-research-mcp": {
       "command": "node",
       "args": ["/path/to/med-research-mcp/dist/mcp/index.js"],
       "env": {
@@ -168,7 +168,7 @@ Run `npm run build` first, then point the client at the built output:
 npm run build:mcpb
 ```
 
-Then drag the resulting `dist/pubmed-bio.mcpb` onto Claude Desktop. The installer prompts for your NCBI contact email and LLM API key at install time — no manual JSON editing required.
+Then drag the resulting `dist/med-research-mcp.mcpb` onto Claude Desktop. The installer prompts for your NCBI contact email and LLM API key at install time — no manual JSON editing required.
 
 ## Agent skills
 
@@ -194,8 +194,8 @@ Skills take effect in new Claude Code sessions. (Claude Desktop `.mcpb` installs
 The `core/` library has no MCP dependency and can be imported directly:
 
 ```ts
-import { searchPubMed, gradeArticle } from "pubmed-bio/core";
-import { createCache } from "pubmed-bio/core/cache";
+import { searchPubMed, gradeArticle } from "med-research-mcp/core";
+import { createCache } from "med-research-mcp/core/cache";
 
 const cache = createCache({ backend: "memory" });
 
@@ -236,7 +236,7 @@ Every failure path surfaces a typed `PubMedError`:
 - Precise LLM-based deep grading of a single paper, with OpenAI / Anthropic / local (OpenAI-compatible) providers.
 - In-memory caching.
 - MCP stdio server and a `.mcpb` bundle for Claude Desktop.
-- Direct, dependency-free library use via `pubmed-bio/core`.
+- Direct, dependency-free library use via `med-research-mcp/core`.
 
 **Out of scope (for now):**
 - Persistent (SQLite) caching — planned for v0.2.
@@ -246,7 +246,7 @@ Every failure path surfaces a typed `PubMedError`:
 
 ## Medical disclaimer
 
-`pubmed-bio` is a research and evidence-triage tool. It does not provide medical advice, diagnosis, or treatment recommendations, and its evidence grades — whether keyword- or LLM-derived — are heuristics, not a substitute for clinical judgement or a qualified professional. Always verify findings against the primary source and consult a healthcare provider before making medical or supplementation decisions.
+`med-research-mcp` is a research and evidence-triage tool. It does not provide medical advice, diagnosis, or treatment recommendations, and its evidence grades — whether keyword- or LLM-derived — are heuristics, not a substitute for clinical judgement or a qualified professional. Always verify findings against the primary source and consult a healthcare provider before making medical or supplementation decisions.
 
 ## License
 

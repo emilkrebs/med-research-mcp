@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Thin MCP adapter over the pubmed-bio core library.
+ * Thin MCP adapter over the med-research-mcp core library.
  *
  * Exposes three stdio tools:
  *   - pubmed_search   — search + keyword classification (always cheap)
@@ -50,7 +50,7 @@ function buildCache(): Cache {
     });
   } catch (err) {
     console.error(
-      `[pubmed-bio] ${err instanceof Error ? err.message : String(err)} — using in-memory cache.`,
+      `[med-research-mcp] ${err instanceof Error ? err.message : String(err)} — using in-memory cache.`,
     );
     return new LRUBackend();
   }
@@ -87,17 +87,17 @@ function resolveAdapter(database: string): DatabaseAdapter | undefined {
 
 if (!process.env.NCBI_EMAIL) {
   console.error(
-    "[pubmed-bio] NCBI_EMAIL is not set. NCBI asks for a contact email on every request; set it to avoid throttling.",
+    "[med-research-mcp] NCBI_EMAIL is not set. NCBI asks for a contact email on every request; set it to avoid throttling.",
   );
 }
 
 if (!process.env.PUBMED_UNPAYWALL_EMAIL && !process.env.NCBI_EMAIL) {
   console.error(
-    "[pubmed-bio] Neither PUBMED_UNPAYWALL_EMAIL nor NCBI_EMAIL is set. pubmed_fulltext needs a contact email to query Unpaywall for open-access copies; without one it can only try the institutional proxy and direct DOI access.",
+    "[med-research-mcp] Neither PUBMED_UNPAYWALL_EMAIL nor NCBI_EMAIL is set. pubmed_fulltext needs a contact email to query Unpaywall for open-access copies; without one it can only try the institutional proxy and direct DOI access.",
   );
 }
 
-const server = new McpServer({ name: "pubmed-bio", version: "0.3.0" });
+const server = new McpServer({ name: "med-research-mcp", version: "0.3.0" });
 
 const DATABASES = ["pubmed", "europepmc", "chinaxiv", "russiarxiv"] as const;
 
@@ -388,7 +388,7 @@ function shutdown(signal: string): void {
     try {
       maybeClose.call(cache);
     } catch (err) {
-      console.error(`[pubmed-bio] error closing cache on ${signal}:`, err);
+      console.error(`[med-research-mcp] error closing cache on ${signal}:`, err);
     }
   }
   process.exit(0);
@@ -400,10 +400,10 @@ async function main(): Promise<void> {
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => shutdown(signal));
   }
-  console.error("[pubmed-bio] MCP server ready on stdio.");
+  console.error("[med-research-mcp] MCP server ready on stdio.");
 }
 
 main().catch((err) => {
-  console.error("[pubmed-bio] fatal:", err);
+  console.error("[med-research-mcp] fatal:", err);
   process.exit(1);
 });

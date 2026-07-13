@@ -1,9 +1,9 @@
 ---
 name: pubmed-research
-description: Use when researching biomedical, supplement, peptide, or biohacking evidence with the pubmed-bio MCP server (tools pubmed_search and pubmed_grade). Covers writing precise PubMed queries with field tags, reading the evidence grades (0-5 scores, study types, confidence), and when to escalate from the cheap keyword grade to LLM deep-grading. Trigger on questions about what the research/evidence says for a compound, dose, intervention, or biomarker.
+description: Use when researching biomedical, supplement, peptide, or biohacking evidence with the med-research-mcp MCP server (tools pubmed_search and pubmed_grade). Covers writing precise PubMed queries with field tags, reading the evidence grades (0-5 scores, study types, confidence), and when to escalate from the cheap keyword grade to LLM deep-grading. Trigger on questions about what the research/evidence says for a compound, dose, intervention, or biomarker.
 ---
 
-# Using the pubmed-bio MCP
+# Using the med-research-mcp MCP
 
 Two tools, a cheap-first workflow. **Always start with `pubmed_search`** (free, keyword-graded). **Escalate to `pubmed_grade`** (LLM, costs tokens) only for the few papers where the stakes justify it.
 
