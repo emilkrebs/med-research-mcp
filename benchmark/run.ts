@@ -18,7 +18,7 @@ import "./lib/loadenv.js"; // MUST be first — populates process.env before con
 import { parseArgs } from "node:util";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CONDITIONS, DEFAULTS, JUDGE, MODELS, NORMALIZATION, WEIGHTS, type ModelSpec } from "./lib/config.js";
+import { CONDITIONS, DEFAULTS, MODELS, NORMALIZATION, WEIGHTS, type ModelSpec } from "./lib/config.js";
 import { QUERIES, queryById } from "./lib/queries.js";
 import type { BenchmarkQuery, Category, ConditionId, RunRecord, ScoreRow } from "./lib/types.js";
 import { runOne } from "./lib/agent.js";
@@ -150,8 +150,6 @@ function preflight(models: ModelSpec[], conditions: ConditionId[], queries: Benc
   const problems: string[] = [];
   const need = new Set<string>();
   for (const m of models) need.add(m.apiKeyEnv);
-  const needsJudge = queries.some((q) => q.answerKey.kind === "rubric");
-  if (needsJudge) need.add(JUDGE.apiKeyEnv); // rubric scoring uses the judge model
   for (const env of need) if (!process.env[env]) problems.push(`Missing ${env}`);
   if (conditions.includes("web-search") && !process.env.BRAVE_API_KEY) problems.push("Missing BRAVE_API_KEY (condition B)");
   if (!process.env.NCBI_EMAIL) console.warn("⚠️  NCBI_EMAIL not set — NCBI may throttle. Set it to a contact email.");

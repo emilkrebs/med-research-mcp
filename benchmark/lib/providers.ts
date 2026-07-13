@@ -9,7 +9,7 @@
 import type { LanguageModel } from "ai";
 import type { ModelSpec, Provider } from "./config.js";
 
-type ProviderFactory = (apiKey: string) => (modelId: string) => LanguageModel;
+type ProviderFactory = (apiKey: string, baseURL?: string) => (modelId: string) => LanguageModel;
 
 const cache = new Map<Provider, ProviderFactory>();
 
@@ -22,17 +22,17 @@ async function loadProvider(provider: Provider): Promise<ProviderFactory> {
     switch (provider) {
       case "openai": {
         const { createOpenAI } = await import("@ai-sdk/openai");
-        factory = (apiKey) => createOpenAI({ apiKey });
+        factory = (apiKey, baseURL) => createOpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
         break;
       }
       case "anthropic": {
         const { createAnthropic } = await import("@ai-sdk/anthropic");
-        factory = (apiKey) => createAnthropic({ apiKey });
+        factory = (apiKey, baseURL) => createAnthropic({ apiKey, ...(baseURL ? { baseURL } : {}) });
         break;
       }
       case "deepseek": {
         const { createDeepSeek } = await import("@ai-sdk/deepseek");
-        factory = (apiKey) => createDeepSeek({ apiKey });
+        factory = (apiKey, baseURL) => createDeepSeek({ apiKey, ...(baseURL ? { baseURL } : {}) });
         break;
       }
       default: {
@@ -57,6 +57,7 @@ export async function resolveModel(spec: ModelSpec): Promise<LanguageModel> {
   if (!apiKey) {
     throw new Error(`Missing API key: set ${spec.apiKeyEnv} to run model "${spec.label}" (${spec.provider}/${spec.modelId}).`);
   }
+  const baseURL = spec.baseUrlEnv ? process.env[spec.baseUrlEnv] : undefined;
   const factory = await loadProvider(spec.provider);
-  return factory(apiKey)(spec.modelId);
+  return factory(apiKey, baseURL)(spec.modelId);
 }

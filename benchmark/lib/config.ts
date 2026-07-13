@@ -22,6 +22,8 @@ export interface ModelSpec {
   modelId: string;
   /** Env var holding the API key. */
   apiKeyEnv: string;
+  /** Optional env var holding a custom base URL (proxy, local server, Azure, etc.). */
+  baseUrlEnv?: string;
 }
 
 /**
@@ -34,6 +36,10 @@ export interface ModelSpec {
  *     modelId: "claude-sonnet-4-5", apiKeyEnv: "ANTHROPIC_API_KEY" }
  *   { label: "gpt-4o", provider: "openai",
  *     modelId: "gpt-4o-2024-08-06", apiKeyEnv: "OPENAI_API_KEY" }
+ *
+ * To route a model through a proxy or local server, add baseUrlEnv:
+ *   { label: "local-llama", provider: "openai",
+ *     modelId: "llama3", apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL" }
  */
 export const MODELS: ModelSpec[] = [
   {
@@ -49,18 +55,6 @@ export const MODELS: ModelSpec[] = [
     apiKeyEnv: "DEEPSEEK_API_KEY",
   },
 ];
-
-/**
- * The model that grades free-text accuracy (synthesis rubrics, stated-value
- * extraction). Kept separate and capable so judging quality doesn't ride on the
- * model being tested. Override with `--judge <label>` or `BENCH_JUDGE_*`.
- */
-export const JUDGE: ModelSpec = {
-  label: process.env.BENCH_JUDGE_LABEL ?? "judge",
-  provider: (process.env.BENCH_JUDGE_PROVIDER as Provider) ?? "openai",
-  modelId: process.env.BENCH_JUDGE_MODEL ?? "gpt-4o-2024-08-06",
-  apiKeyEnv: process.env.BENCH_JUDGE_KEY_ENV ?? "OPENAI_API_KEY",
-};
 
 /** The three conditions and the CLI letters that select them. */
 export const CONDITIONS: Record<ConditionLetter, ConditionId> = {
