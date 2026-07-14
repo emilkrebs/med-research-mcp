@@ -234,6 +234,138 @@ function groupedBars(rows: ScoreRow[], spec: BarSpec): string {
   return serialize(svg);
 }
 
+// ─── Pooled-ratio bar chart (condition × model) ─────────────────
+
+interface PooledRatioSpec {
+  title: string;
+  /** Per-row numerator, summed across the group before dividing. */
+  numerator: (r: ScoreRow) => number;
+  /** Per-row denominator, summed across the group before dividing. */
+  denominator: (r: ScoreRow) => number;
+  yMax: number;
+  format?: (v: number) => string;
+}
+
+/**
+ * Grouped bar chart for a POOLED ratio metric, i.e. `sum(numerator) / sum(denominator)`
+ * over every row in a (condition, model) group — as opposed to `groupedBars`, which
+ * plots the MEAN of a per-row value. Those are different statistics: mean-of-ratios
+ * (e.g. averaging each response's own fabricated/cited fraction) is not the same
+ * number as the pooled ratio (summing fabricated and cited separately, then
+ * dividing), especially when responses cite differing numbers of PMIDs. Fabrication
+ * rate is defined pooled (see `summarizeCondition` in report/summary.ts), so it needs
+ * this dedicated renderer rather than being forced through `groupedBars`.
+ *
+ * Visually this mirrors `groupedBars` exactly (same dimensions, scales, axis, legend,
+ * per-model opacity ramp, and model-key notes) minus error bars — a pooled ratio has
+ * no per-row spread to show.
+ */
+function pooledRatioBars(rows: ScoreRow[], spec: PooledRatioSpec): string {
+  const W = 720;
+  const H = 420;
+  const pad = { l: 56, r: 170, t: 44, b: 60 };
+  const plotW = W - pad.l - pad.r;
+  const plotH = H - pad.t - pad.b;
+  const ms = models(rows);
+  const conds = conditions(rows);
+
+  const x0 = d3.scaleBand<ConditionId>().domain(conds).range([pad.l, pad.l + plotW]).paddingInner(0.3);
+  const x1 = d3.scaleBand<string>().domain(ms).range([0, x0.bandwidth()]).padding(0.15);
+  const y = d3.scaleLinear().domain([0, spec.yMax]).range([pad.t + plotH, pad.t]);
+
+  const svg = createSvg(W, H, spec.title);
+  yGridAxis(svg, pad, plotW, y, spec.format);
+
+  const group = svg
+    .append("g")
+    .selectAll("g")
+    .data(conds)
+    .join("g")
+    .attr("transform", (c) => `translate(${x0(c)},0)`);
+
+  group.each(function (condition) {
+    const g = d3.select(this);
+    const bars = ms
+      .map((model) => {
+        const subset = rows.filter((r) => r.model === model && r.condition === condition);
+        if (subset.length === 0) return null;
+        const num = subset.reduce((s, r) => s + spec.numerator(r), 0);
+        const den = subset.reduce((s, r) => s + spec.denominator(r), 0);
+        return { model, ratio: den > 0 ? num / den : 0 };
+      })
+      .filter((d): d is { model: string; ratio: number } => d !== null);
+
+    const bar = g
+      .selectAll("g.bar")
+      .data(bars)
+      .join("g")
+      .attr("class", "bar")
+      .attr("transform", (d) => `translate(${x1(d.model)},0)`);
+
+    bar.each(function (d, mi) {
+      const b = d3.select(this);
+      const by = y(d.ratio);
+      const opacity = ms.length > 1 ? 0.55 + (0.45 * mi) / (ms.length - 1) : 1;
+      b.append("rect")
+        .attr("y", by)
+        .attr("width", x1.bandwidth())
+        .attr("height", pad.t + plotH - by)
+        .attr("fill", colorFor(condition))
+        .attr("fill-opacity", opacity.toFixed(2));
+      b.append("text")
+        .attr("x", x1.bandwidth() / 2)
+        .attr("y", by - 4)
+        .attr("font-size", 9)
+        .attr("text-anchor", "middle")
+        .attr("fill", "#333")
+        .text(spec.format ? spec.format(d.ratio) : d.ratio.toFixed(2));
+    });
+
+    g.append("text")
+      .attr("x", x0.bandwidth() / 2)
+      .attr("y", pad.t + plotH + 20)
+      .attr("font-size", 12)
+      .attr("font-weight", 600)
+      .attr("text-anchor", "middle")
+      .text(condition);
+  });
+
+  svg
+    .append("line")
+    .attr("x1", pad.l)
+    .attr("y1", pad.t + plotH)
+    .attr("x2", pad.l + plotW)
+    .attr("y2", pad.t + plotH)
+    .attr("stroke", "#333");
+  svg.append("text").attr("x", pad.l).attr("y", 26).attr("font-size", 15).attr("font-weight", 700).text(spec.title);
+  legend(
+    svg,
+    pad.l + plotW + 24,
+    pad.t + 10,
+    conds.map((c) => ({ label: c, color: colorFor(c) })),
+  );
+  if (ms.length > 1) {
+    const notesY = pad.t + 10 + conds.length * 18 + 14;
+    svg
+      .append("text")
+      .attr("x", pad.l + plotW + 24)
+      .attr("y", notesY)
+      .attr("font-size", 10)
+      .attr("fill", "#666")
+      .text("Bars per group = models");
+    ms.forEach((m, i) => {
+      svg
+        .append("text")
+        .attr("x", pad.l + plotW + 24)
+        .attr("y", notesY + 16 + i * 15)
+        .attr("font-size", 10)
+        .attr("fill", "#666")
+        .text(`${i + 1}. ${m}`);
+    });
+  }
+  return serialize(svg);
+}
+
 // ─── Radar ──────────────────────────────────────────────────────
 
 function radar(rows: ScoreRow[]): string {
@@ -504,11 +636,13 @@ export function renderCharts(rows: ScoreRow[]): Record<string, string> {
       errorBars: false,
       format: (v) => `${Math.round(v * 100)}%`,
     }),
-    "fabrication-rate.svg": groupedBars(rows, {
+    // Pooled ratio (sum fabricated ÷ sum cited per group), matching summarizeCondition
+    // in report/summary.ts — see `pooledRatioBars` for why this can't be `groupedBars`.
+    "fabrication-rate.svg": pooledRatioBars(rows, {
       title: "Fabrication rate (invented PMIDs ÷ cited PMIDs)",
-      sel: (r) => (r.pmids_cited > 0 ? r.pmids_fabricated / r.pmids_cited : 0),
+      numerator: (r) => r.pmids_fabricated,
+      denominator: (r) => r.pmids_cited,
       yMax: 1,
-      errorBars: false,
       format: (v) => `${Math.round(v * 100)}%`,
     }),
     "evidence-histogram.svg": evidenceHistogram(rows),

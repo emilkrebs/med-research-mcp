@@ -101,7 +101,7 @@ export const DEFAULTS = {
    * empty final answer before ever synthesizing one (0% fabrication but 0
    * accuracy). 16 gives more room to converge without materially changing cost.
    */
-  maxSteps: 6,
+  maxSteps: 16,
   temperature: 0,
   /** Retries on a transient provider/network error, with backoff. */
   providerRetries: 2,

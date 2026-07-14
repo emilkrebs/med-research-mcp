@@ -2,7 +2,9 @@
  * Turn one raw `RunRecord` into a fully-scored `ScoreRow`.
  *
  * Order: verify citations (existence + evidence grade) → bullshit sub-score →
- * accuracy (answer-key or judge) → composite. For bullshit queries, accuracy is
+ * accuracy (deterministic answer-key, or a provisional citation-quality proxy
+ * for rubric queries until a human grade is applied via overrides) → composite.
+ * For bullshit queries, accuracy is
  * the rejection outcome on the 0–10 scale so the category still contributes to
  * the accuracy column, while the 25% bullshit weight does the heavy lifting.
  *
@@ -25,12 +27,11 @@ export async function scoreRun(run: RunRecord, query: BenchmarkQuery, verifier: 
   const audit = await auditCitations(run.text, verifier);
   const isBullshit = query.category === "bullshit";
   const text = String(run.text ?? "");
-  const bs =
-    isBullshit && text.trim().length === 0
-      ? audit.fabricated.length === 0
-        ? 1
-        : 0
-      : bullshitScore(text, audit, isBullshit);
+  // An empty response never counts as a correct rejection: bullshitScore already
+  // returns 0 for empty text on a bullshit query (hasRejectionLanguage("") is
+  // false), so a provider error/timeout with no text correctly scores 0 rather
+  // than being mistaken for a perfect "I can't corroborate this" rejection.
+  const bs = bullshitScore(text, audit, isBullshit);
 
   const accResult = isBullshit
     ? { score: bs * 10, detail: { score: bs * 10, kind: query.answerKey.kind as "reject" } }

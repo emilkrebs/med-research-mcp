@@ -65,6 +65,9 @@ function summarizeCondition(rows: ScoreRow[]): ConditionSummary {
     evidence_quality: stat(rows.map((r) => r.evidence_quality)),
     bullshit: stat(rows.map((r) => r.bullshit_score)),
     speed_s: stat(rows.map((r) => r.speed_s)),
+    // Pooled ratio (sum fabricated ÷ sum cited across the group), not a mean of
+    // per-row ratios. report/charts.ts's fabrication-rate.svg chart (`pooledRatioBars`)
+    // uses this same pooled formula so the chart and this table always agree.
     fabrication_rate: cited > 0 ? round(fabricated / cited) : 0,
     correct_rejection_rate: bullshitRows.length > 0 ? round(mean(bullshitRows.map((r) => r.bullshit_score))) : null,
   };

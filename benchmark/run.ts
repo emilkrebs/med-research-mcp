@@ -400,7 +400,12 @@ async function main(): Promise<void> {
   const temperature = Number(values.temperature ?? DEFAULTS.temperature);
   const maxSteps = Number(values["max-steps"] ?? DEFAULTS.maxSteps);
   const concurrency = Math.max(1, Number(values.concurrency ?? 1));
-  const outRoot = values.out ?? join("benchmark", "results");
+  // Anchor the default to the package dir (not cwd) so `npx tsx benchmark/run.ts`
+  // lands in `benchmark/results` whether launched from the repo root or from
+  // inside `benchmark/` itself — cwd-relative `join("benchmark", "results")`
+  // used to double up to `benchmark/benchmark/results` in the latter case. An
+  // explicit `--out` still wins and is resolved relative to cwd, as documented.
+  const outRoot = values.out ?? join(import.meta.dirname, "results");
   const resumeDir = values.resume as string | undefined;
 
   // Build the job matrix.

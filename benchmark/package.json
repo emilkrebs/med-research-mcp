@@ -11,6 +11,7 @@
     "bench": "tsx run.ts",
     "smoke": "tsx run.ts --runs 1 --queries factual-01",
     "smoke-baselines": "tsx run.ts --runs 1 --with-baselines --queries factual-01",
+    "grade": "tsx grade.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

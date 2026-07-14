@@ -21,8 +21,12 @@ export type ConditionLetter = "A" | "B" | "C";
  *    the library's own grader, then compared to the number the model stated.
  *  - `values` — every expected string (a dose, a PMID, a study type) must appear
  *    in the answer; score is the fraction found, fuzzy-matched.
- *  - `rubric` — an LLM judge scores the answer 0–10 against the rubric, with the
- *    real abstracts of every cited PMID supplied so it can catch unsupported claims.
+ *  - `rubric` — open-ended; there is no ground-truth string to match, so a human
+ *    reviews the answer against the rubric using `grade.ts` and writes a 0–10
+ *    accuracy into the run's `overrides.json` (applied by `--rescore`). Until a
+ *    human grades it, accuracy falls back to a provisional citation-quality
+ *    proxy (mean evidence grade of cited PMIDs × 2) — that measures citation
+ *    tier, not correctness, and must not be quoted on its own.
  *  - `reject` — a bullshit query: full marks only for correctly refusing to
  *    corroborate a study that does not exist.
  */

@@ -5,8 +5,7 @@
  * `lib/types.ts` — a typo fails the build instead of at run time.
  *
  * On `verified`: it is `true` only when the answer key can be graded against a
- * checked-against-reality ground truth, so the score does not depend on a
- * subjective LLM judge —
+ * checked-against-reality ground truth, not a subjective judgment call —
  *   - the four bullshit queries (the studies are fabricated *by us*, so "does
  *     not exist" is ground truth), and
  *   - the deterministic `values` keys, where the query forces the model to end
@@ -16,10 +15,13 @@
  *     own grader (`keywordGrade`): the study type + 0–5 score are what the tool
  *     assigns, and every pinned PMID resolves.
  * The open-ended `rubric` keys (synthesis, edge-case, compound, and the
- * find-it-yourself drill-downs) still assert real-world facts an LLM judge must
- * weigh, so they stay `verified: false`: they run and score, but the harness
- * refuses to treat them as publishable until a human confirms them (see
- * `--publish`). Fill in / review the `false` ones before quoting results.
+ * find-it-yourself drill-downs) still assert real-world facts that take human
+ * judgment to weigh, so they stay `verified: false`: they run and score
+ * automatically (a provisional citation-quality proxy, not correctness — see
+ * `grade.ts`), but the harness refuses to treat them as publishable until a
+ * human grades them with `npx tsx benchmark/grade.ts <results-dir>`, which
+ * writes accuracy into that run's `overrides.json` for `--rescore` to apply.
+ * Fill in / review the `false` ones before quoting results.
  *
  * Response contract: the deterministic factual queries tell the model to finish
  * with one line in an exact format (`ANSWER — …`). The scorer (lib/scoring/
