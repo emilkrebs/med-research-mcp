@@ -1,11 +1,14 @@
 /**
- * Central configuration: the models under test, the composite-score weights,
- * and the normalization references. Edit `MODELS` to change what gets run.
+ * Central configuration: the composite-score weights and normalization
+ * references. Models are loaded from the adjacent `models.json` catalog so
+ * swapping models doesn't require editing TypeScript.
  *
  * Every field the paper depends on lives here so a run is reproducible from a
  * single file. API keys are read from the environment, never hard-coded.
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { ConditionId, ConditionLetter } from "./types.js";
 
 /** Which AI SDK provider package backs a model. */
@@ -33,36 +36,19 @@ export interface ModelSpec {
   legacyFunctions?: boolean;
 }
 
-/**
- * The models under test. Two by default (a "pro" and a "flash"), as the spec
- * describes. The DeepSeek ids below are the spec's examples — replace them with
- * ids you can actually call, and keep them pinned.
- *
- * To benchmark Claude or GPT instead, swap in entries like:
- *   { label: "claude-sonnet-4-5", provider: "anthropic",
- *     modelId: "claude-sonnet-4-5", apiKeyEnv: "ANTHROPIC_API_KEY" }
- *   { label: "gpt-4o", provider: "openai",
- *     modelId: "gpt-4o-2024-08-06", apiKeyEnv: "OPENAI_API_KEY" }
- *
- * To route a model through a proxy or local server, add baseUrlEnv:
- *   { label: "local-llama", provider: "openai",
- *     modelId: "llama3", apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL" }
- */
-export const MODELS: ModelSpec[] = [
-  // ---- Local Ollama models ----
-  {
-    label: "qwen3.5:latest",
-    provider: "ollama",
-    modelId: "qwen3.5:latest",
-    apiKeyEnv: "OLLAMA_API_KEY",
-  },
-  {
-    label: "gemma4:latest",
-    provider: "ollama",
-    modelId: "gemma4:latest",
-    apiKeyEnv: "OLLAMA_API_KEY",
-  },
-];
+/** Model catalog loaded from `benchmark/models.json`. Edit the JSON to swap models. */
+function loadModels(): ModelSpec[] {
+  const path = fileURLToPath(new URL("../models.json", import.meta.url));
+  const raw = JSON.parse(readFileSync(path, "utf-8")) as { models: ModelSpec[] };
+  const seen = new Set<string>();
+  for (const m of raw.models) {
+    if (seen.has(m.label)) throw new Error(`Duplicate model label in models.json: "${m.label}"`);
+    seen.add(m.label);
+  }
+  return raw.models;
+}
+
+export const MODELS: ModelSpec[] = loadModels();
 
 /** The three conditions and the CLI letters that select them. */
 export const CONDITIONS: Record<ConditionLetter, ConditionId> = {

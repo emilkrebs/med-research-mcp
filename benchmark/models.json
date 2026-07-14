@@ -1,0 +1,21 @@
+{
+  "_comment": "Model catalog for med-research-mcp benchmark. Edit this file to add/remove models. Provider is one of: openai, anthropic, deepseek, ollama. Set legacyFunctions=true for DashScope MaaS endpoints.",
+  "models": [
+    {
+      "label": "qwen3.5-27b",
+      "provider": "openai",
+      "modelId": "qwen3.5-27b",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "baseUrlEnv": "OPENAI_BASE_URL",
+      "legacyFunctions": true
+    },
+    {
+      "label": "qwen3.5-122b",
+      "provider": "openai",
+      "modelId": "qwen3.5-122b-a10b",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "baseUrlEnv": "OPENAI_BASE_URL",
+      "legacyFunctions": true
+    }
+  ]
+}
