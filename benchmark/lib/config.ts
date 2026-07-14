@@ -27,10 +27,13 @@ export interface ModelSpec {
   /** Optional env var holding a custom base URL (proxy, local server, Azure, etc.). */
   baseUrlEnv?: string;
   /**
-   * When true, a custom fetch interceptor rewrites `role:"tool"` result messages
-   * to the legacy `role:"function"` format required by endpoints like DashScope
-   * MaaS that don't fully implement the current OpenAI tool-calling spec.
-   * (AI SDK v5 removed the built-in `compatibility` option.)
+   * When true, a custom fetch interceptor maps the `role:"developer"` system
+   * message AI SDK v5 emits for "reasoning" models back to `role:"system"`,
+   * which strict OpenAI-compatible endpoints (DashScope MaaS) require. Set it on
+   * the *thinking* models (they get the `developer` role); leave it off for
+   * ordinary chat models like qwen-max, which want the modern `role:"tool"`
+   * results untouched. (Name kept for compatibility; it no longer rewrites tool
+   * results to `role:"function"`.)
    */
   legacyFunctions?: boolean;
 }

@@ -44,7 +44,7 @@ Also read: `confidence` (0–1) — low confidence on a high score = escalate; `
 ## Tools, limits, errors
 
 - `literature_fetch({ids:["39123456","38987654"], database:"pubmed"})` — full abstracts + MeSH + metadata, no grading (1–50 ids).
-- `literature_fulltext({pmid:"39123456", doi:"10.1234/x"})` — article body as markdown via Unpaywall → proxy → DOI; abstract-only if paywalled.
+- `literature_fulltext({id:"39123456", doi:"10.1234/x"})` — article body as markdown via Unpaywall → proxy → DOI; abstract-only if paywalled.
 - NCBI client is shared and serialized (3 req/s anonymous, 10 with `NCBI_API_KEY`): parallel calls are **safe** but don't run faster. Prefer a few precise queries.
 - Errors: `QUERY_TOO_BROAD` (narrow + retry); `RATE_LIMIT` (wait `retryAfter`); `NETWORK_ERROR`/`PARSE_FAILURE` (retry once, then say the DB is unreachable).
 

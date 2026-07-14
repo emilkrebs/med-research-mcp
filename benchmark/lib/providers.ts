@@ -5,10 +5,11 @@
  * DeepSeek never needs `@ai-sdk/openai` or `@ai-sdk/anthropic` installed — and a
  * missing key or package fails loudly with an actionable message, not a stack trace.
  *
- * When `legacyFunctions:true` is set on a model spec, a custom fetch
- * interceptor rewrites `role:"tool"` result messages to the legacy
- * `role:"function"` format required by endpoints like DashScope MaaS that don't
- * fully implement the newer OpenAI tool-calling spec.
+ * When `legacyFunctions:true` is set on a model spec, a custom fetch interceptor
+ * maps the `role:"developer"` system message the SDK emits for "reasoning"
+ * models back to `role:"system"`, which strict OpenAI-compatible endpoints
+ * (DashScope MaaS) require. (The flag keeps its historical name; it no longer
+ * rewrites tool results, since this endpoint wants the modern `role:"tool"`.)
  */
 
 import type { LanguageModel } from "ai";
@@ -16,40 +17,28 @@ import type { ModelSpec, Provider } from "./config.js";
 
 // ─── Legacy function-calling fetch interceptor ───────────────────────────────
 
-type AnyMsg = {
-  role: string;
-  content?: unknown;
-  tool_call_id?: string;
-  tool_calls?: Array<{ id: string; function: { name: string } }>;
-};
+type AnyMsg = { role: string };
 
 /**
- * Returns a `fetch` replacement that transforms tool-result messages
- * (`role:"tool"`) into legacy function-result messages (`role:"function"`)
- * before each request is sent.  The function name is recovered from the
- * preceding assistant message's `tool_calls` list.
+ * Returns a `fetch` replacement that maps `role:"developer"` → `role:"system"`
+ * before each request is sent. AI SDK v5 emits the system prompt as `developer`
+ * for models it classifies as "reasoning" (the Qwen *thinking* models qualify),
+ * but strict OpenAI-*compatible* endpoints (Alibaba MaaS, etc.) only allow
+ * system/assistant/user/tool/function and 400 on `developer`.
+ *
+ * Tool-result messages are deliberately left as `role:"tool"`: this endpoint
+ * accepts the modern format, and some models (e.g. qwen-max) *reject* the legacy
+ * `role:"function"` rewrite ("tool_calls must be followed by tool messages").
+ * Only touches requests that actually carry a `developer` role.
  */
-function makeLegacyFetch(): typeof fetch {
+function makeCompatRoleFetch(): typeof fetch {
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     if (init?.body && typeof init.body === "string") {
       try {
         const body = JSON.parse(init.body) as { messages?: AnyMsg[] };
-        if (body.messages?.some((m) => m.role === "tool")) {
-          // Build tool_call_id → function name from preceding assistant turns.
-          const nameById = new Map<string, string>();
-          for (const msg of body.messages) {
-            if (msg.role === "assistant" && msg.tool_calls) {
-              for (const tc of msg.tool_calls) nameById.set(tc.id, tc.function.name);
-            }
-          }
-          body.messages = body.messages.map((msg) => {
-            if (msg.role !== "tool") return msg;
-            return {
-              role: "function",
-              name: (msg.tool_call_id ? nameById.get(msg.tool_call_id) : undefined) ?? "tool",
-              content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
-            };
-          });
+        const messages = body.messages;
+        if (Array.isArray(messages) && messages.some((m) => m.role === "developer")) {
+          body.messages = messages.map((m) => (m.role === "developer" ? { ...m, role: "system" } : m));
           init = { ...init, body: JSON.stringify(body) };
         }
       } catch {
@@ -75,12 +64,19 @@ async function loadProvider(provider: Provider): Promise<ProviderFactory> {
     switch (provider) {
       case "openai": {
         const { createOpenAI } = await import("@ai-sdk/openai");
-        factory = (apiKey, baseURL, customFetch) =>
-          createOpenAI({
+        factory = (apiKey, baseURL, customFetch) => {
+          const provider = createOpenAI({
             apiKey,
             ...(baseURL ? { baseURL } : {}),
             ...(customFetch ? { fetch: customFetch } : {}),
           });
+          // Use Chat Completions, not the default Responses API. The Responses
+          // API is OpenAI-proprietary; OpenAI-*compatible* endpoints (DashScope
+          // MaaS, Ollama, most third parties) only implement /chat/completions,
+          // and hitting /responses makes them 400 on tool calls (and leaves the
+          // message array empty, so the legacyFunctions interceptor never fires).
+          return (modelId) => provider.chat(modelId);
+        };
         break;
       }
       case "anthropic": {
@@ -96,11 +92,14 @@ async function loadProvider(provider: Provider): Promise<ProviderFactory> {
       case "ollama": {
         // Ollama has an OpenAI-compatible API at http://localhost:11434/v1
         const { createOpenAI } = await import("@ai-sdk/openai");
-        factory = (apiKey, baseURL) =>
-          createOpenAI({
+        factory = (apiKey, baseURL) => {
+          const provider = createOpenAI({
             apiKey: apiKey || "ollama",
             ...(baseURL ? { baseURL } : { baseURL: "http://localhost:11434/v1" }),
           });
+          // Chat Completions, not Responses — Ollama only implements the former.
+          return (modelId) => provider.chat(modelId);
+        };
         break;
       }
       default: {
@@ -127,6 +126,6 @@ export async function resolveModel(spec: ModelSpec): Promise<LanguageModel> {
   }
   const baseURL = spec.baseUrlEnv ? process.env[spec.baseUrlEnv] : undefined;
   const factory = await loadProvider(spec.provider);
-  return factory(apiKey, baseURL, spec.legacyFunctions ? makeLegacyFetch() : undefined)(spec.modelId);
+  return factory(apiKey, baseURL, spec.legacyFunctions ? makeCompatRoleFetch() : undefined)(spec.modelId);
 }
 
