@@ -147,9 +147,10 @@ Then drag the resulting `dist/med-research-mcp.mcpb` onto Claude Desktop. The in
 
 ## Agent skills
 
-This repo ships two [Agent Skills](skills/) that make the MCP self-guiding:
+This repo ships three [Agent Skills](skills/) that make the MCP self-guiding, in two tiers:
 
-- **[med-research](skills/med-research/SKILL.md)** — teaches an AI how to drive the three tools: writing precise PubMed queries with field tags, reading evidence grades (scores, confidence, limitations), when to use `literature_fetch` vs `literature_fulltext`, multi-database searches, and how to report findings (cite PMIDs, surface red flags, not-medical-advice).
+- **[med-research](skills/med-research/SKILL.md)** — the lean workflow skill (~85 lines): how to drive the three tools, write precise PubMed queries with field tags, read evidence grades (scores, confidence, limitations), choose `literature_fetch` vs `literature_fulltext`, do multi-database searches, and report findings. Includes three few-shot patterns (simple lookup, evidence synthesis, bullshit detection) so even small models converge on the right workflow, plus a pointer to the EBM reference below.
+- **[med-research-ebm](skills/med-research-ebm/SKILL.md)** — the EBM critical-appraisal reference, loaded only when a paper is about to drive a real decision: PICO framing, RoB 2 / ROBINS-I, AMSTAR-2, effect sizes/CIs/NNT, heterogeneity, Bradford Hill causation, applicability, and conflicts of interest. Kept separate so the workflow skill stays lean and fast.
 - **[med-research-setup](skills/med-research-setup/SKILL.md)** — guides an AI helping a user install, configure, and troubleshoot the server across clients (Claude Code, Claude Desktop `.mcpb`, Cursor, Hermes) and credentials.
 
 Install them into Claude Code so they activate alongside the MCP:

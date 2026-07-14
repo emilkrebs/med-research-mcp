@@ -17,13 +17,13 @@ const REJECTION_PATTERNS: RegExp[] = [
   /\bno (such|record|evidence|results?|trace|matching|published|indexed|peer-reviewed)\b/i,
   /\bdoes( not|n't) (exist|appear|seem)/i,
   /\bdoesn't appear to (exist|be)/i,
-  /\b(appears? to be|likely|probably) (fabricat|fiction|made[- ]up|invented|hypothetical)/i,
+  /\b(appears? to be|likely|probably) (fabricate|fiction|made[- ]up|invented|hypothetical)/i,
   /\bi (can|could)( not|n't) (find|locate|verify)/i,
   /\bnot aware of\b/i,
   /\bthere (is|are) no\b/i,
   /\bno (record|mention) of\b/i,
   /\bcannot (find|locate|verify|confirm)/i,
-  /\bfictional\b|\bfabricated\b|\bhallucinat/i,
+  /\bfictional\b|\bfabricated\b|\bhallucinate/i,
 ];
 
 export function hasRejectionLanguage(text: string): boolean {
