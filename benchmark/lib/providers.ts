@@ -62,7 +62,7 @@ function makeLegacyFetch(): typeof fetch {
 
 // ─── Provider factory ─────────────────────────────────────────────────────────
 
-type ProviderFactory = (apiKey: string, baseURL?: string, compatibility?: "strict" | "compatible") => (modelId: string) => LanguageModel;
+type ProviderFactory = (apiKey: string, baseURL?: string, customFetch?: typeof fetch) => (modelId: string) => LanguageModel;
 
 const cache = new Map<Provider, ProviderFactory>();
 
@@ -75,12 +75,11 @@ async function loadProvider(provider: Provider): Promise<ProviderFactory> {
     switch (provider) {
       case "openai": {
         const { createOpenAI } = await import("@ai-sdk/openai");
-        factory = (apiKey, baseURL, compatibility) =>
+        factory = (apiKey, baseURL, customFetch) =>
           createOpenAI({
             apiKey,
             ...(baseURL ? { baseURL } : {}),
-            ...(compatibility ? { compatibility } : {}),
-            ...(compatibility === "compatible" ? { fetch: makeLegacyFetch() } : {}),
+            ...(customFetch ? { fetch: customFetch } : {}),
           });
         break;
       }
@@ -118,6 +117,6 @@ export async function resolveModel(spec: ModelSpec): Promise<LanguageModel> {
   }
   const baseURL = spec.baseUrlEnv ? process.env[spec.baseUrlEnv] : undefined;
   const factory = await loadProvider(spec.provider);
-  return factory(apiKey, baseURL, spec.compatibility)(spec.modelId);
+  return factory(apiKey, baseURL, spec.legacyFunctions ? makeLegacyFetch() : undefined)(spec.modelId);
 }
 

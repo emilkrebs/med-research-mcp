@@ -25,11 +25,12 @@ export interface ModelSpec {
   /** Optional env var holding a custom base URL (proxy, local server, Azure, etc.). */
   baseUrlEnv?: string;
   /**
-   * OpenAI-provider compatibility mode. Set to `'compatible'` for endpoints that
-   * use the legacy `role:"function"` tool format (e.g. DashScope, Ollama).
-   * Defaults to `'strict'` (standard OpenAI tool-call format).
+   * When true, a custom fetch interceptor rewrites `role:"tool"` result messages
+   * to the legacy `role:"function"` format required by endpoints like DashScope
+   * MaaS that don't fully implement the current OpenAI tool-calling spec.
+   * (AI SDK v5 removed the built-in `compatibility` option.)
    */
-  compatibility?: "strict" | "compatible";
+  legacyFunctions?: boolean;
 }
 
 /**
@@ -49,24 +50,28 @@ export interface ModelSpec {
  */
 export const MODELS: ModelSpec[] = [
   {
-    label: "deepseek-v4-pro",
-    provider: "deepseek",
-    modelId: "deepseek-v4-pro",
-    apiKeyEnv: "DEEPSEEK_API_KEY",
-  },
-  {
-    label: "deepseek-v4-flash",
-    provider: "deepseek",
-    modelId: "deepseek-v4-flash",
-    apiKeyEnv: "DEEPSEEK_API_KEY",
-  },
-  {
-    label: "qwen-plus-2025-07-28",
+    label: "qwen3.5-flash",
     provider: "openai",
-    modelId: "qwen-plus-2025-07-28",
+    modelId: "qwen3.5-flash",
     apiKeyEnv: "OPENAI_API_KEY",
     baseUrlEnv: "OPENAI_BASE_URL",
-    compatibility: "compatible",
+    legacyFunctions: true,
+  },
+  {
+    label: "qwen3.5-35b-a3b",
+    provider: "openai",
+    modelId: "qwen3.5-35b-a3b",
+    apiKeyEnv: "OPENAI_API_KEY",
+    baseUrlEnv: "OPENAI_BASE_URL",
+    legacyFunctions: true,
+  },
+  {
+    label: "qwen3.5-397b-a17b",
+    provider: "openai",
+    modelId: "qwen3.5-397b-a17b",
+    apiKeyEnv: "OPENAI_API_KEY",
+    baseUrlEnv: "OPENAI_BASE_URL",
+    legacyFunctions: true,
   },
 ];
 
