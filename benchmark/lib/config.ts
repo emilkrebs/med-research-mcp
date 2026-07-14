@@ -50,9 +50,9 @@ export interface ModelSpec {
  */
 export const MODELS: ModelSpec[] = [
   {
-    label: "qwen3.5-flash",
+    label: "qwen3.5-27b",
     provider: "openai",
-    modelId: "qwen3.5-flash",
+    modelId: "qwen3.5-27b",
     apiKeyEnv: "OPENAI_API_KEY",
     baseUrlEnv: "OPENAI_BASE_URL",
     legacyFunctions: true,

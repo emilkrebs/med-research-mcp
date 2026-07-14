@@ -6,10 +6,15 @@
  * C mcp) for each model, `--runs` times, scores every response, and writes a
  * timestamped, auditable result tree under `benchmark/results/`.
  *
+ * Pass 1 (run):
  *   npx tsx benchmark/run.ts                              # defaults (spec)
  *   npx tsx benchmark/run.ts --runs 1 --models deepseek-v4-pro --conditions C
  *   npx tsx benchmark/run.ts --publish                   # full run + report
  *   npx tsx benchmark/run.ts --dry-run                   # plan only, no API calls
+ *
+ * Pass 2 (rescore):
+ *   npx tsx benchmark/run.ts --rescore results/2026-07-14-011335
+ *   npx tsx benchmark/run.ts --rescore results/2026-07-14-011335 --overrides path/to/overrides.json
  *
  * See `--help`.
  */
@@ -20,13 +25,27 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CONDITIONS, DEFAULTS, MODELS, NORMALIZATION, WEIGHTS, type ModelSpec } from "./lib/config.js";
 import { QUERIES, queryById } from "./lib/queries.js";
-import type { BenchmarkQuery, Category, ConditionId, RunRecord, ScoreRow } from "./lib/types.js";
+import type {
+  BenchmarkQuery,
+  Category,
+  ConditionId,
+  RunRecord,
+  ScoreRow,
+  ScoreBreakdown,
+  ScoreOverride,
+} from "./lib/types.js";
 import { runOne } from "./lib/agent.js";
 import { Verifier } from "./lib/scoring/verify.js";
 import { scoreRun } from "./lib/scoring/score.js";
 import { toCsv } from "./lib/report/csv.js";
 import { buildSummary, toMarkdown, type SummaryMeta } from "./lib/report/summary.js";
 import { renderCharts } from "./lib/report/charts.js";
+import {
+  loadOverrides,
+  applyOverrides,
+  warnStaleOverrides,
+  type RawRowWithBreakdown,
+} from "./lib/overrides.js";
 
 const CATEGORIES: Category[] = ["factual", "drill-down", "synthesis", "edge-case", "compound", "bullshit"];
 
@@ -35,6 +54,7 @@ function help(): void {
 
 Usage: npx tsx benchmark/run.ts [options]
 
+Pass 1 — Run + score:
   --runs <n>          runs per query per model (default ${DEFAULTS.runs})
   --models <list>     comma-separated model labels (default: all in config)
   --conditions <list> comma-separated A|B|C or closed-book|web-search|mcp (default: mcp)
@@ -47,6 +67,11 @@ Usage: npx tsx benchmark/run.ts [options]
   --resume <dir>      reuse raw RunRecord JSONs from an existing results dir; only re-run missing jobs
   --publish           full MCP run (3 runs, all models, MCP condition) + report
   --dry-run           print the plan and preflight, make no API calls
+
+Pass 2 — Rescore from raw + overrides (no API calls):
+  --rescore <dir>     read raw JSON from dir/raw, apply overrides, regenerate reports in place
+  --overrides <path>  path to overrides.json (default: benchmark/overrides.json)
+
   --help
 
 Known models: ${MODELS.map((m) => m.label).join(", ")}
@@ -159,6 +184,127 @@ function preflight(models: ModelSpec[], conditions: ConditionId[], queries: Benc
   return problems;
 }
 
+async function rescore(
+  resultsDir: string,
+  overridesPath: string,
+): Promise<void> {
+  const rawDir = join(resultsDir, "raw");
+  const chartsDir = join(resultsDir, "charts");
+  const files = await readdir(rawDir);
+
+  const raw: RawRowWithBreakdown[] = [];
+  const verifier = new Verifier();
+
+  for (const file of files) {
+    if (!file.endsWith(".json")) continue;
+    const content = JSON.parse(await readFile(join(rawDir, file), "utf-8")) as Record<string, unknown>;
+    const record = content as unknown as RunRecord;
+    const breakdown = content._scoring as ScoreBreakdown | undefined;
+    const query = queryById(record.queryId);
+
+    let row: ScoreRow;
+    let bd: ScoreBreakdown;
+
+    if (query && (!breakdown || record.error)) {
+      try {
+        const result = await scoreRun(record, query, verifier);
+        row = result.row;
+        bd = result.breakdown;
+      } catch {
+        row = zeroRow(record);
+        bd = {
+          accuracy: { score: 0, kind: query.answerKey.kind },
+          evidenceQuality: { score: 0, pmids: [] },
+          bullshit: { score: 0, rejected: false, fabricatedPmids: [] },
+          composite: 0,
+        };
+      }
+    } else if (breakdown) {
+      row = {
+        query_id: record.queryId,
+        category: record.category,
+        condition: record.condition,
+        model: record.model,
+        run: record.run,
+        accuracy: breakdown.accuracy.score,
+        evidence_quality: breakdown.evidenceQuality.score,
+        bullshit_score: breakdown.bullshit.score,
+        speed_s: record.speedS,
+        input_tokens: record.usage.inputTokens,
+        output_tokens: record.usage.outputTokens,
+        tool_calls: record.toolCallCount,
+        tools_used: record.toolsUsed.join(","),
+        pmids_cited: breakdown.evidenceQuality.pmids.length,
+        pmids_valid: breakdown.evidenceQuality.pmids.filter((p) => p.valid).length,
+        pmids_fabricated: breakdown.bullshit.fabricatedPmids.length,
+        composite: breakdown.composite,
+      };
+      bd = breakdown;
+    } else {
+      console.warn(`  ⚠  ${file}: no query definition and no _scoring — skipping`);
+      continue;
+    }
+
+    raw.push({ filename: file, row, breakdown: bd, record: content });
+  }
+
+  console.log(`Loaded ${raw.length} raw records from ${rawDir}`);
+
+  const overrides = await loadOverrides(overridesPath);
+  if (overrides) {
+    console.log(`Loaded ${overrides.overrides.length} overrides from ${overridesPath}`);
+  } else {
+    console.log("No overrides file found — rescore from raw scores only.");
+  }
+
+  const staleWarnings = overrides ? warnStaleOverrides(overrides, QUERIES) : [];
+  for (const w of staleWarnings) console.warn(`  ⚠  ${w}`);
+
+  const queryByVersion = new Map<string, number>();
+  for (const q of QUERIES) if (q.answerKeyVersion !== undefined) queryByVersion.set(q.id, q.answerKeyVersion);
+
+  const { rows, applied, excluded, warnings } = applyOverrides(raw, overrides, queryByVersion);
+
+  for (const w of warnings) console.warn(`  ⚠  ${w}`);
+  if (applied.size > 0) console.log(`  Applied ${applied.size} override(s) across ${applied.size} row(s)`);
+  if (excluded.length > 0) console.log(`  Excluded ${excluded.length} score(s) from aggregation`);
+
+  const scoredRows = rows.filter((r) => !Number.isNaN(r.composite));
+  scoredRows.sort(
+    (a, b) =>
+      a.query_id.localeCompare(b.query_id) ||
+      a.condition.localeCompare(b.condition) ||
+      a.model.localeCompare(b.model) ||
+      a.run - b.run,
+  );
+
+  const meta: SummaryMeta = {
+    timestamp: resultsDir,
+    models: [...new Set(scoredRows.map((r) => r.model))],
+    conditions: [...new Set(scoredRows.map((r) => r.condition))],
+    runs: Math.max(1, ...scoredRows.map((r) => r.run)),
+    total_responses: scoredRows.length,
+    weights: { ...WEIGHTS },
+    normalization: { ...NORMALIZATION },
+    unverified_queries: QUERIES.filter((q) => !q.verified).map((q) => q.id),
+    overrides_applied: applied.size,
+    overrides_excluded: excluded.length,
+  };
+
+  const summary = buildSummary(scoredRows, meta);
+
+  await mkdir(chartsDir, { recursive: true });
+  await writeFile(join(resultsDir, "scores.csv"), toCsv(scoredRows));
+  await writeFile(join(resultsDir, "summary.json"), JSON.stringify(summary, null, 2));
+  await writeFile(join(resultsDir, "summary.md"), toMarkdown(summary));
+  for (const [name, svg] of Object.entries(renderCharts(scoredRows))) {
+    await writeFile(join(chartsDir, name), svg);
+  }
+
+  console.log(`\n  Scores regenerated in ${resultsDir}`);
+  console.log(toMarkdown(summary));
+}
+
 async function main(): Promise<void> {
   const { values } = parseArgs({
     options: {
@@ -174,12 +320,19 @@ async function main(): Promise<void> {
       resume: { type: "string" },
       publish: { type: "boolean" },
       "dry-run": { type: "boolean" },
+      rescore: { type: "string" },
+      overrides: { type: "string" },
       help: { type: "boolean" },
     },
     allowPositionals: false,
   });
 
   if (values.help) return help();
+
+  if (values.rescore) {
+    const overridesPath = (values.overrides as string) ?? join("benchmark", "overrides.json");
+    return rescore(values.rescore as string, overridesPath);
+  }
 
   const publish = Boolean(values.publish);
   const withBaselines = Boolean(values["with-baselines"]);
@@ -258,26 +411,33 @@ async function main(): Promise<void> {
     const resumed = resumeRecords.get(filename);
     const record: RunRecord = resumed ?? await runOne(job.query, job.condition, job.model, job.run, { temperature, maxSteps });
     if (resumed) console.log(`  ↩  Reusing existing: ${filename}`);
-    await writeFile(join(rawDir, filename), JSON.stringify(record, null, 2));
 
-    // Scoring hits the network (PubMed verification, LLM judge). A transient
-    // failure must not sink a run that already cost real API calls — degrade to
-    // a zero row so the batch completes and every raw response is preserved.
     let row: ScoreRow;
+    let breakdown: ScoreBreakdown | undefined;
     let scoreErr = "";
     try {
-      row = await scoreRun(record, job.query, verifier);
+      const result = await scoreRun(record, job.query, verifier);
+      row = result.row;
+      breakdown = result.breakdown;
     } catch (err) {
       scoreErr = err instanceof Error ? err.message : String(err);
       row = zeroRow(record);
     }
+
+    const recordWithScoring = breakdown
+      ? { ...record, _scoring: breakdown }
+      : record;
+    await writeFile(join(rawDir, filename), JSON.stringify(recordWithScoring, null, 2));
+
     rows.push(row);
     done++;
     const status = record.error
       ? `ERROR: ${record.error}`
       : scoreErr
         ? `SCORING FAILED: ${scoreErr}`
-        : `composite ${row.composite.toFixed(2)}`;
+        : breakdown
+          ? `composite ${row.composite.toFixed(2)} | acc ${row.accuracy.toFixed(1)} ev ${row.evidence_quality.toFixed(1)} bs ${row.bullshit_score.toFixed(2)}`
+          : `composite ${row.composite.toFixed(2)}`;
     console.log(`[${done}/${jobs.length}] ${job.query.id} ${job.condition} ${job.model.label} r${job.run} — ${status}`);
   });
 

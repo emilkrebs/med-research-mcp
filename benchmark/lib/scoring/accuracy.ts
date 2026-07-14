@@ -8,7 +8,7 @@
  *   reject         → handled by the bullshit scorer; accuracy mirrors it in score.ts.
  */
 
-import type { BenchmarkQuery } from "../types.js";
+import type { AnswerKey, BenchmarkQuery, AccuracyDetail } from "../types.js";
 import type { StudyType } from "../core.js";
 import type { CitationAudit, Verifier } from "./verify.js";
 
@@ -32,10 +32,28 @@ function extractStatedScore(text: string): number | undefined {
   return undefined;
 }
 
-/** Score an evidence-score query against live-computed ground truth. */
-async function scoreEvidenceScore(pmid: string, text: string, verifier: Verifier): Promise<number> {
+/** Extract stated study type from text by pattern matching. */
+function extractStatedType(text: string): string | undefined {
+  for (const [type, pattern] of Object.entries(TYPE_PATTERNS) as [StudyType, RegExp][]) {
+    if (type === "unknown") continue;
+    if (pattern.test(text)) return type;
+  }
+  return undefined;
+}
+
+/** Score an evidence-score query against live-computed ground truth. Returns score + detail. */
+async function scoreEvidenceScore(
+  pmid: string,
+  text: string,
+  verifier: Verifier,
+): Promise<{ score: number; detail: AccuracyDetail }> {
   const truth = await verifier.verifyOne(pmid);
-  if (!truth.exists) return 0; // unresolved key PMID — data problem, not the model's fault, but unscoreable
+  if (!truth.exists) {
+    return {
+      score: 0,
+      detail: { score: 0, kind: "evidence-score", statedScore: extractStatedScore(text), trueScore: undefined },
+    };
+  }
 
   const typeKnown = truth.studyType !== "unknown";
   const typeWeight = typeKnown ? 5 : 0;
@@ -49,15 +67,34 @@ async function scoreEvidenceScore(pmid: string, text: string, verifier: Verifier
     const diff = Math.abs(stated - truth.evidenceScore);
     scorePoints = Math.max(0, 1 - diff / 5) * scoreWeight;
   }
-  return Math.round((typePoints + scorePoints) * 100) / 100;
+  const score = Math.round((typePoints + scorePoints) * 100) / 100;
+  return {
+    score,
+    detail: {
+      score,
+      kind: "evidence-score",
+      statedScore: stated,
+      trueScore: truth.evidenceScore,
+      statedType: extractStatedType(text),
+      trueType: truth.studyType,
+    },
+  };
 }
 
 /** Score a values query: fraction of expected strings present, fuzzy on whitespace/case. */
-function scoreValues(expected: string[], text: string): number {
-  if (expected.length === 0) return 0;
+function scoreValues(expected: string[], text: string): { score: number; detail: AccuracyDetail } {
+  if (expected.length === 0) {
+    return { score: 0, detail: { score: 0, kind: "values", hits: [], missed: expected } };
+  }
   const hay = text.toLowerCase().replace(/\s+/g, " ");
-  const hits = expected.filter((e) => hay.includes(e.toLowerCase().replace(/\s+/g, " "))).length;
-  return Math.round((hits / expected.length) * 10 * 100) / 100;
+  const hits: string[] = [];
+  const missed: string[] = [];
+  for (const e of expected) {
+    if (hay.includes(e.toLowerCase().replace(/\s+/g, " "))) hits.push(e);
+    else missed.push(e);
+  }
+  const score = Math.round((hits.length / expected.length) * 10 * 100) / 100;
+  return { score, detail: { score, kind: "values", hits, missed } };
 }
 
 /**
@@ -65,9 +102,15 @@ function scoreValues(expected: string[], text: string): number {
  * Scales evidenceQuality (0–5 mean over valid PMIDs) to 0–10.
  * Returns 0 when citations were expected (`expectPmids`) but none resolved.
  */
-function scoreRubric(expectPmids: boolean | undefined, audit: CitationAudit): number {
-  if (expectPmids && audit.valid.length === 0) return 0;
-  return Math.round(audit.evidenceQuality * 2 * 100) / 100;
+function scoreRubric(expectPmids: boolean | undefined, audit: CitationAudit): { score: number; detail: AccuracyDetail } {
+  const score =
+    expectPmids && audit.valid.length === 0 ? 0 : Math.round(audit.evidenceQuality * 2 * 100) / 100;
+  return { score, detail: { score, kind: "rubric" } };
+}
+
+export interface AccuracyResult {
+  score: number;
+  detail: AccuracyDetail;
 }
 
 /** Compute the 0–10 accuracy for a (non-bullshit) run. Bullshit queries score in score.ts. */
@@ -76,7 +119,7 @@ export async function scoreAccuracy(
   answer: string,
   audit: CitationAudit,
   verifier: Verifier, // eslint-disable-line @typescript-eslint/no-unused-vars
-): Promise<number> {
+): Promise<AccuracyResult> {
   const key = query.answerKey;
   switch (key.kind) {
     case "evidence-score":
@@ -86,7 +129,6 @@ export async function scoreAccuracy(
     case "rubric":
       return scoreRubric(key.expectPmids, audit);
     case "reject":
-      // Scored via the bullshit path; see score.ts.
-      return 0;
+      return { score: 0, detail: { score: 0, kind: "reject" } };
   }
 }

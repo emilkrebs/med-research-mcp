@@ -1,0 +1,25 @@
+{
+  "notes": {
+    "factual-02": {
+      "answer_key_note": "Correct answer is 50mg, not 25mg — key was wrong"
+    }
+  },
+  "overrides": [
+    {
+      "queryId": "synthesis-03",
+      "condition": "mcp",
+      "model": "qwen3.5-27b",
+      "run": 1,
+      "accuracy": 8.0,
+      "reason": "Model correctly identified effect but used different terminology than answer key"
+    },
+    {
+      "queryId": "drill-down-01",
+      "condition": "closed-book",
+      "model": "*",
+      "run": "*",
+      "composite": null,
+      "reason": "Marking this query as unscored — answer key needs verification"
+    }
+  ]
+}

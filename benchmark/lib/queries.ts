@@ -288,3 +288,6 @@ export const QUERIES: BenchmarkQuery[] = [
 export function queryById(id: string): BenchmarkQuery | undefined {
   return QUERIES.find((q) => q.id === id);
 }
+
+/** Default answer key version applied to every query that does not declare one. */
+for (const q of QUERIES) q.answerKeyVersion ??= 1;

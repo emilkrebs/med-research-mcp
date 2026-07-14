@@ -5,15 +5,23 @@
  * accuracy (answer-key or judge) → composite. For bullshit queries, accuracy is
  * the rejection outcome on the 0–10 scale so the category still contributes to
  * the accuracy column, while the 25% bullshit weight does the heavy lifting.
+ *
+ * Also returns a `ScoreBreakdown` suitable for embedding in the raw JSON so the
+ * rescorer can re-derive the row without re-fetching PubMed.
  */
 
-import type { BenchmarkQuery, RunRecord, ScoreRow } from "../types.js";
+import type { BenchmarkQuery, RunRecord, ScoreRow, ScoreBreakdown } from "../types.js";
 import { auditCitations, type Verifier } from "./verify.js";
-import { bullshitScore } from "./bullshit.js";
+import { bullshitScore, hasRejectionLanguage } from "./bullshit.js";
 import { scoreAccuracy } from "./accuracy.js";
 import { composite } from "./composite.js";
 
-export async function scoreRun(run: RunRecord, query: BenchmarkQuery, verifier: Verifier): Promise<ScoreRow> {
+export interface ScoreResult {
+  row: ScoreRow;
+  breakdown: ScoreBreakdown;
+}
+
+export async function scoreRun(run: RunRecord, query: BenchmarkQuery, verifier: Verifier): Promise<ScoreResult> {
   const audit = await auditCitations(run.text, verifier);
   const isBullshit = query.category === "bullshit";
   const text = String(run.text ?? "");
@@ -24,11 +32,11 @@ export async function scoreRun(run: RunRecord, query: BenchmarkQuery, verifier: 
         : 0
       : bullshitScore(text, audit, isBullshit);
 
-  const accuracy = isBullshit ? bs * 10 : await scoreAccuracy(query, run.text, audit, verifier);
+  const accResult = isBullshit
+    ? { score: bs * 10, detail: { score: bs * 10, kind: query.answerKey.kind as "reject" } }
+    : await scoreAccuracy(query, run.text, audit, verifier);
+  const accuracy = accResult.score;
 
-  // For fabricated-study probes, benchmark intent is binary rejection behavior.
-  // Using the global composite here can over-penalize tool-using conditions for
-  // speed/token overhead despite identical rejection correctness.
   const comp = isBullshit
     ? Math.round(bs * 10 * 100) / 100
     : composite({
@@ -39,7 +47,7 @@ export async function scoreRun(run: RunRecord, query: BenchmarkQuery, verifier: 
         totalTokens: run.usage.totalTokens,
       });
 
-  return {
+  const row: ScoreRow = {
     query_id: run.queryId,
     category: run.category,
     condition: run.condition,
@@ -58,4 +66,26 @@ export async function scoreRun(run: RunRecord, query: BenchmarkQuery, verifier: 
     pmids_fabricated: audit.fabricated.length,
     composite: comp,
   };
+
+  const breakdown: ScoreBreakdown = {
+    accuracy: accResult.detail,
+    evidenceQuality: {
+      score: row.evidence_quality,
+      pmids: audit.cited.map((pmid) => {
+        const v = audit.valid.find((f) => f.pmid === pmid);
+        return v
+          ? { pmid, valid: true, evidenceScore: v.evidenceScore, studyType: v.studyType, title: v.title }
+          : { pmid, valid: false };
+      }),
+    },
+    bullshit: {
+      score: row.bullshit_score,
+      rejected: isBullshit && hasRejectionLanguage(text),
+      fabricatedPmids: audit.fabricated,
+    },
+    composite: comp,
+    answerKeyVersion: query.answerKeyVersion,
+  };
+
+  return { row, breakdown };
 }

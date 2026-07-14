@@ -40,6 +40,8 @@ export interface SummaryMeta {
   weights: Record<string, number>;
   normalization: Record<string, number>;
   unverified_queries: string[];
+  overrides_applied?: number;
+  overrides_excluded?: number;
 }
 
 export interface Summary {

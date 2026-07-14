@@ -43,6 +43,11 @@ export interface BenchmarkQuery {
    * claim — the harness prints a warning and lists them in the report.
    */
   verified: boolean;
+  /**
+   * Bumped when the answer key is revised. The rescorer warns when raw data
+   * was scored with an older version.
+   */
+  answerKeyVersion?: number;
 }
 
 /** One tool invocation the model made during a run. */
@@ -101,4 +106,59 @@ export interface ScoreRow {
   pmids_valid: number;
   pmids_fabricated: number;
   composite: number; // 0–10
+}
+
+/** Per-dimension breakdown embedded in raw JSON via `_scoring`. */
+export interface AccuracyDetail {
+  score: number;
+  kind: AnswerKey["kind"];
+  /** Only for evidence-score: the stated vs expected values. */
+  statedScore?: number;
+  trueScore?: number;
+  statedType?: string;
+  trueType?: string;
+  /** Only for values: which expected strings were found. */
+  hits?: string[];
+  missed?: string[];
+}
+
+export interface EvidenceDetail {
+  score: number; // 0–5 mean
+  pmids: { pmid: string; valid: boolean; evidenceScore?: number; studyType?: string; title?: string }[];
+}
+
+export interface BullshitDetail {
+  score: number; // 0–1
+  rejected: boolean;
+  fabricatedPmids: string[];
+}
+
+export interface ScoreBreakdown {
+  accuracy: AccuracyDetail;
+  evidenceQuality: EvidenceDetail;
+  bullshit: BullshitDetail;
+  composite: number;
+  answerKeyVersion?: number;
+  overridden?: { by: string; reason: string; at: string };
+}
+
+/** One human-override entry in `overrides.json`. */
+export interface ScoreOverride {
+  queryId: string;
+  condition: ConditionId | "*";
+  model: string | "*";
+  run: number | "*";
+  accuracy?: number | null;
+  evidence_quality?: number | null;
+  bullshit_score?: number | null;
+  composite?: number | null;
+  reason: string;
+  author?: string;
+  at?: string;
+}
+
+/** The full overrides file schema. */
+export interface OverridesFile {
+  notes?: Record<string, { answer_key_note?: string }>;
+  overrides: ScoreOverride[];
 }
