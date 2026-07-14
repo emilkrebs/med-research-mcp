@@ -1,7 +1,8 @@
 /**
  * Human score overrides — the correction layer between raw scores and published
- * results. Overrides live in `benchmark/overrides.json` (or a path passed via
- * `--overrides`) and are applied deterministically on every rescore.
+ * results. Each run keeps its own `<results-dir>/overrides.json` (seeded next to
+ * its `raw/` files with an inline `_example`, or a shared path passed via
+ * `--overrides`); overrides are applied deterministically on every rescore.
  *
  * A wildcard (`"*"` for condition/model/run) matches every row with that queryId.
  * Setting a dimension to `null` excludes that specific score from aggregation

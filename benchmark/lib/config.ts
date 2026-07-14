@@ -1,15 +1,14 @@
 /**
  * Central configuration: the composite-score weights and normalization
- * references. Models are loaded from the adjacent `models.json` catalog so
- * swapping models doesn't require editing TypeScript.
+ * references. Models are defined in the adjacent `models.data.ts` catalog so
+ * swapping models doesn't require editing this module.
  *
  * Every field the paper depends on lives here so a run is reproducible from a
  * single file. API keys are read from the environment, never hard-coded.
  */
 
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { ConditionId, ConditionLetter } from "./types.js";
+import { MODELS as DEFINED_MODELS } from "../models.data.js";
 
 /** Which AI SDK provider package backs a model. */
 export type Provider = "openai" | "anthropic" | "deepseek" | "ollama";
@@ -36,16 +35,14 @@ export interface ModelSpec {
   legacyFunctions?: boolean;
 }
 
-/** Model catalog loaded from `benchmark/models.json`. Edit the JSON to swap models. */
+/** Validate the model catalog defined in `benchmark/models.data.ts` (unique labels). */
 function loadModels(): ModelSpec[] {
-  const path = fileURLToPath(new URL("../models.json", import.meta.url));
-  const raw = JSON.parse(readFileSync(path, "utf-8")) as { models: ModelSpec[] };
   const seen = new Set<string>();
-  for (const m of raw.models) {
-    if (seen.has(m.label)) throw new Error(`Duplicate model label in models.json: "${m.label}"`);
+  for (const m of DEFINED_MODELS) {
+    if (seen.has(m.label)) throw new Error(`Duplicate model label in models.data.ts: "${m.label}"`);
     seen.add(m.label);
   }
-  return raw.models;
+  return DEFINED_MODELS;
 }
 
 export const MODELS: ModelSpec[] = loadModels();

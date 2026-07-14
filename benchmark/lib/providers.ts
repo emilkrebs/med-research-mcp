@@ -5,7 +5,7 @@
  * DeepSeek never needs `@ai-sdk/openai` or `@ai-sdk/anthropic` installed — and a
  * missing key or package fails loudly with an actionable message, not a stack trace.
  *
- * When `compatibility:"compatible"` is set on a model spec, a custom fetch
+ * When `legacyFunctions:true` is set on a model spec, a custom fetch
  * interceptor rewrites `role:"tool"` result messages to the legacy
  * `role:"function"` format required by endpoints like DashScope MaaS that don't
  * fully implement the newer OpenAI tool-calling spec.

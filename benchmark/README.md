@@ -67,6 +67,7 @@ Each run writes a timestamped tree under `benchmark/results/<timestamp>/`:
 
 ```
 raw/                       # full, auditable per-response JSON (text, tool calls, tokens, timing)
+overrides.json             # human score corrections for THIS run (seeded empty; edit + --rescore)
 scores.csv                 # one row per response — load into R / pandas / Excel
 summary.json               # means, SDs, fabrication rates, paired significance tests
 summary.md                 # the same, as Markdown tables (also printed to the console)
@@ -78,17 +79,29 @@ color by `model`. `summary.json`'s `statistical_tests` pairs MCP against each
 baseline on matched (query × run) observations, per model, but only when the
 corresponding baseline was run.
 
+**Correcting a score.** Each run keeps its own `overrides.json` next to its
+`raw/` files, so a correction lives with the run it applies to (not in a global
+repo-root file). The seeded file carries an inline `_example` showing the schema:
+while auditing a raw response, add an entry to `overrides` keyed by
+`queryId`/`condition`/`model`/`run` — the raw filename spells those out, and
+`"*"` wildcards a field — set a dimension to a number to replace it or `null` to
+drop it from aggregation, give a `reason`, then re-run
+`npx tsx benchmark/run.ts --rescore results/<timestamp>` to regenerate the
+reports. Point `--overrides <path>` at a shared file to apply the same
+corrections across several runs.
+
 ## How scoring works
 
 - **Citations are never trusted.** Every `PMID` in a response is fetched from
   live PubMed. One that doesn't resolve is a **fabrication**; one that does is
   graded with the library's own grader, so *evidence quality* is measured on the
   exact 0–5 scale the MCP reports.
-- **Accuracy (0–10)** depends on the query's answer key: evidence-score lookups
-  recompute ground truth from the grader and compare it to the stated number;
-  `values` keys check required strings are present; synthesis/drill-down use an
-  **LLM judge** that is handed the *real abstracts of every cited PMID* so it can
-  penalize unsupported claims; bullshit queries score on correct rejection.
+- **Accuracy (0–10)** depends on the query's answer key: the deterministic
+  factual queries force the model to end in a fixed `ANSWER — …` line and a
+  `values` key checks the exact tokens it emitted (study type, 0–5 score, PMID)
+  against the correct ones — no judge involved; open-ended synthesis/drill-down
+  use an **LLM judge** that is handed the *real abstracts of every cited PMID* so
+  it can penalize unsupported claims; bullshit queries score on correct rejection.
 - **Bullshit (0–1)** is deterministic: a fabricated-study query is correct only
   if the model signals it can't corroborate the study *and* invents no PMID.
 - **Composite (0–10)** = `0.40·accuracy + 0.25·evidence + 0.25·bullshit +
@@ -100,19 +113,22 @@ corresponding baseline was run.
 
 ## ⚠️ Answer keys and publishable claims
 
-Only the four **bullshit** queries and the **evidence-score** lookups have
-`verified: true` keys — the former because the studies are fabricated by us, the
-latter because ground truth is recomputed from the grader at scoring time. Every
-other key asserts a real-world biomedical fact and is `verified: false`: it runs
-and scores, but the harness warns (and `summary.md` lists them) because those
-scores are provisional until a human reviews the key. **Review the unverified
-keys in [`lib/queries.ts`](lib/queries.ts) before quoting numbers in a paper.**
+Nine queries have `verified: true` keys: the four **bullshit** queries (the
+studies are fabricated by us), and the five deterministic **`values`** queries
+(`factual-01`–`04`, `drill-down-03`), whose expected tokens were checked against
+live PubMed and the library grader — the study type + 0–5 score are what
+`keywordGrade` assigns, and every pinned PMID resolves. Every remaining key is an
+open-ended **`rubric`** that asserts a real-world biomedical fact an LLM judge
+must weigh, so it is `verified: false`: it runs and scores, but the harness warns
+(and `summary.md` lists them) because those scores are provisional until a human
+reviews the key. **Review the unverified keys in
+[`queries.data.ts`](queries.data.ts) before quoting numbers in a paper.**
 
 ## Extending
 
-- **Models** — add entries to `MODELS` in [`lib/config.ts`](lib/config.ts)
-  (`openai`, `anthropic`, `deepseek` providers are wired; add more in
-  [`lib/providers.ts`](lib/providers.ts)).
-- **Queries** — add to `QUERIES` in [`lib/queries.ts`](lib/queries.ts); pick the
-  answer-key kind that fits and set `verified` honestly.
+- **Models** — add entries to [`models.data.ts`](models.data.ts) (`openai`,
+  `anthropic`, `deepseek` providers are wired; add more in
+  [`lib/providers.ts`](lib/providers.ts)). `tsc` checks each entry.
+- **Queries** — add to [`queries.data.ts`](queries.data.ts); pick the answer-key
+  kind that fits and set `verified` honestly. `tsc` checks the category and kind.
 - **Weights / normalization** — `WEIGHTS` and `NORMALIZATION` in `config.ts`.

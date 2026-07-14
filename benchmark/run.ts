@@ -12,9 +12,10 @@
  *   npx tsx benchmark/run.ts --publish                   # full run + report
  *   npx tsx benchmark/run.ts --dry-run                   # plan only, no API calls
  *
- * Pass 2 (rescore):
+ * Pass 2 (rescore): each run keeps its own `overrides.json` next to its `raw/`
+ * files, so a reviewer records corrections in the run they're auditing.
  *   npx tsx benchmark/run.ts --rescore results/2026-07-14-011335
- *   npx tsx benchmark/run.ts --rescore results/2026-07-14-011335 --overrides path/to/overrides.json
+ *   npx tsx benchmark/run.ts --rescore results/2026-07-14-011335 --overrides path/to/shared-overrides.json
  *
  * See `--help`.
  */
@@ -86,7 +87,7 @@ Pass 1 — Run + score:
 
 Pass 2 — Rescore from raw + overrides (no API calls):
   --rescore <dir>     read raw JSON from dir/raw, apply overrides, regenerate reports in place
-  --overrides <path>  path to overrides.json (default: benchmark/overrides.json)
+  --overrides <path>  overrides file to apply (default: <dir>/overrides.json, seeded next to raw/)
 
   --help
 
@@ -198,6 +199,41 @@ function preflight(models: ModelSpec[], conditions: ConditionId[], queries: Benc
   if (conditions.includes("web-search") && !process.env.BRAVE_API_KEY) problems.push("Missing BRAVE_API_KEY (condition B)");
   if (conditions.includes("mcp") && !process.env.NCBI_EMAIL) console.warn("⚠️  NCBI_EMAIL not set — NCBI may throttle. Set it to a contact email.");
   return problems;
+}
+
+/**
+ * Self-documenting empty overrides file seeded into each results dir. A reviewer
+ * reading that run's `raw/` files edits this to correct scores, then re-runs
+ * `--rescore <dir>`. Kept empty (no active overrides) so a fresh run applies
+ * nothing until a human fills it in. The `_help`/`_example` keys are ignored by
+ * the parser (only `overrides` and `notes` are read), so they document the
+ * schema inline without affecting scoring.
+ */
+const OVERRIDES_TEMPLATE = {
+  _help:
+    "Score corrections for THIS run. Move an entry from `_example` into `overrides`, edit it, " +
+    "then re-run: npx tsx benchmark/run.ts --rescore <this-dir>. Each entry needs a queryId and a reason. " +
+    'condition/model/run accept "*" wildcards (raw/ filenames are queryId-condition-model-run). Set ' +
+    "accuracy/evidence_quality/bullshit_score/composite to a number to replace it, or null to drop it from aggregation.",
+  _example: [
+    {
+      queryId: "synthesis-03",
+      condition: "mcp",
+      model: "qwen3.5-27b",
+      run: 1,
+      accuracy: 8.0,
+      reason: "Correct effect, different terminology than the answer key",
+    },
+    { queryId: "drill-down-01", condition: "*", model: "*", run: "*", composite: null, reason: "Unscored — answer key needs verification" },
+  ],
+  overrides: [] as unknown[],
+};
+
+/** Write the overrides template into a results dir if it doesn't already have one. Returns the path. */
+async function seedOverrides(dir: string): Promise<string> {
+  const path = join(dir, "overrides.json");
+  if (!existsSync(path)) await writeFile(path, `${JSON.stringify(OVERRIDES_TEMPLATE, null, 2)}\n`);
+  return path;
 }
 
 async function rescore(
@@ -348,8 +384,11 @@ async function main(): Promise<void> {
   if (values.help) return help();
 
   if (values.rescore) {
-    const overridesPath = (values.overrides as string) ?? join("benchmark", "overrides.json");
-    return rescore(values.rescore as string, overridesPath);
+    const dir = values.rescore as string;
+    // Default: this run's own overrides.json (seeded next to raw/). An explicit
+    // --overrides points at a shared/global file instead.
+    const overridesPath = (values.overrides as string) ?? (await seedOverrides(dir));
+    return rescore(dir, overridesPath);
   }
 
   const publish = Boolean(values.publish);
@@ -483,7 +522,10 @@ async function main(): Promise<void> {
   await writeFile(join(outDir, "summary.md"), toMarkdown(summary));
   for (const [name, svg] of Object.entries(renderCharts(rows))) await writeFile(join(chartsDir, name), svg);
 
+  const overridesPath = await seedOverrides(outDir);
+
   console.log(`\n✅ Done. Results in ${outDir}`);
+  console.log(`   To correct any scores: edit ${overridesPath}, then --rescore ${outDir}`);
   console.log(toMarkdown(summary));
 }
 
