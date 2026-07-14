@@ -9,7 +9,7 @@
 import type { ConditionId, ConditionLetter } from "./types.js";
 
 /** Which AI SDK provider package backs a model. */
-export type Provider = "openai" | "anthropic" | "deepseek";
+export type Provider = "openai" | "anthropic" | "deepseek" | "ollama";
 
 export interface ModelSpec {
   /** Stable short label used in filenames, CSV rows, and report tables. */
@@ -49,29 +49,18 @@ export interface ModelSpec {
  *     modelId: "llama3", apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL" }
  */
 export const MODELS: ModelSpec[] = [
+  // ---- Local Ollama models ----
   {
-    label: "qwen3.5-27b",
-    provider: "openai",
-    modelId: "qwen3.5-27b",
-    apiKeyEnv: "OPENAI_API_KEY",
-    baseUrlEnv: "OPENAI_BASE_URL",
-    legacyFunctions: true,
+    label: "qwen3.5:latest",
+    provider: "ollama",
+    modelId: "qwen3.5:latest",
+    apiKeyEnv: "OLLAMA_API_KEY",
   },
   {
-    label: "qwen3.5-35b-a3b",
-    provider: "openai",
-    modelId: "qwen3.5-35b-a3b",
-    apiKeyEnv: "OPENAI_API_KEY",
-    baseUrlEnv: "OPENAI_BASE_URL",
-    legacyFunctions: true,
-  },
-  {
-    label: "qwen3.5-397b-a17b",
-    provider: "openai",
-    modelId: "qwen3.5-397b-a17b",
-    apiKeyEnv: "OPENAI_API_KEY",
-    baseUrlEnv: "OPENAI_BASE_URL",
-    legacyFunctions: true,
+    label: "gemma4:latest",
+    provider: "ollama",
+    modelId: "gemma4:latest",
+    apiKeyEnv: "OLLAMA_API_KEY",
   },
 ];
 
@@ -129,7 +118,7 @@ export const DEFAULTS = {
    * empty final answer before ever synthesizing one (0% fabrication but 0
    * accuracy). 16 gives more room to converge without materially changing cost.
    */
-  maxSteps: 16,
+  maxSteps: 6,
   temperature: 0,
   /** Retries on a transient provider/network error, with backoff. */
   providerRetries: 2,

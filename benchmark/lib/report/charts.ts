@@ -1,15 +1,21 @@
 /**
- * Hand-rolled SVG charts (spec §"Charts to Auto-Generate"). No plotting
- * dependency — each function returns a standalone, self-contained SVG string on
- * a white background suitable for a paper figure. Colors are consistent per
- * condition across every chart, from the colorblind-safe Okabe-Ito palette.
+ * D3-powered SVG charts (spec §"Charts to Auto-Generate"). Each function
+ * builds a detached SVG document (via jsdom) using d3 scales/shapes/axes and
+ * the standard `selection.data().join()` pattern, then serializes it to a
+ * standalone, self-contained SVG string suitable for a paper figure. Colors
+ * are consistent per condition across every chart, from the colorblind-safe
+ * Okabe-Ito palette.
  *
  * `scores.csv` is exported alongside these so PyData/R users can build their own.
  */
 
+import { JSDOM } from "jsdom";
+import * as d3 from "d3";
 import type { ConditionId, ScoreRow } from "../types.js";
 import { mean, sd } from "../stats.js";
 import { speedScore, costScore } from "../scoring/composite.js";
+
+type Sel<E extends Element = Element> = d3.Selection<E, unknown, null, undefined>;
 
 const COLOR: Record<ConditionId, string> = {
   "closed-book": "#E69F00",
@@ -19,8 +25,14 @@ const COLOR: Record<ConditionId, string> = {
 
 const FALLBACK_COLORS = ["#CC79A7", "#F0E442", "#0072B2", "#D55E00", "#999999"];
 
+const FONT = "ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif";
+
 function conditions(rows: ScoreRow[]): ConditionId[] {
   return [...new Set(rows.map((r) => r.condition))];
+}
+
+function models(rows: ScoreRow[]): string[] {
+  return [...new Set(rows.map((r) => r.model))];
 }
 
 function colorFor(condition: ConditionId): string {
@@ -30,48 +42,76 @@ function colorFor(condition: ConditionId): string {
   return FALLBACK_COLORS[idx]!;
 }
 
-const FONT = "font-family='ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif'";
-
-function esc(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function doc(w: number, h: number, body: string, title: string): string {
-  return (
-    `<svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}' viewBox='0 0 ${w} ${h}' role='img'>` +
-    `<title>${esc(title)}</title>` +
-    `<rect width='${w}' height='${h}' fill='#ffffff'/>` +
-    body +
-    `</svg>`
-  );
-}
-
-function text(x: number, y: number, s: string, opts: { size?: number; anchor?: string; color?: string; weight?: string } = {}): string {
-  const { size = 12, anchor = "start", color = "#222", weight = "normal" } = opts;
-  return `<text x='${x}' y='${y}' ${FONT} font-size='${size}' font-weight='${weight}' text-anchor='${anchor}' fill='${color}'>${esc(s)}</text>`;
-}
-
-function legend(x: number, y: number, entries: { label: string; color: string }[]): string {
-  return entries
-    .map((e, i) => {
-      const yy = y + i * 18;
-      return `<rect x='${x}' y='${yy - 9}' width='11' height='11' fill='${e.color}'/>` + text(x + 16, yy, e.label, { size: 11 });
-    })
-    .join("");
-}
-
-// ─── Aggregation ────────────────────────────────────────────────
-
-function models(rows: ScoreRow[]): string[] {
-  return [...new Set(rows.map((r) => r.model))];
-}
-
 function pick(rows: ScoreRow[], model: string, condition: ConditionId, sel: (r: ScoreRow) => number): number[] {
   // NaN is the selector's opt-out signal (e.g. non-bullshit rows in the bullshit chart).
   return rows
     .filter((r) => r.model === model && r.condition === condition)
     .map(sel)
     .filter((v) => Number.isFinite(v));
+}
+
+// ─── SVG document scaffolding ────────────────────────────────────
+
+/** Creates a detached, jsdom-backed SVG root and binds a d3 selection to it. */
+function createSvg(width: number, height: number, title: string): Sel<SVGSVGElement> {
+  const { document } = new JSDOM("<!DOCTYPE html><body></body>").window;
+  const svg = d3
+    .select(document.body)
+    .append("svg")
+    .attr("xmlns", "http://www.w3.org/2000/svg")
+    .attr("width", width)
+    .attr("height", height)
+    .attr("viewBox", `0 0 ${width} ${height}`)
+    .attr("role", "img")
+    .style("font-family", FONT) as Sel<SVGSVGElement>;
+  svg.append("title").text(title);
+  svg.append("rect").attr("width", width).attr("height", height).attr("fill", "#ffffff");
+  return svg;
+}
+
+function serialize(svg: Sel<SVGSVGElement>): string {
+  return (svg.node() as unknown as { outerHTML: string }).outerHTML;
+}
+
+function legend(svg: Sel<SVGSVGElement>, x: number, y: number, entries: { label: string; color: string }[]): void {
+  const g = svg.append("g").attr("class", "legend");
+  const item = g
+    .selectAll("g")
+    .data(entries)
+    .join("g")
+    .attr("transform", (_d, i) => `translate(${x},${y + i * 18})`);
+  item
+    .append("rect")
+    .attr("y", -9)
+    .attr("width", 11)
+    .attr("height", 11)
+    .attr("fill", (d) => d.color);
+  item
+    .append("text")
+    .attr("x", 16)
+    .attr("font-size", 11)
+    .attr("fill", "#222")
+    .text((d) => d.label);
+}
+
+/** A left y-axis rendered as light horizontal gridlines (d3-axis's tickSize grid trick). */
+function yGridAxis(
+  svg: Sel<SVGSVGElement>,
+  pad: { l: number; t: number },
+  plotW: number,
+  scale: d3.ScaleLinear<number, number>,
+  format?: (v: number) => string,
+): void {
+  const fmt = format ?? ((v: number) => String(Math.round(v * 100) / 100));
+  const axis = d3
+    .axisLeft(scale)
+    .ticks(4)
+    .tickSize(-plotW)
+    .tickFormat((v) => fmt(Number(v)));
+  const g = svg.append("g").attr("transform", `translate(${pad.l},0)`).call(axis) as Sel<SVGGElement>;
+  g.select(".domain").remove();
+  g.selectAll(".tick line").attr("stroke", "#eee");
+  g.selectAll(".tick text").attr("font-size", 10).attr("fill", "#666");
 }
 
 // ─── Grouped bar charts (condition × model) ─────────────────────
@@ -92,59 +132,106 @@ function groupedBars(rows: ScoreRow[], spec: BarSpec): string {
   const plotH = H - pad.t - pad.b;
   const ms = models(rows);
   const conds = conditions(rows);
-  const groupW = plotW / Math.max(conds.length, 1);
-  const barW = Math.min(48, (groupW * 0.7) / Math.max(ms.length, 1));
 
-  const y = (v: number) => pad.t + plotH * (1 - v / spec.yMax);
-  let body = "";
+  const x0 = d3.scaleBand<ConditionId>().domain(conds).range([pad.l, pad.l + plotW]).paddingInner(0.3);
+  const x1 = d3.scaleBand<string>().domain(ms).range([0, x0.bandwidth()]).padding(0.15);
+  const y = d3.scaleLinear().domain([0, spec.yMax]).range([pad.t + plotH, pad.t]);
 
-  // Y grid + ticks.
-  for (let i = 0; i <= 4; i++) {
-    const v = (spec.yMax / 4) * i;
-    const yy = y(v);
-    body += `<line x1='${pad.l}' y1='${yy}' x2='${pad.l + plotW}' y2='${yy}' stroke='#eee'/>`;
-    body += text(pad.l - 8, yy + 4, spec.format ? spec.format(v) : String(Math.round(v * 100) / 100), { size: 10, anchor: "end", color: "#666" });
-  }
+  const svg = createSvg(W, H, spec.title);
+  yGridAxis(svg, pad, plotW, y, spec.format);
 
-  conds.forEach((condition, ci) => {
-    const gx = pad.l + ci * groupW + groupW / 2;
-    const clusterW = ms.length * barW + (ms.length - 1) * 6;
-    ms.forEach((model, mi) => {
-      const values = pick(rows, model, condition, spec.sel);
-      if (values.length === 0) return;
-      const m = mean(values);
-      const bx = gx - clusterW / 2 + mi * (barW + 6);
+  const group = svg
+    .append("g")
+    .selectAll("g")
+    .data(conds)
+    .join("g")
+    .attr("transform", (c) => `translate(${x0(c)},0)`);
+
+  group.each(function (condition) {
+    const g = d3.select(this);
+    const bars = ms
+      .map((model) => ({ model, values: pick(rows, model, condition, spec.sel) }))
+      .filter((d) => d.values.length > 0);
+
+    const bar = g
+      .selectAll("g.bar")
+      .data(bars)
+      .join("g")
+      .attr("class", "bar")
+      .attr("transform", (d) => `translate(${x1(d.model)},0)`);
+
+    bar.each(function (d, mi) {
+      const b = d3.select(this);
+      const m = mean(d.values);
       const by = y(m);
       const opacity = ms.length > 1 ? 0.55 + (0.45 * mi) / (ms.length - 1) : 1;
-      body += `<rect x='${bx}' y='${by}' width='${barW}' height='${pad.t + plotH - by}' fill='${colorFor(condition)}' fill-opacity='${opacity.toFixed(2)}'/>`;
+      b.append("rect")
+        .attr("y", by)
+        .attr("width", x1.bandwidth())
+        .attr("height", pad.t + plotH - by)
+        .attr("fill", colorFor(condition))
+        .attr("fill-opacity", opacity.toFixed(2));
       if (spec.errorBars) {
-        const s = sd(values);
+        const s = sd(d.values);
         const yTop = y(Math.min(spec.yMax, m + s));
         const yBot = y(Math.max(0, m - s));
-        const cx = bx + barW / 2;
-        body += `<line x1='${cx}' y1='${yTop}' x2='${cx}' y2='${yBot}' stroke='#333'/>`;
-        body += `<line x1='${cx - 4}' y1='${yTop}' x2='${cx + 4}' y2='${yTop}' stroke='#333'/>`;
-        body += `<line x1='${cx - 4}' y1='${yBot}' x2='${cx + 4}' y2='${yBot}' stroke='#333'/>`;
+        const cx = x1.bandwidth() / 2;
+        b.append("line").attr("x1", cx).attr("y1", yTop).attr("x2", cx).attr("y2", yBot).attr("stroke", "#333");
+        b.append("line").attr("x1", cx - 4).attr("y1", yTop).attr("x2", cx + 4).attr("y2", yTop).attr("stroke", "#333");
+        b.append("line").attr("x1", cx - 4).attr("y1", yBot).attr("x2", cx + 4).attr("y2", yBot).attr("stroke", "#333");
       }
-      body += text(bx + barW / 2, by - 4, (spec.format ? spec.format(m) : m.toFixed(2)), { size: 9, anchor: "middle", color: "#333" });
+      b.append("text")
+        .attr("x", x1.bandwidth() / 2)
+        .attr("y", by - 4)
+        .attr("font-size", 9)
+        .attr("text-anchor", "middle")
+        .attr("fill", "#333")
+        .text(spec.format ? spec.format(m) : m.toFixed(2));
     });
-    body += text(gx, pad.t + plotH + 20, condition, { size: 12, anchor: "middle", weight: "600" });
+
+    g.append("text")
+      .attr("x", x0.bandwidth() / 2)
+      .attr("y", pad.t + plotH + 20)
+      .attr("font-size", 12)
+      .attr("font-weight", 600)
+      .attr("text-anchor", "middle")
+      .text(condition);
   });
 
-  body += `<line x1='${pad.l}' y1='${pad.t + plotH}' x2='${pad.l + plotW}' y2='${pad.t + plotH}' stroke='#333'/>`;
-  body += text(pad.l, 26, spec.title, { size: 15, weight: "700" });
-  body += legend(
+  svg
+    .append("line")
+    .attr("x1", pad.l)
+    .attr("y1", pad.t + plotH)
+    .attr("x2", pad.l + plotW)
+    .attr("y2", pad.t + plotH)
+    .attr("stroke", "#333");
+  svg.append("text").attr("x", pad.l).attr("y", 26).attr("font-size", 15).attr("font-weight", 700).text(spec.title);
+  legend(
+    svg,
     pad.l + plotW + 24,
     pad.t + 10,
     conds.map((c) => ({ label: c, color: colorFor(c) })),
   );
   if (ms.length > 1) {
-    body += text(pad.l + plotW + 24, pad.t + 10 + conds.length * 18 + 14, "Bars per group = models", { size: 10, color: "#666" });
-    body += ms
-      .map((m, i) => text(pad.l + plotW + 24, pad.t + 10 + conds.length * 18 + 30 + i * 15, `${i + 1}. ${m}`, { size: 10, color: "#666" }))
-      .join("");
+    const notesY = pad.t + 10 + conds.length * 18 + 14;
+    svg
+      .append("text")
+      .attr("x", pad.l + plotW + 24)
+      .attr("y", notesY)
+      .attr("font-size", 10)
+      .attr("fill", "#666")
+      .text("Bars per group = models");
+    ms.forEach((m, i) => {
+      svg
+        .append("text")
+        .attr("x", pad.l + plotW + 24)
+        .attr("y", notesY + 16 + i * 15)
+        .attr("font-size", 10)
+        .attr("fill", "#666")
+        .text(`${i + 1}. ${m}`);
+    });
   }
-  return doc(W, H, body, spec.title);
+  return serialize(svg);
 }
 
 // ─── Radar ──────────────────────────────────────────────────────
@@ -163,43 +250,74 @@ function radar(rows: ScoreRow[]): string {
     (r) => speedScore(r.speed_s),
     (r) => costScore(r.input_tokens + r.output_tokens),
   ];
-  const angle = (i: number) => -Math.PI / 2 + (2 * Math.PI * i) / axes.length;
-  const point = (i: number, radius: number): [number, number] => [cx + radius * Math.cos(angle(i)), cy + radius * Math.sin(angle(i))];
 
-  let body = text(cx, 26, "Condition profile (5 dimensions, 0–1)", { size: 15, anchor: "middle", weight: "700" });
+  const angle = d3.scaleLinear().domain([0, axes.length]).range([-Math.PI / 2, 1.5 * Math.PI]);
+  const radius = d3.scaleLinear().domain([0, 1]).range([0, R]);
+  const line = d3
+    .lineRadial<number>()
+    .angle((_d, i) => angle(i))
+    .radius((d) => radius(d))
+    .curve(d3.curveLinearClosed);
+
+  const svg = createSvg(W, H, "Condition radar");
+  const plot = svg.append("g").attr("transform", `translate(${cx},${cy})`);
+
+  svg
+    .append("text")
+    .attr("x", cx)
+    .attr("y", 26)
+    .attr("font-size", 15)
+    .attr("font-weight", 700)
+    .attr("text-anchor", "middle")
+    .text("Condition profile (5 dimensions, 0–1)");
 
   // Rings + axes.
-  for (let ring = 1; ring <= 4; ring++) {
-    const rr = (R * ring) / 4;
-    const pts = axes.map((_, i) => point(i, rr).join(",")).join(" ");
-    body += `<polygon points='${pts}' fill='none' stroke='#eee'/>`;
-  }
-  axes.forEach((label, i) => {
-    const [x, yy] = point(i, R);
-    body += `<line x1='${cx}' y1='${cy}' x2='${x}' y2='${yy}' stroke='#ddd'/>`;
-    const [lx, ly] = point(i, R + 24);
-    body += text(lx, ly, label, { size: 11, anchor: "middle", color: "#444" });
-  });
+  plot
+    .selectAll("path.ring")
+    .data([0.25, 0.5, 0.75, 1])
+    .join("path")
+    .attr("class", "ring")
+    .attr("d", (frac) => line(axes.map(() => frac)))
+    .attr("fill", "none")
+    .attr("stroke", "#eee");
+
+  const axisG = plot.selectAll("g.axis").data(axes).join("g").attr("class", "axis");
+  axisG
+    .append("line")
+    .attr("x1", 0)
+    .attr("y1", 0)
+    .attr("x2", (_d, i) => radius(1) * Math.cos(angle(i)))
+    .attr("y2", (_d, i) => radius(1) * Math.sin(angle(i)))
+    .attr("stroke", "#ddd");
+  axisG
+    .append("text")
+    .attr("x", (_d, i) => (radius(1) + 24) * Math.cos(angle(i)))
+    .attr("y", (_d, i) => (radius(1) + 24) * Math.sin(angle(i)))
+    .attr("font-size", 11)
+    .attr("text-anchor", "middle")
+    .attr("fill", "#444")
+    .text((d) => d);
 
   // One polygon per condition, averaged across models.
   const conds = conditions(rows);
-  for (const condition of conds) {
-    const subset = rows.filter((r) => r.condition === condition);
-    if (subset.length === 0) continue;
-    const pts = dims
-      .map((sel, i) => {
-        const v = Math.max(0, Math.min(1, mean(subset.map(sel))));
-        return point(i, R * v).join(",");
-      })
-      .join(" ");
-    body += `<polygon points='${pts}' fill='${colorFor(condition)}' fill-opacity='0.14' stroke='${colorFor(condition)}' stroke-width='2'/>`;
-  }
-  body += legend(
+  plot
+    .selectAll("path.condition")
+    .data(conds.map((condition) => ({ condition, subset: rows.filter((r) => r.condition === condition) })).filter((d) => d.subset.length > 0))
+    .join("path")
+    .attr("class", "condition")
+    .attr("d", (d) => line(dims.map((sel) => Math.max(0, Math.min(1, mean(d.subset.map(sel)))))))
+    .attr("fill", (d) => colorFor(d.condition))
+    .attr("fill-opacity", 0.14)
+    .attr("stroke", (d) => colorFor(d.condition))
+    .attr("stroke-width", 2);
+
+  legend(
+    svg,
     24,
     H - 60,
     conds.map((c) => ({ label: c, color: colorFor(c) })),
   );
-  return doc(W, H, body, "Condition radar");
+  return serialize(svg);
 }
 
 // ─── Evidence histogram ─────────────────────────────────────────
@@ -215,7 +333,6 @@ function evidenceHistogram(rows: ScoreRow[]): string {
 
   const conds = conditions(rows);
   const counts = new Map<ConditionId, number[]>(conds.map((c) => [c, [0, 0, 0, 0, 0]]));
-  let maxCount = 1;
   for (const r of rows) {
     if (r.pmids_valid === 0) continue; // only rows that actually cited real evidence
     const b = bucketOf(r.evidence_quality);
@@ -223,39 +340,69 @@ function evidenceHistogram(rows: ScoreRow[]): string {
     if (!rowCounts) continue;
     rowCounts[b] = (rowCounts[b] ?? 0) + 1;
   }
-  for (const c of conds) maxCount = Math.max(maxCount, ...counts.get(c)!);
+  const maxCount = Math.max(1, ...conds.flatMap((c) => counts.get(c)!));
 
-  const groupW = plotW / buckets.length;
-  const barW = Math.min(36, (groupW * 0.7) / Math.max(conds.length, 1));
-  const y = (v: number) => pad.t + plotH * (1 - v / maxCount);
-  let body = text(pad.l, 26, "Evidence-quality distribution (mean score of cited PMIDs)", { size: 15, weight: "700" });
+  const x0 = d3.scaleBand<string>().domain(buckets).range([pad.l, pad.l + plotW]).paddingInner(0.3);
+  const x1 = d3.scaleBand<ConditionId>().domain(conds).range([0, x0.bandwidth()]).padding(0.1);
+  const y = d3.scaleLinear().domain([0, maxCount]).range([pad.t + plotH, pad.t]);
 
-  for (let i = 0; i <= 4; i++) {
-    const v = (maxCount / 4) * i;
-    const yy = y(v);
-    body += `<line x1='${pad.l}' y1='${yy}' x2='${pad.l + plotW}' y2='${yy}' stroke='#eee'/>`;
-    body += text(pad.l - 8, yy + 4, String(Math.round(v)), { size: 10, anchor: "end", color: "#666" });
-  }
+  const svg = createSvg(W, H, "Evidence histogram");
+  svg
+    .append("text")
+    .attr("x", pad.l)
+    .attr("y", 26)
+    .attr("font-size", 15)
+    .attr("font-weight", 700)
+    .text("Evidence-quality distribution (mean score of cited PMIDs)");
+  yGridAxis(svg, pad, plotW, y, (v) => String(Math.round(v)));
 
-  buckets.forEach((label, bi) => {
-    const gx = pad.l + bi * groupW + groupW / 2;
-    const clusterW = conds.length * barW + (conds.length - 1) * 4;
-    conds.forEach((condition, ci) => {
-      const count = counts.get(condition)![bi]!;
-      const bx = gx - clusterW / 2 + ci * (barW + 4);
-      const by = y(count);
-      body += `<rect x='${bx}' y='${by}' width='${barW}' height='${pad.t + plotH - by}' fill='${colorFor(condition)}'/>`;
-    });
-    body += text(gx, pad.t + plotH + 20, label, { size: 11, anchor: "middle" });
+  const group = svg
+    .append("g")
+    .selectAll("g")
+    .data(buckets)
+    .join("g")
+    .attr("transform", (b) => `translate(${x0(b)},0)`);
+
+  group.each(function (bucket, bi) {
+    const g = d3.select(this);
+    g.selectAll("rect")
+      .data(conds)
+      .join("rect")
+      .attr("x", (c) => x1(c)!)
+      .attr("y", (c) => y(counts.get(c)![bi]!))
+      .attr("width", x1.bandwidth())
+      .attr("height", (c) => pad.t + plotH - y(counts.get(c)![bi]!))
+      .attr("fill", (c) => colorFor(c));
+    g.append("text")
+      .attr("x", x0.bandwidth() / 2)
+      .attr("y", pad.t + plotH + 20)
+      .attr("font-size", 11)
+      .attr("text-anchor", "middle")
+      .text(bucket);
   });
-  body += text(pad.l + plotW / 2, H - 14, "evidence score bucket (0–5)", { size: 11, anchor: "middle", color: "#666" });
-  body += `<line x1='${pad.l}' y1='${pad.t + plotH}' x2='${pad.l + plotW}' y2='${pad.t + plotH}' stroke='#333'/>`;
-  body += legend(
+
+  svg
+    .append("text")
+    .attr("x", pad.l + plotW / 2)
+    .attr("y", H - 14)
+    .attr("font-size", 11)
+    .attr("text-anchor", "middle")
+    .attr("fill", "#666")
+    .text("evidence score bucket (0–5)");
+  svg
+    .append("line")
+    .attr("x1", pad.l)
+    .attr("y1", pad.t + plotH)
+    .attr("x2", pad.l + plotW)
+    .attr("y2", pad.t + plotH)
+    .attr("stroke", "#333");
+  legend(
+    svg,
     pad.l + plotW + 24,
     pad.t + 10,
     conds.map((c) => ({ label: c, color: colorFor(c) })),
   );
-  return doc(W, H, body, "Evidence histogram");
+  return serialize(svg);
 }
 
 // ─── Speed vs accuracy scatter ──────────────────────────────────
@@ -267,35 +414,82 @@ function scatter(rows: ScoreRow[]): string {
   const plotW = W - pad.l - pad.r;
   const plotH = H - pad.t - pad.b;
   const maxSpeed = Math.max(1, ...rows.map((r) => r.speed_s));
-  const x = (s: number) => pad.l + plotW * (s / maxSpeed);
-  const y = (a: number) => pad.t + plotH * (1 - a / 10);
+  const x = d3.scaleLinear().domain([0, maxSpeed]).range([pad.l, pad.l + plotW]);
+  const y = d3.scaleLinear().domain([0, 10]).range([pad.t + plotH, pad.t]);
   const conds = conditions(rows);
 
-  let body = text(pad.l, 26, "Speed vs accuracy (each dot = one run)", { size: 15, weight: "700" });
-  for (let i = 0; i <= 5; i++) {
-    const a = 2 * i;
-    const yy = y(a);
-    body += `<line x1='${pad.l}' y1='${yy}' x2='${pad.l + plotW}' y2='${yy}' stroke='#eee'/>`;
-    body += text(pad.l - 8, yy + 4, String(a), { size: 10, anchor: "end", color: "#666" });
-  }
-  for (let i = 0; i <= 4; i++) {
-    const s = (maxSpeed / 4) * i;
-    const xx = x(s);
-    body += text(xx, pad.t + plotH + 18, `${s.toFixed(0)}s`, { size: 10, anchor: "middle", color: "#666" });
-  }
-  for (const r of rows) {
-    body += `<circle cx='${x(r.speed_s).toFixed(1)}' cy='${y(r.accuracy).toFixed(1)}' r='4' fill='${colorFor(r.condition)}' fill-opacity='0.65'/>`;
-  }
-  body += text(pad.l - 40, pad.t + plotH / 2, "accuracy", { size: 11, anchor: "middle", color: "#666" });
-  body += text(pad.l + plotW / 2, H - 12, "wall-clock time", { size: 11, anchor: "middle", color: "#666" });
-  body += `<line x1='${pad.l}' y1='${pad.t + plotH}' x2='${pad.l + plotW}' y2='${pad.t + plotH}' stroke='#333'/>`;
-  body += `<line x1='${pad.l}' y1='${pad.t}' x2='${pad.l}' y2='${pad.t + plotH}' stroke='#333'/>`;
-  body += legend(
+  const svg = createSvg(W, H, "Speed vs accuracy");
+  svg
+    .append("text")
+    .attr("x", pad.l)
+    .attr("y", 26)
+    .attr("font-size", 15)
+    .attr("font-weight", 700)
+    .text("Speed vs accuracy (each dot = one run)");
+  yGridAxis(svg, pad, plotW, y, (v) => String(v));
+
+  const xAxis = svg
+    .append("g")
+    .attr("transform", `translate(0,${pad.t + plotH})`)
+    .call(
+      d3
+        .axisBottom(x)
+        .ticks(4)
+        .tickFormat((v) => `${Number(v).toFixed(0)}s`)
+        .tickSize(0),
+    ) as Sel<SVGGElement>;
+  xAxis.select(".domain").remove();
+  xAxis.selectAll("text").attr("font-size", 10).attr("fill", "#666").attr("dy", 18);
+
+  svg
+    .append("g")
+    .selectAll("circle")
+    .data(rows)
+    .join("circle")
+    .attr("cx", (r) => x(r.speed_s))
+    .attr("cy", (r) => y(r.accuracy))
+    .attr("r", 4)
+    .attr("fill", (r) => colorFor(r.condition))
+    .attr("fill-opacity", 0.65);
+
+  svg
+    .append("text")
+    .attr("x", pad.l - 40)
+    .attr("y", pad.t + plotH / 2)
+    .attr("font-size", 11)
+    .attr("text-anchor", "middle")
+    .attr("fill", "#666")
+    .attr("transform", `rotate(-90,${pad.l - 40},${pad.t + plotH / 2})`)
+    .text("accuracy");
+  svg
+    .append("text")
+    .attr("x", pad.l + plotW / 2)
+    .attr("y", H - 12)
+    .attr("font-size", 11)
+    .attr("text-anchor", "middle")
+    .attr("fill", "#666")
+    .text("wall-clock time");
+  svg
+    .append("line")
+    .attr("x1", pad.l)
+    .attr("y1", pad.t + plotH)
+    .attr("x2", pad.l + plotW)
+    .attr("y2", pad.t + plotH)
+    .attr("stroke", "#333");
+  svg
+    .append("line")
+    .attr("x1", pad.l)
+    .attr("y1", pad.t)
+    .attr("x2", pad.l)
+    .attr("y2", pad.t + plotH)
+    .attr("stroke", "#333");
+  legend(
+    svg,
     pad.l + plotW + 20,
     pad.t + 10,
     conds.map((c) => ({ label: c, color: colorFor(c) })),
   );
-  return doc(W, H, body, "Speed vs accuracy");
+  return serialize(svg);
 }
 
 /** Render every chart. Returns filename → SVG string. */
@@ -321,3 +515,4 @@ export function renderCharts(rows: ScoreRow[]): Record<string, string> {
     "speed-vs-accuracy-scatter.svg": scatter(rows),
   };
 }
+

@@ -14,12 +14,16 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "ai": "^5.0.0",
     "@ai-sdk/anthropic": "^2.0.0",
     "@ai-sdk/deepseek": "^1.0.0",
-    "@ai-sdk/openai": "^2.0.0"
+    "@ai-sdk/openai": "^2.0.0",
+    "ai": "^5.0.0",
+    "d3": "^7.9.0",
+    "jsdom": "^29.1.1"
   },
   "devDependencies": {
+    "@types/d3": "^7.4.3",
+    "@types/jsdom": "^28.0.3",
     "@types/node": "^26.1.1",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2"

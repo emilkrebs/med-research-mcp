@@ -93,6 +93,16 @@ async function loadProvider(provider: Provider): Promise<ProviderFactory> {
         factory = (apiKey, baseURL) => createDeepSeek({ apiKey, ...(baseURL ? { baseURL } : {}) });
         break;
       }
+      case "ollama": {
+        // Ollama has an OpenAI-compatible API at http://localhost:11434/v1
+        const { createOpenAI } = await import("@ai-sdk/openai");
+        factory = (apiKey, baseURL) =>
+          createOpenAI({
+            apiKey: apiKey || "ollama",
+            ...(baseURL ? { baseURL } : { baseURL: "http://localhost:11434/v1" }),
+          });
+        break;
+      }
       default: {
         const exhaustive: never = provider;
         throw new Error(`Unknown provider: ${String(exhaustive)}`);

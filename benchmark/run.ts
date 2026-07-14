@@ -25,6 +25,8 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CONDITIONS, DEFAULTS, MODELS, NORMALIZATION, WEIGHTS, type ModelSpec } from "./lib/config.js";
 import { QUERIES, queryById } from "./lib/queries.js";
+import { execSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import type {
   BenchmarkQuery,
   Category,
@@ -35,6 +37,20 @@ import type {
   ScoreOverride,
 } from "./lib/types.js";
 import { runOne } from "./lib/agent.js";
+
+function detectMcpVersion(): { version: string; commit: string } {
+  const root = join(import.meta.dirname, "..");
+  const pkg = join(root, "package.json");
+  let version = "unknown";
+  if (existsSync(pkg)) {
+    try { version = JSON.parse(readFileSync(pkg, "utf-8")).version; } catch {}
+  }
+  let commit = "unknown";
+  try { commit = execSync("git rev-parse --short HEAD", { cwd: root, encoding: "utf-8" }).trim(); } catch {}
+  return { version, commit };
+}
+
+const MCP = detectMcpVersion();
 import { Verifier } from "./lib/scoring/verify.js";
 import { scoreRun } from "./lib/scoring/score.js";
 import { toCsv } from "./lib/report/csv.js";
@@ -280,6 +296,8 @@ async function rescore(
 
   const meta: SummaryMeta = {
     timestamp: resultsDir,
+    mcp_version: MCP.version,
+    mcp_commit: MCP.commit,
     models: [...new Set(scoredRows.map((r) => r.model))],
     conditions: [...new Set(scoredRows.map((r) => r.condition))],
     runs: Math.max(1, ...scoredRows.map((r) => r.run)),
@@ -448,6 +466,8 @@ async function main(): Promise<void> {
 
   const meta: SummaryMeta = {
     timestamp: outDir,
+    mcp_version: MCP.version,
+    mcp_commit: MCP.commit,
     models: models.map((m) => m.label),
     conditions,
     runs,

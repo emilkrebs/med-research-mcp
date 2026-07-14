@@ -33,6 +33,8 @@ interface ConditionSummary {
 
 export interface SummaryMeta {
   timestamp: string;
+  mcp_version: string;
+  mcp_commit: string;
   models: string[];
   conditions: ConditionId[];
   runs: number;
