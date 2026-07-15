@@ -11,6 +11,13 @@ import type { ModelSpec } from "./lib/config.js";
 export const MODELS: ModelSpec[] = [
   // ── Fresh quota — different provider / untouched model IDs ────────
   {
+    label: "gemma4-4b",
+    provider: "ollama",
+    modelId: "gemma4:latest",
+    apiKeyEnv: "OLLAMA_API_KEY",
+    legacyFunctions: false,
+  },
+  {
     label: "deepseek-v3.2",
     provider: "openai",
     modelId: "deepseek-v3.2",

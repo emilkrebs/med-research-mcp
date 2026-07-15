@@ -10,9 +10,15 @@
  * All logic lives in ../core; this file only wires it to MCP.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+
+const { version: pkgVersion } = JSON.parse(
+  readFileSync(join(import.meta.dirname, "../../package.json"), "utf-8"),
+) as { version: string };
 import {
   createCache,
   fetchFulltext,
@@ -38,6 +44,11 @@ const STUDY_TYPES = [
   "animal-study",
   "unknown",
 ] as const;
+
+function formatError(payload: { code: string; message: string; recoverable?: boolean }): string {
+  const recoverable = payload.recoverable === true ? "yes" : "no";
+  return `Error: ${payload.message} (${payload.code})\n\nDetails:\n${JSON.stringify(payload, null, 2)}\n\nRecoverable: ${recoverable}`;
+}
 
 function buildCache(): Cache {
   const backend = (process.env.MED_RESEARCH_CACHE_BACKEND ?? "memory") as CacheBackend;
@@ -95,7 +106,7 @@ if (!process.env.MED_RESEARCH_UNPAYWALL_EMAIL && !process.env.NCBI_EMAIL) {
   );
 }
 
-const server = new McpServer({ name: "med-research-mcp", version: "0.3.0" });
+const server = new McpServer({ name: "med-research-mcp", version: pkgVersion });
 
 const DATABASES = ["pubmed", "europepmc", "chinaxiv", "russiarxiv"] as const;
 
@@ -162,7 +173,7 @@ server.registerTool(
         : { code: "UNKNOWN", message: err instanceof Error ? err.message : String(err), recoverable: false };
       return {
         isError: true,
-        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        content: [{ type: "text", text: formatError(payload) }],
       };
     }
   },
@@ -208,7 +219,7 @@ server.registerTool(
         : { code: "UNKNOWN", message: err instanceof Error ? err.message : String(err), recoverable: false };
       return {
         isError: true,
-        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        content: [{ type: "text", text: formatError(payload) }],
       };
     }
   },
@@ -248,7 +259,7 @@ server.registerTool(
         : { code: "UNKNOWN", message: err instanceof Error ? err.message : String(err), recoverable: false };
       return {
         isError: true,
-        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        content: [{ type: "text", text: formatError(payload) }],
       };
     }
   },
