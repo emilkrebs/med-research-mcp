@@ -584,6 +584,60 @@ function scatter(rows: ScoreRow[]): string {
     .attr("fill", (r) => colorFor(r.condition))
     .attr("fill-opacity", 0.65);
 
+  // ── Compensation curves: iso-composite contours ──
+  {
+    const compLevels = [3, 5, 7, 9];
+    const avgEvidence = mean(rows.map((r) => r.evidence_quality)); // 0–5
+    const avgBullshit = mean(rows.map((r) => r.bullshit_score)); // 0–1
+    const fixedCostScore = 0.5;
+    const N = 120;
+    // Derived from composite.ts: composite = 10*(0.4*(acc/10) + 0.25*(ev/5) + 0.25*bs + 0.05*ss + 0.05*cs)
+    // Solving for acc: acc = 25*(comp/10 - (ev/5)*0.25 - bs*0.25 - ss*0.05 - cs*0.05)
+    const lineGen = d3
+      .line<[number, number]>()
+      .x(([s]) => x(s))
+      .y(([, a]) => y(a))
+      .defined(([, a]) => a >= 0 && a <= 10);
+
+    for (const comp of compLevels) {
+      const pts: [number, number][] = Array.from({ length: N + 1 }, (_, i) => {
+        const speed = (maxSpeed * i) / N;
+        const ss = Math.max(0, 1 - speed / 60);
+        const acc =
+          25 *
+          (comp / 10 -
+            (avgEvidence / 5) * 0.25 -
+            avgBullshit * 0.25 -
+            ss * 0.05 -
+            fixedCostScore * 0.05);
+        return [speed, acc];
+      });
+
+      const path = lineGen(pts);
+      if (!path) continue;
+
+      svg
+        .append("path")
+        .attr("d", path)
+        .attr("stroke", "#999")
+        .attr("stroke-dasharray", "4,4")
+        .attr("stroke-width", 1)
+        .attr("fill", "none");
+
+      const lastVisible = [...pts].reverse().find(([, a]) => a >= 0 && a <= 10);
+      if (lastVisible) {
+        svg
+          .append("text")
+          .attr("x", x(lastVisible[0]) + 4)
+          .attr("y", y(lastVisible[1]))
+          .attr("font-size", 9)
+          .attr("fill", "#999")
+          .attr("dominant-baseline", "middle")
+          .text(`comp=${comp}`);
+      }
+    }
+  }
+
   svg
     .append("text")
     .attr("x", pad.l - 40)

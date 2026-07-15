@@ -51,6 +51,14 @@ function detectMcpVersion(): { version: string; commit: string } {
   return { version, commit };
 }
 
+function detectBenchmarkVersion(): string {
+  const pkg = join(import.meta.dirname, "package.json");
+  if (existsSync(pkg)) {
+    try { return JSON.parse(readFileSync(pkg, "utf-8")).version ?? "unknown"; } catch {}
+  }
+  return "unknown";
+}
+
 const MCP = detectMcpVersion();
 import { Verifier } from "./lib/scoring/verify.js";
 import { scoreRun } from "./lib/scoring/score.js";
@@ -334,6 +342,7 @@ async function rescore(
     timestamp: resultsDir,
     mcp_version: MCP.version,
     mcp_commit: MCP.commit,
+    benchmark_version: detectBenchmarkVersion(),
     models: [...new Set(scoredRows.map((r) => r.model))],
     conditions: [...new Set(scoredRows.map((r) => r.condition))],
     runs: Math.max(1, ...scoredRows.map((r) => r.run)),
@@ -512,6 +521,7 @@ async function main(): Promise<void> {
     timestamp: outDir,
     mcp_version: MCP.version,
     mcp_commit: MCP.commit,
+    benchmark_version: detectBenchmarkVersion(),
     models: models.map((m) => m.label),
     conditions,
     runs,

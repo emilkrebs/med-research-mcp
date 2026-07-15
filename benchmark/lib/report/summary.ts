@@ -35,6 +35,7 @@ export interface SummaryMeta {
   timestamp: string;
   mcp_version: string;
   mcp_commit: string;
+  benchmark_version: string;
   models: string[];
   conditions: ConditionId[];
   runs: number;

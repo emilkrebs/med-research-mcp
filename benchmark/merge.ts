@@ -150,6 +150,7 @@ const meta: SummaryMeta = {
   timestamp: "combined",
   mcp_version: "merged",
   mcp_commit: "merged",
+  benchmark_version: "merged",
   models,
   conditions: conditions as ConditionId[],
   runs,
