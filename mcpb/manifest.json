@@ -6,7 +6,7 @@
   "description": "Evidence-graded scientific literature search for AI agents — multi-database (PubMed, Europe PMC, ChinaRXiv, RussiaRXiv), built for biohacking, supplementation, and clinical decision support.",
   "author": {
     "name": "Emil Krebs",
-    "email": "emilkrebz@gmail.com"
+     "email": "emil.krebs@outlook.de"
   },
   "license": "MIT",
   "keywords": ["pubmed", "ncbi", "mcp", "evidence-grading", "biohacking"],

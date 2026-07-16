@@ -1,0 +1,32 @@
+{
+  "name": "med-research-mcp-benchmark",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Benchmark harness for med-research-mcp. Default run tests the MCP; optional closed-book and web-search baselines are available for comparison.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "bench": "tsx run.ts",
+    "smoke": "tsx run.ts --runs 1 --queries factual-01",
+    "smoke-baselines": "tsx run.ts --runs 1 --with-baselines --queries factual-01",
+    "grade": "tsx grade.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^2.0.0",
+    "@ai-sdk/deepseek": "^1.0.0",
+    "@ai-sdk/openai": "^2.0.0",
+    "ai": "^5.0.0",
+    "d3": "^7.9.0",
+    "jsdom": "^29.1.1"
+  },
+  "devDependencies": {
+    "@types/d3": "^7.4.3",
+    "@types/jsdom": "^28.0.3",
+    "@types/node": "^26.1.1",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  }
+}

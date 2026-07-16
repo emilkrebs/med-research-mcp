@@ -101,8 +101,8 @@ For papers where the keyword grade is suspicious, fetch the full abstract with `
 | `NCBI_EMAIL` | Recommended | Contact email sent with every NCBI request, as NCBI's usage policy asks. |
 | `NCBI_API_KEY` | No | Raises the NCBI rate limit from 3 to 10 requests/second. |
 | `MED_RESEARCH_UNPAYWALL_EMAIL` | No | Contact email for Unpaywall open-access lookups (used by `*_fulltext`). Falls back to `NCBI_EMAIL` if unset. |
-| `MED_RESEARCH_CACHE_BACKEND` | No | `memory` (default). `sqlite` is planned for a future release. |
-| `MED_RESEARCH_CACHE_PATH` | No | Path for the cache file, when using a persistent backend. |
+| `MED_RESEARCH_CACHE_BACKEND` | No | `memory` (default, in-process LRU) or `sqlite` (persistent, survives restarts). |
+| `MED_RESEARCH_CACHE_PATH` | No | Path for the SQLite cache file, when `MED_RESEARCH_CACHE_BACKEND=sqlite`. Defaults to `./pubmed-cache.db`. |
 
 ## MCP client setup
 
@@ -147,9 +147,10 @@ Then drag the resulting `dist/med-research-mcp.mcpb` onto Claude Desktop. The in
 
 ## Agent skills
 
-This repo ships two [Agent Skills](skills/) that make the MCP self-guiding:
+This repo ships three [Agent Skills](skills/) that make the MCP self-guiding, in two tiers:
 
-- **[med-research](skills/med-research/SKILL.md)** — teaches an AI how to drive the three tools: writing precise PubMed queries with field tags, reading evidence grades (scores, confidence, limitations), when to use `literature_fetch` vs `literature_fulltext`, multi-database searches, and how to report findings (cite PMIDs, surface red flags, not-medical-advice).
+- **[med-research](skills/med-research/SKILL.md)** — the lean workflow skill (~85 lines): how to drive the three tools, write precise PubMed queries with field tags, read evidence grades (scores, confidence, limitations), choose `literature_fetch` vs `literature_fulltext`, do multi-database searches, and report findings. Includes three few-shot patterns (simple lookup, evidence synthesis, bullshit detection) so even small models converge on the right workflow, plus a pointer to the EBM reference below.
+- **[med-research-ebm](skills/med-research-ebm/SKILL.md)** — the EBM critical-appraisal reference, loaded only when a paper is about to drive a real decision: PICO framing, RoB 2 / ROBINS-I, AMSTAR-2, effect sizes/CIs/NNT, heterogeneity, Bradford Hill causation, applicability, and conflicts of interest. Kept separate so the workflow skill stays lean and fast.
 - **[med-research-setup](skills/med-research-setup/SKILL.md)** — guides an AI helping a user install, configure, and troubleshoot the server across clients (Claude Code, Claude Desktop `.mcpb`, Cursor, Hermes) and credentials.
 
 Install them into Claude Code so they activate alongside the MCP:
@@ -190,7 +191,10 @@ Thanks to the dual ESM/CJS build, this works whether the consuming project uses 
 
 ## Caching
 
-Caching is an in-memory LRU (roughly 200 entries) that dies with the process. A SQLite-backed cache — surviving restarts, with a 30-day TTL for summaries/abstracts — is planned for a future release.
+Two backends are available, selected via `MED_RESEARCH_CACHE_BACKEND`:
+
+- **`memory` (default)** — an in-memory LRU (roughly 200 entries per store) that dies with the process.
+- **`sqlite`** — a persistent cache that survives restarts, backed by a WAL-mode SQLite database at `MED_RESEARCH_CACHE_PATH` (default `./pubmed-cache.db`). Full texts expire after a 30-day TTL; summaries and abstracts never expire, since published papers don't change. If the native `better-sqlite3` binding fails to load, the server logs a warning and falls back to the in-memory cache.
 
 ## Error handling
 
@@ -214,12 +218,11 @@ Every failure path surfaces a typed `PubMedError`:
 - Multi-database search across PubMed, Europe PMC, ChinaRXiv, and RussiaRXiv.
 - Fast keyword-based evidence grading on every search result (NLM `PublicationType` tags for PubMed, keyword heuristics for other databases).
 - Full-text retrieval via Unpaywall, institutional proxy, and direct DOI fallback.
-- In-memory caching.
+- In-memory (default) and persistent SQLite caching.
 - MCP stdio server and a `.mcpb` bundle for Claude Desktop.
 - Direct, dependency-free library use via `med-research-mcp/core`.
 
 **Out of scope (for now):**
-- Persistent (SQLite) caching — planned for v0.4.
 - Any storage or transmission of PHI/patient data.
 
 ## Medical disclaimer

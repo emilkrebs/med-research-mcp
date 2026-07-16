@@ -67,6 +67,8 @@ interface EsummaryDoc {
   authors?: { name?: string }[];
   articleids?: { idtype?: string; value?: string }[];
   pubtype?: string[];
+  /** Present on NCBI's ERROR-DOC shape for uids it doesn't recognize, e.g. a nonexistent PMID. */
+  error?: string;
 }
 
 function toArray<T>(value: T | T[] | undefined | null): T[] {
@@ -186,7 +188,10 @@ export class NcbiClient {
     if (!result) return out;
     for (const pmid of pmids) {
       const doc = result[pmid];
-      if (!doc || Array.isArray(doc)) continue;
+      // NCBI returns an ERROR-DOC object (uid + error, no title) for uids it doesn't
+      // recognize — e.g. a nonexistent PMID — rather than omitting the key entirely.
+      // Skip it so the pmid stays absent from the returned Map and is reported missing.
+      if (!doc || Array.isArray(doc) || doc.error) continue;
       out.set(pmid, this.docToArticle(pmid, doc));
     }
     return out;
