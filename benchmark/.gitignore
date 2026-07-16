@@ -3,4 +3,4 @@ results/
 .env
 .env.*
 !.env.example
-!auto-grade.ts
+auto-grade.ts

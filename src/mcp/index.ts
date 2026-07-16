@@ -16,8 +16,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
+// __dirname exists in the CJS build; import.meta.dirname in the ESM build —
+// esbuild leaves the other undefined per format (see src/core/cache.ts loadSqlite).
+const moduleDir = typeof __dirname !== "undefined" ? __dirname : import.meta.dirname;
 const { version: pkgVersion } = JSON.parse(
-  readFileSync(join(import.meta.dirname, "../../package.json"), "utf-8"),
+  readFileSync(join(moduleDir, "../../package.json"), "utf-8"),
 ) as { version: string };
 import {
   createCache,
