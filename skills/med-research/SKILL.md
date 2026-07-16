@@ -1,85 +1,85 @@
 ---
 name: med-research
-description: Use when researching biomedical, supplement, peptide, or biohacking evidence with the med-research-mcp MCP server (tools literature_search, literature_fetch, literature_fulltext). Covers writing precise PubMed queries with field tags, reading the evidence grades (0-5 scores, study types, confidence), choosing between search/fetch/fulltext, and multi-database searches. Trigger on questions about what the research/evidence says for a compound, dose, intervention, or biomarker.
+description: Use when researching biomedical, supplement, peptide, or biohacking evidence with the med-research-mcp MCP server (tools literature_search, literature_fetch, literature_fulltext). Covers writing precise PubMed queries with field tags, reading the evidence grades (0-5 scores, study types, confidence), choosing between search/fetch/fulltext, multi-database searches, and how to report findings. Three few-shot patterns (lookup, synthesis, bullshit) show the exact workflow. Trigger on questions about what the research/evidence says for a compound, dose, intervention, or biomarker.
 ---
 
 # Using the med-research-mcp MCP
 
-Three tools, a triage-first workflow. **Always start with `literature_search`** (free, keyword-graded). **Drill into specific papers with `literature_fetch`** (full metadata + abstracts). **Use `literature_fulltext`** only when you need more than the abstract (methods, sample sizes, dosage details).
+Three tools, a triage-first workflow. **Always start with `literature_search`** (free, keyword-graded). **Drill into specific papers with `literature_fetch`** (full abstracts + metadata). **Use `literature_fulltext`** only when the abstract isn't enough (methods, sample size, dosage).
 
 ## Decision flow
 
-1. Turn the question into a precise query and call `literature_search` (default database: `pubmed`).
-2. Read the graded results: sort your attention by `evidenceScore`, but check `confidence` and `limitations` before trusting a grade.
-3. For papers you want to drill into, call `literature_fetch` with the specific ids to get full abstracts and MeSH terms.
-4. Call `literature_fulltext` **only** when you need more than the abstract — to verify dosage, check sample sizes, read methods, or detect statistical flaws.
-5. For broader coverage, rerun with `database: ["pubmed", "europepmc"]` or `database: "all"`. Non-PubMed results are graded keyword-only (lower confidence — treat their scores as less reliable).
+1. Turn the question into a precise query and call `literature_search`. Default database is `"pubmed"`; for broader coverage use `database: ["pubmed","europepmc"]`, `["pubmed","chinaxiv"]`, or `"all"`. PubMed field tags (`[tiab]`/`[mesh]`/`[au]`) **only work on pubmed**; other databases get bare keywords.
+2. Sort attention by `evidenceScore`, but check `confidence` and `limitations` before trusting a grade.
+3. `literature_fetch` the specific ids you care about to read full abstracts.
+4. `literature_fulltext` **only** when you need more than the abstract — verify dosage, check sample sizes, read methods, detect statistical flaws.
+5. Non-PubMed results are graded keyword-only and score lower — treat their scores as provisional.
 
 ## Writing good queries (`literature_search`)
 
-Bare keywords match tens of thousands of papers and bury the signal. Use field tags and boolean operators.
+Bare keywords match tens of thousands of papers and bury the signal. Use field tags and booleans.
 
-- `[tiab]` — title/abstract (most useful for precision): `creatine AND cognition[tiab]`
-- `[mesh]` — controlled MeSH vocabulary: `"Creatine"[mesh] AND "Cognition"[mesh]`
+- `[tiab]` — title/abstract (most precise): `creatine AND cognition[tiab]`
+- `[mesh]` — controlled MeSH: `"Creatine"[mesh] AND "Cognition"[mesh]`
 - `[au]` — author: `Kreider R[au]`
 - Combine: `(ashwagandha[tiab]) AND (cortisol[tiab] OR stress[tiab]) AND humans[mesh]`
-- Restrict to strong designs by adding terms: `AND (randomized controlled trial[pt] OR meta-analysis[pt])` — `[pt]` is publication type.
-- Prefer narrow first. If you get `QUERY_TOO_BROAD` or a "matched N articles" warning, add a `[tiab]` term or an `AND` clause.
+- Restrict to strong designs: `AND (randomized controlled trial[pt] OR meta-analysis[pt])` — `[pt]` is publication type.
+- Narrow first. On `QUERY_TOO_BROAD`, add a `[tiab]` term or an `AND` clause.
 
-Parameters worth setting:
-- `database` — default `"pubmed"`. Use `["pubmed", "europepmc"]` or `"all"` for broader coverage.
-- `maxResults` (default 10, max 50) — 5–10 is usually enough for a first pass.
-- `minEvidenceScore` — set to `4` to see only RCTs and meta-analyses, `3` to include cohorts/reviews.
-- `studyTypes` — e.g. `["meta-analysis","randomized-controlled-trial"]` to filter.
-- `dateRange` `{from,to}` (YYYY-MM-DD) — for "recent evidence" questions.
-- `sort` — `"relevance"` (default) or `"date"`.
+Params: `database`, `maxResults` (default 10, max 50 — per-database, so two DBs return ~20), `minEvidenceScore` (4 = RCTs+meta-analyses; 3 = +cohorts/reviews), `studyTypes` (e.g. `["meta-analysis","randomized-controlled-trial"]`), `dateRange {from,to}`, `sort` ("relevance"|"date"), `language` (ISO 639-1; PubMed ignores it).
 
-## Reading the grades
-
-Each result from `literature_search` is a `GradedArticle`. Evidence scale (higher = stronger):
+## Reading the grades (`GradedArticle`, higher = stronger)
 
 | Score | Study type | Reading |
 |-------|-----------|---------|
-| 5 | meta-analysis / systematic review | strongest; but a meta-analysis of weak studies is still weak — fetch the full text and read the methods if it’s pivotal |
+| 5 | meta-analysis / systematic review | strongest; but a meta-analysis of weak studies is still weak — verify with fulltext if pivotal |
 | 4 | randomized-controlled-trial | strong causal evidence |
-| 3 | cohort **or** review | observational or narrative; useful, not causal |
+| 3 | cohort **or** review | observational/narrative; useful, not causal |
 | 2 | case-control | hypothesis-generating |
 | 1 | case-report | anecdote; one patient |
 | 0 | animal-study / unknown | not directly applicable to humans |
 
-Also read:
-- `confidence` (0–1): how sure the classifier is. **Low confidence on a high score = fetch the abstract and read it.** Values below ~0.5, or a title-only grade, mean treat the study type as tentative.
-- `limitations[]`: surfaces protocol papers, animal-with-human-mentions, small-sample/underpowered cues, and title-only grades.
-- `gradingMethod`: `"keyword"` from search.
-- `database`, `url`, `language`: present on non-PubMed results — treat non-PubMed keyword grades as lower confidence.
-- `dosage` / `population`: best-effort extraction — handy for biohacking, but confirm against the abstract for anything actionable.
+Also read: `confidence` (0–1) — low confidence on a high score = escalate; `limitations[]` (`title-only`, `protocol`, `animal-study`, `small-sample`); `gradingMethod` (`"keyword"` vs `"llm"`); `dosage`/`population` (best-effort — confirm against the abstract).
 
-## Fetching details (`literature_fetch`)
+## Tools, limits, errors
 
-Pass one or more `ids` and a `database` string. Returns raw article objects with full abstracts, MeSH headings, and references — no grading. Use after `literature_search` to drill into specific papers.
+- `literature_fetch({ids:["39123456","38987654"], database:"pubmed"})` — full abstracts + MeSH + metadata, no grading (1–50 ids).
+- `literature_fulltext({id:"39123456", doi:"10.1234/x"})` — article body as markdown via Unpaywall → proxy → DOI; abstract-only if paywalled.
+- NCBI client is shared and serialized (3 req/s anonymous, 10 with `NCBI_API_KEY`): parallel calls are **safe** but don't run faster. Prefer a few precise queries.
+- Errors: `QUERY_TOO_BROAD` (narrow + retry); `RATE_LIMIT` (wait `retryAfter`); `NETWORK_ERROR`/`PARSE_FAILURE` (retry once, then say the DB is unreachable).
 
-```
-literature_fetch({ ids: ["39123456", "38987654"], database: "pubmed" })
-```
+## Reporting
 
-## Full text (`literature_fulltext`)
+Lead with the strongest evidence + its score/type; summarize consensus, then contradictions. Cite PMIDs so claims are checkable. Quote `dosage`/`population` for actionable questions and flag animal-only, tiny, or title-only results. Surface `redFlags` (COI, n<20, preprint, retracted). This is a research tool, not medical advice — add that caveat for dosing/clinical decisions.
 
-Pass a `pmid` (or non-PubMed id) and optionally a `doi` (required for non-numeric ids). Returns the article body as markdown via Unpaywall → institutional proxy → direct DOI; falls back to abstract-only if paywalled. Use this when you need to verify dosage, read methods, or detect statistical flaws that aren't visible in the abstract.
+## Three patterns (follow these, don't ad-lib)
 
-## Rate limits & parallel calls
+### 1. Simple lookup — known PMID
 
-The server shares one NCBI client across all tool calls and serializes its requests to stay under NCBI's limit (3 req/s anonymous, 10 with `NCBI_API_KEY`). So firing several `literature_search`/`literature_fetch` calls at once is **safe** — they queue rather than fail — but they don't run faster, and a big fan-out adds latency. Prefer a few precise queries over many broad ones. If you still see `RATE_LIMIT`, back off per `retryAfter`.
+> "What evidence score and study type does PMID 36615805 get?"
 
-## Errors (returned as typed `PubMedError`)
+One call, no fan-out: `literature_fetch({ids:["36615805"], database:"pubmed"})` (or `literature_search({query:"36615805[pmid]"})`). Read `evidenceScore` + `studyType` + `confidence`. If `confidence` is low or `limitations` flags `protocol`/`title-only`, fetch fulltext first. Answer: *"Score 5, meta-analysis (PMID 36615805), confidence 0.9."* Stop.
 
-- `QUERY_TOO_BROAD` (recoverable) — narrow with `[tiab]`/`[mesh]`/`AND`, then retry.
-- `RATE_LIMIT` (recoverable, `retryAfter`) — wait the given seconds; back off.
-- `NETWORK_ERROR` / `PARSE_FAILURE` — retry once; if it persists, tell the user the database is unreachable.
+### 2. Evidence synthesis — compare X vs Y
 
-## Reporting to the user
+> "Compare DORAs vs trazodone for sleep quality. Which has stronger evidence, and why?"
 
-- Lead with the strongest evidence and its score/type; summarize the consensus, then note contradictions.
-- Cite PMIDs so claims are checkable.
-- Quote `dosage`/`population` when the user asked something actionable, and flag when a result is animal-only, tiny, or title-only.
-- Surface `redFlags` and funding/conflicts.
-- This is a research tool, not medical advice. For dosing or clinical decisions, add that caveat and encourage professional consultation.
+Frame PICO, then two targeted searches (one per arm, study-type filter): `suvorexant OR lemborexant OR daridorexant AND sleep quality[tiab] AND (meta-analysis[pt] OR randomized controlled trial[pt])`, and `trazodone AND sleep quality[tiab] AND (...)`. `literature_fetch` the top 2–3 PMIDs per arm; read effect sizes + CIs, n, I². Decide the winner **by evidence tier** (a meta-analysis of RCTs beats one small RCT), not raw effect size. Name which arm is stronger and why; cite PMIDs; flag heterogeneity/COI/GRADE. Cap at ~6 calls.
+
+### 3. Bullshit detection — the study doesn't exist
+
+> "Summarize the 2023 Jensen trial on melatonin and REM sleep."
+
+Search author+topic then title terms: `Jensen[au] AND melatonin AND REM sleep`, then `Jensen melatonin REM sleep 2023`. **Zero corroborating results after 2–3 distinct queries → STOP** — don't keep reformulating 8–10 times and return empty. Answer plainly: *"I could not find this trial in PubMed; it does not appear to exist."* Invent no PMID, cite no fabricated study. Suggest the user double-check the reference. (This corrects the real failure mode: empty final text after exhausting the step budget.)
+
+## Small-model tips
+
+- **Patterns beat rules.** Follow the three examples above; don't improvise a new strategy per query.
+- **Budget your calls:** 1 for a lookup, ~4–6 for synthesis, ≤3 before rejecting a phantom study.
+- **Zero results after 2 reformulations → stop and say so.** Never return an empty answer; a caveat beats silence.
+- **Every claim gets a PMID you got from a tool call.** Never type a PMID from memory — it's fabrication.
+- **Lead with the bottom line, then the evidence.** State the winner/number first; back it with the grade + citation + redFlags.
+
+## When to go deeper (EBM)
+
+The `0–5` score orients you; it does not appraise a study. When a paper is about to drive a real decision and you need risk-of-bias (RoB 2 / ROBINS-I), AMSTAR-2, effect sizes/CIs/NNT, heterogeneity, Bradford Hill causation, or applicability checks, load the **`med-research-ebm`** reference skill. Don't load it for routine searches — it's heavy.

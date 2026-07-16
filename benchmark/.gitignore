@@ -1,0 +1,6 @@
+node_modules/
+results/
+.env
+.env.*
+!.env.example
+auto-grade.ts

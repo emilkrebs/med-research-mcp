@@ -21,7 +21,7 @@ Find the repo's absolute path (`pwd` inside it, or locate `med-research-mcp`). S
 cd <REPO>
 npm install
 npm run build          # produces dist/ (dual ESM+CJS + .d.ts)
-npm test               # optional: 29 tests should pass
+npm test               # optional: 80 tests should pass
 ```
 
 Requires Node ≥ 18. Re-run `npm run build` after any source change — clients run the compiled `dist/`.
@@ -44,7 +44,7 @@ Tools appear in **new** Claude Code sessions.
 ```bash
 npm run build:mcpb             # produces dist/med-research-mcp.mcpb
 ```
-Drag `dist/med-research-mcp.mcpb` onto Claude Desktop. The installer prompts for the NCBI email — no JSON editing. Note: `.mcpb` installs do **not** auto-load the companion `med-research` skill; copy it in manually (Step 4).
+Drag `dist/med-research-mcp.mcpb` onto Claude Desktop. The installer prompts for the NCBI contact email (required) plus optional NCBI API key, Unpaywall email, and institutional proxy prefix — no JSON editing. Note: `.mcpb` installs do **not** auto-load the companion skills; copy them in manually (Step 4).
 
 ### Cursor / generic JSON (`mcpServers`)
 ```json
@@ -81,13 +81,16 @@ Add as a git submodule (or dependency), then `import { searchLiterature, fetchLi
 | `NCBI_EMAIL` | recommended | Contact email; avoids anonymous throttling |
 | `NCBI_API_KEY` | optional | Raises rate limit 3 → 10 req/s |
 | `MED_RESEARCH_UNPAYWALL_EMAIL` | optional | Contact email for Unpaywall lookups (`literature_fulltext`). Falls back to `NCBI_EMAIL`. |
-| `MED_RESEARCH_CACHE_BACKEND` | optional | `memory` (default). `sqlite` is planned for a future release |
+| `MED_RESEARCH_PROXY_PREFIX` | optional | EZproxy-style DOI prefix for off-campus full-text — `literature_fulltext` prepends it to the DOI, e.g. `https://doi-org.ezproxy.your-university.edu`. Needs an existing proxy session on the machine. |
+| `MED_RESEARCH_CACHE_BACKEND` | optional | `memory` (default) or `sqlite` (persistent, survives restarts — used by the Biohacking-IDE integration). `better-sqlite3` is bundled. |
+| `MED_RESEARCH_CACHE_PATH` | optional | SQLite file path when the backend is `sqlite` (default `./pubmed-cache.db`; `:memory:` for ephemeral). |
+| `MED_RESEARCH_FULLTEXT_MAX_CHARS` | optional | Cap on returned full-text length. Default 50000; longer bodies are truncated (`truncated: true`). |
 
-## Step 4 — Install the companion usage skill
+## Step 4 — Install the companion skills
 
-So the AI actually uses the tools well, install `med-research`:
+So the AI actually uses the tools well, install the usage skill `med-research` and its critical-appraisal reference `med-research-ebm` (the workflow skill loads the EBM one on demand):
 ```bash
-mkdir -p ~/.claude/skills && cp -r <REPO>/skills/med-research ~/.claude/skills/
+mkdir -p ~/.claude/skills && cp -r <REPO>/skills/med-research <REPO>/skills/med-research-ebm ~/.claude/skills/
 ```
 (Use `.claude/skills/` for a single project.)
 
