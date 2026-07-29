@@ -57,11 +57,11 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@mozilla/readability": "^0.6.0",
-    "better-sqlite3": "^13.0.1",
+    "better-sqlite3": "^13.0.2",
     "fast-xml-parser": "^5.10.1",
-    "jsdom": "^29.1.1",
+    "jsdom": "^30.0.1",
     "lru-cache": "^11.5.2",
     "pdf-parse": "^2.4.5",
     "turndown": "^7.2.4",
@@ -71,7 +71,7 @@
     "@anthropic-ai/mcpb": "^2.1.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/jsdom": "^28.0.3",
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.1.2",
     "@types/turndown": "^5.0.6",
     "esbuild": "^0.28.1",
     "tsup": "^8.5.1",
