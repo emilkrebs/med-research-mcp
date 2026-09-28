@@ -15,19 +15,9 @@ import {
   fetchFulltext,
   NcbiClient,
   LRUBackend,
+  STUDY_TYPES,
   type Cache,
 } from "../core.js";
-
-const STUDY_TYPES = [
-  "meta-analysis",
-  "randomized-controlled-trial",
-  "cohort",
-  "review",
-  "case-control",
-  "case-report",
-  "animal-study",
-  "unknown",
-] as const;
 
 const DATABASES = "pubmed, europepmc, chinaxiv, russiarxiv";
 

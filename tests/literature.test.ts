@@ -70,7 +70,7 @@ describe("searchLiterature fan-out", () => {
     const out = await searchLiterature({ query: "creatine", database: "all" }, new LRUBackend(), adapters);
 
     // scieloReview shares a DOI with pubmedMeta (case-insensitive) and scores
-    // lower (review=3 vs meta-analysis=5), so it is dropped.
+    // lower (review=1 vs meta-analysis=5), so it is dropped.
     expect(out.articles.map((a) => a.pmid)).toEqual(["1", "C1", "S2"]);
     expect(out.articles.map((a) => a.evidenceScore)).toEqual([5, 4, 0]);
     // total sums each adapter's reported count.
@@ -98,6 +98,8 @@ describe("searchLiterature fan-out", () => {
       adapters,
     );
     expect(out.articles.map((a) => a.pmid)).toEqual(["1", "C1"]);
+    // scieloPlain is unclassified, not weak — the drop must be surfaced.
+    expect(out.warnings?.some((w) => /1 result\(s\) with an undetermined study design/.test(w))).toBe(true);
   });
 
   it("applies the studyTypes filter", async () => {

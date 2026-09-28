@@ -34,8 +34,10 @@ export type { Cache, CacheBackend, CacheOptions } from "./cache.js";
 export { ResearchApiException, isMedResearchError, errors } from "./errors.js";
 export type { ResearchError, ResearchErrorCode } from "./errors.js";
 
+export { STUDY_TYPES } from "./types.js";
 export type {
   StudyType,
+  ScoreAdjustment,
   Article as NcbiArticle,
   GradedArticle,
   PopulationDiversity,

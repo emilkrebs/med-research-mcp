@@ -12,14 +12,19 @@ import type { AnswerKey, BenchmarkQuery, AccuracyDetail } from "../types.js";
 import type { StudyType } from "../core.js";
 import type { CitationAudit, Verifier } from "./verify.js";
 
+/** First match wins, so negated/specific patterns precede the broader ones they overlap. */
 const TYPE_PATTERNS: Record<StudyType, RegExp> = {
-  "meta-analysis": /meta[-\s]?analys|systematic review|pooled analysis/i,
+  "meta-analysis": /meta[-\s]?analys|pooled analysis/i,
+  "systematic-review": /systematic review/i,
+  "non-randomized-trial": /non[-\s]?randomi[sz]ed|single[-\s]arm/i,
   "randomized-controlled-trial": /randomi[sz]ed|\brct\b|double[-\s]blind|placebo[-\s]control/i,
   cohort: /\bcohort\b|longitudinal|prospective/i,
-  review: /\breview\b/i,
   "case-control": /case[-\s]control/i,
-  "case-report": /case report|case study|case presentation/i,
+  "cross-sectional": /cross[-\s]sectional/i,
+  "case-report": /case report|case study|case presentation|case series/i,
+  review: /\breview\b/i,
   "animal-study": /\banimal\b|murine|rodent|\bmice\b|\bmouse\b|\brats?\b/i,
+  "in-vitro": /in vitro|cell line/i,
   unknown: /(?!)/, // never matches
 };
 
