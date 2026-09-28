@@ -1,12 +1,25 @@
 /**
  * Keyword / rule-based evidence grading — the fast, free path.
  *
- * Strategy: trust PubMed's own curated PublicationType tags first (NLM indexers
- * assign these, so they're far more reliable than scraping the abstract), then
- * fall back to regex over title + abstract. Known keyword-path weaknesses
- * (protocol papers read as RCTs, "unlike previous trials…" false positives,
- * animal studies with incidental human mentions) are damped via negative
- * patterns and surfaced in `limitations`.
+ * Two layers, both built to avoid *optimistic* bias:
+ *
+ * 1. Study design. Curated NLM PublicationType tags win. Generic tags ("Review",
+ *    "Observational Study", "Clinical Trial") may only be refined to a more
+ *    specific design the abstract states outright. Without tags, weighted cues
+ *    vote per design: the title counts double (CONSORT 1a, STROBE 1a and PRISMA 1
+ *    ask authors to name the design there), sentences about *other* work
+ *    ("previous trials showed…", "RCTs are needed") are ignored, negations
+ *    ("non-randomized") are honoured, and ties resolve to the lower tier. A
+ *    declared synthesis is classified as such even though it names the designs
+ *    it pooled.
+ *
+ * 2. Evidence score. The design sets the starting tier (OCEBM 2011 / GRADE
+ *    ordering), which is only ever rated *down*, for high-precision signals —
+ *    retraction, protocol without results, commentary, synthesis of animal or of
+ *    purely observational studies, pilot/feasibility trials — each recorded in
+ *    `scoreAdjustments`. Nothing rates up: GRADE's upgrade criteria (large
+ *    effect, dose-response) need numbers a regex can't reliably read. Source
+ *    database and language never change the score, only the confidence.
  *
  * Multi-language: the databases behind {@link searchLiterature} (SciELO,
  * CyberLeninka, ChinaXiv, J-STAGE, Europe PMC) return abstracts in Spanish,
@@ -17,55 +30,176 @@
  * range of people the finding was tested.
  */
 
-import type { GradedArticle, Article, StudyType, PopulationDiversity } from "./types.js";
+import type {
+  GradedArticle,
+  Article,
+  StudyType,
+  PopulationDiversity,
+  ScoreAdjustment,
+} from "./types.js";
 
+/**
+ * Starting tier per design (OCEBM 2011 levels / GRADE ordering). Narrative
+ * reviews are unsystematic expert synthesis and sit with case reports, not with
+ * cohorts; a systematic review without pooling ranks with a meta-analysis.
+ */
 export const SCORE_BY_TYPE: Record<StudyType, number> = {
   "meta-analysis": 5,
+  "systematic-review": 5,
   "randomized-controlled-trial": 4,
+  "non-randomized-trial": 3,
   cohort: 3,
-  review: 3,
   "case-control": 2,
+  "cross-sectional": 2,
   "case-report": 1,
+  review: 1,
   "animal-study": 0,
+  "in-vitro": 0,
   unknown: 0,
 };
 
-interface Rule {
-  studyType: StudyType;
-  patterns: RegExp[];
+type Design = Exclude<StudyType, "unknown">;
+
+/** Weakest first — equal keyword evidence resolves to the earlier (lower) design. */
+const CONSERVATIVE_ORDER: Design[] = [
+  "in-vitro",
+  "animal-study",
+  "review",
+  "case-report",
+  "cross-sectional",
+  "case-control",
+  "cohort",
+  "non-randomized-trial",
+  "randomized-controlled-trial",
+  "systematic-review",
+  "meta-analysis",
+];
+
+const PRECLINICAL: ReadonlySet<StudyType> = new Set(["animal-study", "in-vitro"]);
+
+/** A design-declarative phrase ("randomized controlled trial") vs a suggestive one ("double-blind"). */
+const STRONG = 1;
+const WEAK = 0.5;
+/** Title hits count double: reporting guidelines ask authors to name the design there. */
+const TITLE_WEIGHT = 2;
+/** Keyword evidence alone never claims more certainty than a curated NLM tag. */
+const KEYWORD_CONFIDENCE_CAP = 0.8;
+
+// Placeholder tokens substituted during preprocessing — ASCII, so `\b` and
+// substring matching both work, and they can't collide with real words.
+const T_NONRANDOM = "zqnonrandzq";
+const T_SYSREVIEW = "zqsysrevzq";
+const T_NO_META = "zqnometazq";
+const T_CHART = "zqchartzq";
+
+/** Rewrites applied before matching, so negations and look-alike phrases can't fire positive cues. */
+const REWRITES: [RegExp, string][] = [
+  [/\b(?:non|not|quasi|pseudo)[- ]?randomi[sz]ed\b|\bwithout randomi[sz]ation\b/gi, T_NONRANDOM],
+  [/\bin vitro fertili[sz]ation\b/gi, "ivf"],
+  [/\b(?:institutional|ethic(?:s|al)|independent) review (?:board|committee)s?\b|\bpeer[- ]review(?:ed)?\b/gi, " "],
+  [
+    /\b(?:medical|clinical|health|hospital|patient|electronic|chart|case)[- ]records? review(?:ed)?\b|\bchart review(?:ed)?\b|\breview(?:ed|ing)? (?:of )?(?:the )?(?:medical |clinical |electronic |health |hospital |patient )?(?:records|charts|case notes)\b/gi,
+    T_CHART,
+  ],
+  [
+    /\bno meta-?analysis\b|\bmeta-?analys[ie]s (?:was|were|could) not\b|\b(?:not|nor) (?:possible|feasible|appropriate) to (?:perform|conduct|undertake) (?:a )?meta-?analysis\b|\bwithout (?:a )?meta-?analysis\b/gi,
+    T_NO_META,
+  ],
+  [/\bsystematic(?:ally)? (?:literature )?review(?:s|ed)?\b|\bumbrella review\b/gi, T_SYSREVIEW],
+];
+
+/** Non-English negated randomization, substring-replaced in the lowercased text. */
+const INTL_NONRANDOM = [
+  "no aleatorizado", "no aleatorizada", "no randomizado", "no randomizada",
+  "não randomizado", "não randomizada", "não aleatorizado", "não aleatorizada",
+  "non randomisé", "non randomisée", "non-randomisé", "non-randomisée",
+  "nicht randomisiert", "nicht-randomisiert", "non randomizzato", "non randomizzata",
+  "нерандомизированн", "非随机", "非ランダム化", "非無作為",
+];
+
+interface Cue {
+  re: RegExp;
+  w: number;
 }
 
-/** Ordered by evidence score, highest first — first rule with a hit wins. */
-const RULES: Rule[] = [
-  {
-    studyType: "meta-analysis",
-    patterns: [/meta-analys[ie]s/i, /systematic review/i, /pooled analysis/i],
-  },
-  {
-    studyType: "randomized-controlled-trial",
-    patterns: [/randomi[sz]ed/i, /double-blind/i, /placebo[- ]control/i, /\bRCT\b/],
-  },
-  {
-    studyType: "cohort",
-    patterns: [/cohort/i, /longitudinal/i, /prospective/i, /follow-up/i],
-  },
-  {
-    studyType: "review",
-    // "systematic review" is caught above; a plain review lands here.
-    patterns: [/\breview\b/i, /literature review/i, /narrative review/i],
-  },
-  {
-    studyType: "case-control",
-    patterns: [/case-control/i, /matched control/i],
-  },
-  {
-    studyType: "case-report",
-    patterns: [/case report/i, /case study/i, /case presentation/i],
-  },
-  {
-    studyType: "animal-study",
-    patterns: [/\bmurine\b/i, /\brodents?\b/i, /animal model/i, /\bmice\b/i, /\bmouse\b/i, /\brats?\b/i],
-  },
+/** English cues per design, tested once per sentence. */
+const CUES: Record<Design, Cue[]> = {
+  "meta-analysis": [
+    { re: /\bmeta-?analy(?:sis|ses|tic)\b/i, w: STRONG },
+    { re: /\bpooled analysis\b/i, w: WEAK },
+  ],
+  "systematic-review": [
+    { re: new RegExp(`\\b${T_SYSREVIEW}\\b`), w: STRONG },
+    { re: new RegExp(`\\b${T_NO_META}\\b`), w: STRONG },
+    { re: /\bPRISMA\b/, w: WEAK },
+  ],
+  "randomized-controlled-trial": [
+    { re: /\brandomi[sz]ed\b[^.;]{0,50}?\btrials?\b/i, w: STRONG },
+    { re: /\bRCTs?\b/, w: STRONG },
+    { re: /\b(?:were|was|being) randomi[sz]ed\b|\brandomly (?:assigned|allocated)\b|\brandomi[sz]ed (?:to|into)\b/i, w: STRONG },
+    { re: /\brandomi[sz]ed\b/i, w: WEAK },
+    { re: /\bdouble[- ]blind(?:ed)?\b/i, w: WEAK },
+    { re: /\bplacebo[- ]controlled\b/i, w: WEAK },
+  ],
+  "non-randomized-trial": [
+    { re: new RegExp(`\\b${T_NONRANDOM}\\b`), w: STRONG },
+    { re: /\bsingle[- ]arm\b/i, w: STRONG },
+    { re: /\b(?:clinical|interventional|open[- ]label) (?:trial|study)\b/i, w: WEAK },
+  ],
+  cohort: [
+    { re: /\b(?:prospective|retrospective|population-based|community-based|longitudinal|observational|birth) cohort\b/i, w: STRONG },
+    { re: /\bcohort stud(?:y|ies)\b/i, w: STRONG },
+    { re: /\bcohort\b/i, w: WEAK },
+    { re: /\blongitudinal\b/i, w: WEAK },
+    { re: /\b(?:pro|retro)spective(?:ly)?\b/i, w: WEAK },
+    { re: /\bobservational stud(?:y|ies)\b/i, w: WEAK },
+    { re: new RegExp(`\\b${T_CHART}\\b`), w: WEAK },
+  ],
+  "case-control": [
+    { re: /\bcase[- ]control\b/i, w: STRONG },
+    { re: /\bmatched controls?\b/i, w: WEAK },
+  ],
+  "cross-sectional": [
+    { re: /\bcross[- ]sectional\b/i, w: STRONG },
+    { re: /\bprevalence stud(?:y|ies)\b/i, w: STRONG },
+    { re: /\bsurvey\b/i, w: WEAK },
+  ],
+  "case-report": [
+    { re: /\bcase reports?\b|\bcase series\b|\bcase presentation\b/i, w: STRONG },
+    { re: /\bwe (?:report|present|describe)\b[^.]{0,30}\b(?:case|patient|man|woman|boy|girl)\b/i, w: STRONG },
+    { re: /\bcase stud(?:y|ies)\b/i, w: WEAK },
+  ],
+  review: [
+    { re: /\b(?:(?:narrative|literature|scoping|critical|comprehensive|integrative|state-of-the-art) review|mini[- ]?review)\b/i, w: STRONG },
+    { re: /\b(?:this|the present|our) review\b|\bwe review\b|\breview of (?:the )?literature\b/i, w: STRONG },
+    { re: /\breview\b/i, w: WEAK },
+  ],
+  "animal-study": [
+    {
+      re: /\b(?:mice|mouse|murine|rats?|rodents?|zebrafish|drosophila|rabbits?|hamsters?|macaques?|piglets?|non-?human primates?|sprague[- ]dawley|wistar|C57BL|caenorhabditis|C\. elegans)\b/i,
+      w: STRONG,
+    },
+    { re: /\banimal (?:models?|stud(?:y|ies)|experiments?)\b/i, w: STRONG },
+  ],
+  "in-vitro": [
+    { re: /\bin vitro\b|\bcell lines?\b|\bcultured (?:[\w-]+ )?cells\b/i, w: STRONG },
+    { re: /\borganoids?\b/i, w: WEAK },
+  ],
+};
+
+/**
+ * Sentences describing other work or future plans. Their design words describe
+ * someone else's study ("unlike previous RCTs…", "further trials are needed"),
+ * so they cast no vote. English only.
+ */
+const BACKGROUND_RES: RegExp[] = [
+  /\b(?:previous(?:ly)?|prior(?!\s+to\b)|earlier|existing|past|published|other)\s+(?:[\w-]+\s+){0,3}(?:stud(?:y|ies)|trials?|RCTs|meta-?analys[ie]s|reviews?|research|reports?|evidence|literature|data)\b/i,
+  /\b(?:has|have)\s+(?:(?:also|previously|consistently|repeatedly)\s+)?been\s+(?:shown|reported|demonstrated|suggested|found|documented|observed|associated)\b/i,
+  /\b(?:further|future|additional|larger|more|well[- ]designed|high[- ]quality|long[- ]term|adequately powered|confirmatory|prospective)\s+(?:[\w-]+\s+){0,3}(?:stud(?:y|ies)|trials?|RCTs|research|investigations?)\s+(?:(?:are|is|will be|would be)\s+)?(?:needed|required|warranted|necessary)\b/i,
+  /\b(?:are|is|remain)\s+(?:urgently\s+|still\s+)?(?:needed|required|warranted|lacking|scarce|limited)\b/i,
+  /\bunlike\b|\bin contrast (?:to|with)\b|\bconsistent with\b|\bin line with\b|\bevidence from\b|\baccording to\b/i,
+  /\bshould be (?:confirmed|tested|investigated|evaluated|explored|validated)\b/i,
+  /\b(?:may|might|could)\s+(?:[\w-]+\s+){0,2}(?:benefit|help|be (?:useful|beneficial|promising)|represent|offer|serve|translate)\b/i,
 ];
 
 /**
@@ -75,13 +209,15 @@ const RULES: Rule[] = [
  * classification signal. Kept as plain strings (not `\b`-anchored regexes)
  * because JS word boundaries are ASCII-only and break on Cyrillic/CJK.
  */
-const MULTILINGUAL_TERMS: Record<Exclude<StudyType, "unknown">, string[]> = {
+const MULTILINGUAL_TERMS: Record<Design, string[]> = {
   "meta-analysis": [
-    "metaanálisis", "meta-análisis", "revisión sistemática", "metanálise", "meta-análise",
-    "revisão sistemática", "méta-analyse", "revue systématique", "metaanalyse",
-    "systematische übersicht", "systematische übersichtsarbeit", "metanalisi", "revisione sistematica",
-    "метаанализ", "мета-анализ", "систематический обзор", "荟萃分析", "元分析", "系统评价", "系统综述",
-    "メタアナリシス", "メタ分析", "システマティックレビュー", "システマティック・レビュー",
+    "metaanálisis", "meta-análisis", "metanálise", "meta-análise", "méta-analyse", "metaanalyse",
+    "metanalisi", "метаанализ", "мета-анализ", "荟萃分析", "元分析", "メタアナリシス", "メタ分析",
+  ],
+  "systematic-review": [
+    "revisión sistemática", "revisão sistemática", "revue systématique", "systematische übersicht",
+    "systematische übersichtsarbeit", "revisione sistematica", "систематический обзор", "系统评价",
+    "系统综述", "システマティックレビュー", "システマティック・レビュー", T_SYSREVIEW, T_NO_META,
   ],
   "randomized-controlled-trial": [
     "aleatorizado", "aleatorizada", "ensayo clínico aleatorizado", "doble ciego", "controlado con placebo",
@@ -133,68 +269,106 @@ const MULTILINGUAL_TERMS: Record<Exclude<StudyType, "unknown">, string[]> = {
     "病例报告", "个案报告",
     "症例報告",
   ],
+  "non-randomized-trial": [T_NONRANDOM, "brazo único", "braço único", "bras unique", "einarmig", "单臂", "単群"],
+  "cross-sectional": [
+    "estudio transversal", "estudo transversal", "étude transversale", "querschnittstudie", "querschnittsstudie",
+    "studio trasversale", "одномоментн", "поперечное исследование", "横断面研究", "横断研究", "横断的研究",
+  ],
+  "in-vitro": [
+    "in vitro", "línea celular", "líneas celulares", "linhagem celular", "linhagens celulares",
+    "lignée cellulaire", "lignées cellulaires", "zelllinie", "linea cellulare", "linee cellulari",
+    "клеточн", "细胞系", "细胞株", "細胞株", "培養細胞",
+  ],
   "animal-study": [
     "murino", "murina", "roedores", "modelo animal", "ratones", "ratas",
     "camundongos", "ratos",
     "murin", "murine", "rongeurs", "modèle animal", "souris",
     "nagetiere", "tiermodell", "mäuse", "ratten",
-    "roditori", "modello animale", "topi", "ratti",
-    "мышин", "грызун", "животн модел", "крыс", "мыш",
+    // "topi " / "мышей": bare "topi" hits "topical", bare "мыш" hits "мышцы" (muscle).
+    "roditori", "modello animale", "topi ", "ratti",
+    "мышин", "грызун", "животн модел", "крыс", "мышей", "мышах", "мыши ",
     "小鼠", "大鼠", "动物模型", "啮齿",
     "マウス", "ラット", "動物モデル", "げっ歯",
   ],
 };
 
-/** Multilingual pass runs in the same evidence-score priority order as {@link RULES}. */
-const MULTILINGUAL_ORDER = RULES.map((r) => r.studyType) as Exclude<StudyType, "unknown">[];
+/** Non-English terms for these designs include generic words ("suivi", "обзор"), so they vote weakly. */
+const INTL_WEAK: ReadonlySet<Design> = new Set(["cohort", "review"]);
 
-/** NLM PublicationType → our taxonomy. Lowercased keys. */
-const PUB_TYPE_MAP: Record<string, StudyType> = {
-  "meta-analysis": "meta-analysis",
-  "systematic review": "meta-analysis",
-  "randomized controlled trial": "randomized-controlled-trial",
-  // NLM tags EHR/registry/propensity-matched studies "Observational Study".
-  // Without this, the abstract's mention of "randomized" trials it compares
-  // against misfires the RCT regex and inflates the score.
-  "observational study": "cohort",
-  review: "review",
-  "case reports": "case-report",
-};
-
-/** English human-subject cues (ASCII word-boundaries are safe here). */
-const HUMAN_TERMS_RE =
-  /\b(humans?|patients?|adults?|men|women|participants?|volunteers?|subjects?|children|boys?|girls?)\b/i;
-
-/** Human-subject cues in other languages, substring-matched (lowercased). */
-const HUMAN_TERMS_INTL = [
-  // es / pt
-  "humano", "paciente", "adulto", "hombre", "mujer", "participante", "voluntario",
-  "sujeto", "niño", "homem", "mulher", "voluntário", "criança", "indivíduo",
-  // fr
-  "humain", "adulte", "homme", "femme", "volontaire", "enfant",
-  // de
-  "mensch", "erwachsene", "männer", "frauen", "teilnehmer", "proband", "kinder",
-  // it
-  "umano", "uomo", "donna", "partecipante", "bambino",
-  // ru
-  "человек", "пациент", "взросл", "мужчин", "женщин", "участник", "доброволец", "дет",
-  // zh / ja
-  "患者", "成人", "受试者", "志愿者", "儿童", "人类", "被験者", "参加者", "小児", "ヒト",
-];
-
-function hasHumanTerms(text: string, lower: string): boolean {
-  return HUMAN_TERMS_RE.test(text) || HUMAN_TERMS_INTL.some((t) => lower.includes(t));
+interface TagRule {
+  type: Design;
+  /** More specific designs the abstract may refine this generic tag to, given a strong own-study cue. */
+  refinable?: readonly Design[];
 }
 
-/** Phrases that make a keyword hit untrustworthy. */
-const NEGATIVE_PATTERNS: { pattern: RegExp; limitation: string }[] = [
-  { pattern: /\bstudy protocol\b/i, limitation: "Reads as a study protocol, not a completed trial." },
-  { pattern: /\bwe will\b/i, limitation: "Future-tense wording suggests a protocol/plan, not results." },
-  { pattern: /\bprotocol for a\b/i, limitation: "Reads as a study protocol, not a completed trial." },
-  { pattern: /unlike previous (randomi[sz]ed )?(trials|studies)/i, limitation: "Study-type keyword may be a false positive from comparative phrasing." },
-  // Common protocol wording in other languages.
-  { pattern: /protocolo (?:de|del|do) estudo|protocolo del ensayo|protocole d[’']étude|studienprotokoll|protocollo di studio/i, limitation: "Reads as a study protocol, not a completed trial." },
+const TRIAL_TAG: TagRule = { type: "non-randomized-trial", refinable: ["randomized-controlled-trial"] };
+
+/**
+ * NLM PublicationType → design, most specific first (lowercased). Veterinary
+ * tags precede their human counterparts. "Observational Study" never refines to
+ * a trial: an EHR cohort whose abstract cites prior RCTs is still a cohort.
+ */
+const PUB_TYPE_RULES: [string, TagRule][] = [
+  ["randomized controlled trial, veterinary", { type: "animal-study" }],
+  ["clinical trial, veterinary", { type: "animal-study" }],
+  ["observational study, veterinary", { type: "animal-study" }],
+  ["meta-analysis", { type: "meta-analysis" }],
+  ["systematic review", { type: "systematic-review", refinable: ["meta-analysis"] }],
+  ["randomized controlled trial", { type: "randomized-controlled-trial" }],
+  ["case reports", { type: "case-report" }],
+  ["observational study", { type: "cohort", refinable: ["case-control", "cross-sectional"] }],
+  ["controlled clinical trial", TRIAL_TAG],
+  ["pragmatic clinical trial", TRIAL_TAG],
+  ["equivalence trial", TRIAL_TAG],
+  ["adaptive clinical trial", TRIAL_TAG],
+  ["clinical trial, phase iv", TRIAL_TAG],
+  ["clinical trial, phase iii", TRIAL_TAG],
+  ["clinical trial, phase ii", TRIAL_TAG],
+  ["clinical trial, phase i", TRIAL_TAG],
+  ["clinical trial", TRIAL_TAG],
+  ["scoping review", { type: "review" }],
+  // NLM only tags "Systematic Review" since 2019; older ones are plain "Review".
+  ["review", { type: "review", refinable: ["systematic-review", "meta-analysis"] }],
 ];
+
+/**
+ * Cues that the study itself enrolled people. Deliberately excludes bare
+ * "human", which mostly describes material ("human cell lines").
+ */
+const HUMAN_SUBJECT_RE =
+  /\b(?:patients?|adults?|men|women|participants?|volunteers?|subjects?|children|adolescents?|infants?|boys|girls|individuals|outpatients?|inpatients?|in humans)\b/i;
+
+/** Human-subject cues in other languages, substring-matched (lowercased). */
+const HUMAN_SUBJECT_INTL = [
+  // es / pt
+  "paciente", "adulto", "hombre", "mujer", "participante", "voluntario",
+  "sujeto", "niño", "homem", "mulher", "voluntário", "criança", "indivíduo",
+  // fr
+  "adulte", "homme", "femme", "volontaire", "enfant",
+  // de
+  "erwachsene", "männer", "frauen", "teilnehmer", "proband", "kinder",
+  // it
+  "uomo", "donna", "partecipante", "bambino",
+  // ru
+  "человек", "пациент", "взросл", "мужчин", "женщин", "участник", "доброволец", "дети", "детей",
+  // zh / ja
+  "患者", "成人", "受试者", "志愿者", "儿童", "被験者", "参加者", "小児",
+];
+
+const PROTOCOL_TITLE_RE =
+  /\b(?:study|trial|research|review) protocol\b|\bprotocol (?:for|of) (?:a|an|the)\b|protocolo (?:de|del|do) (?:estudo|estudio|ensayo|ensaio)|protocole d[’']étude|studienprotokoll|protocollo di studio|протокол исследования|研究方案/i;
+const PROTOCOL_ABSTRACT_RE =
+  /\b(?:this|the present|our) (?:study |trial |review )?protocol (?:describes|outlines|details|reports|presents)\b|\bwe (?:describe|present|report|outline) (?:the|a|our) (?:study |trial |review )?protocol\b|\bprotocol (?:paper|article|manuscript)\b/i;
+const FUTURE_TENSE_RE =
+  /\bwe will\b|\bwill be (?:randomi[sz]ed|recruited|enrolled|allocated|assigned|assessed|measured|collected|analy[sz]ed)\b/i;
+const RETRACTED_TITLE_RE = /^\s*\[?(?:retracted|retraction(?: notice)?)\b/i;
+/** CONSORT pilot extension 1a: pilots identify themselves in the title or as "this pilot …". */
+const PILOT_RE = /\b(?:pilot|feasibility)\b[^.;]{0,40}?\b(?:stud(?:y|ies)|trials?|RCTs?)\b/i;
+const OWN_PILOT_RE = /\b(?:this|our|the present) (?:[\w-]+ ){0,3}?(?:pilot|feasibility)\b/i;
+const OBSERVATIONAL_INPUTS_RE =
+  /\b(?:observational|cohort|case[- ]control|cross[- ]sectional|epidemiologic(?:al)?|population-based) (?:stud(?:y|ies)|data)\b|\bprospective (?:cohort )?studies\b/i;
+const TRIAL_INPUTS_RE = new RegExp(`randomi[sz]ed|\\bRCTs?\\b|\\btrials?\\b|${T_NONRANDOM}`, "i");
+const SECONDARY_ANALYSIS_RE = /\b(?:post[- ]hoc|secondary|exploratory|subgroup) analys[ie]s\b/i;
 
 const DOSAGE_RE = /\b(\d+(?:\.\d+)?)\s?(mg\/kg|mcg\/kg|g\/day|mg\/day|mg|mcg|µg|ug|g|IU|mL|ml)\b/i;
 const POPULATION_RE =
@@ -249,6 +423,8 @@ export interface GradeResult {
   studyType: StudyType;
   evidenceScore: number;
   confidence: number;
+  /** Rating-down steps from the design's starting tier, most severe first. */
+  scoreAdjustments?: ScoreAdjustment[];
   dosage?: string;
   population?: string;
   /** Structured breakdown of the tested population — see {@link PopulationDiversity}. */
@@ -256,47 +432,166 @@ export interface GradeResult {
   limitations?: string[];
 }
 
-function classifyByPublicationType(publicationTypes: string[]): StudyType | null {
-  for (const pt of publicationTypes) {
-    const mapped = PUB_TYPE_MAP[pt.trim().toLowerCase()];
-    if (mapped) return mapped;
+function classifyByPublicationType(tags: ReadonlySet<string>): TagRule | null {
+  for (const [tag, rule] of PUB_TYPE_RULES) {
+    if (tags.has(tag)) return rule;
   }
   return null;
 }
 
-function countHits(text: string, patterns: RegExp[]): number {
-  let hits = 0;
-  for (const p of patterns) {
-    if (p.test(text)) hits += 1;
-  }
-  return hits;
+interface Sentence {
+  text: string;
+  lower: string;
+  weight: number;
+  /** False when the sentence is about other work or future plans. */
+  own: boolean;
 }
 
-function classifyByKeywords(text: string): { studyType: StudyType; hits: number } {
-  const lower = text.toLowerCase();
-  const human = hasHumanTerms(text, lower);
+function rewrite(text: string): string {
+  let out = text;
+  for (const [re, token] of REWRITES) out = out.replace(re, ` ${token} `);
+  return out;
+}
 
-  // 1. Precise English regex pass.
-  for (const rule of RULES) {
-    if (rule.studyType === "animal-study" && human) {
-      // Animal keywords with human terms present: don't force animal-study.
-      continue;
+function rewriteIntl(lower: string): string {
+  let out = lower;
+  for (const term of INTL_NONRANDOM) out = out.split(term).join(` ${T_NONRANDOM} `);
+  return out;
+}
+
+function toSentences(title: string, abstract: string | undefined): Sentence[] {
+  const out: Sentence[] = [];
+  const t = rewrite(title);
+  if (t.trim()) out.push({ text: t, lower: rewriteIntl(t.toLowerCase()), weight: TITLE_WEIGHT, own: true });
+  if (!abstract) return out;
+  for (const raw of rewrite(abstract).split(/(?<=[.!?])\s+|(?<=[。！？])|\n+/)) {
+    const s = raw.trim();
+    if (!s) continue;
+    out.push({ text: s, lower: rewriteIntl(s.toLowerCase()), weight: 1, own: !BACKGROUND_RES.some((re) => re.test(s)) });
+  }
+  return out;
+}
+
+type Tally = Record<Design, { sum: number; strong: number }>;
+
+function emptyTally(): Tally {
+  const t = {} as Tally;
+  for (const d of CONSERVATIVE_ORDER) t[d] = { sum: 0, strong: 0 };
+  return t;
+}
+
+function tallyTotal(t: Tally): number {
+  return CONSERVATIVE_ORDER.reduce((acc, d) => acc + t[d].sum, 0);
+}
+
+function tallyEnglish(sentences: Sentence[]): Tally {
+  const t = emptyTally();
+  for (const s of sentences) {
+    if (!s.own) continue;
+    for (const d of CONSERVATIVE_ORDER) {
+      for (const cue of CUES[d]) {
+        if (!cue.re.test(s.text)) continue;
+        t[d].sum += cue.w * s.weight;
+        if (cue.w === STRONG) t[d].strong += s.weight;
+      }
     }
-    const hits = countHits(text, rule.patterns);
-    if (hits > 0) return { studyType: rule.studyType, hits };
+  }
+  return t;
+}
+
+function tallyIntl(sentences: Sentence[]): Tally {
+  const t = emptyTally();
+  for (const s of sentences) {
+    if (!s.own) continue;
+    for (const d of CONSERVATIVE_ORDER) {
+      const w = INTL_WEAK.has(d) ? WEAK : STRONG;
+      for (const term of MULTILINGUAL_TERMS[d]) {
+        if (!s.lower.includes(term)) continue;
+        t[d].sum += w * s.weight;
+        if (w === STRONG) t[d].strong += s.weight;
+      }
+    }
+  }
+  return t;
+}
+
+interface DesignPick {
+  type: Design | null;
+  best: number;
+  runner: number;
+}
+
+function pickDesign(t: Tally, preclinicalOnly: boolean): DesignPick {
+  // A declared synthesis names the designs it pooled; those don't define the article.
+  // A case report "with review of the literature" is still a case report.
+  const synthStrong = t["meta-analysis"].strong + t["systematic-review"].strong;
+  const narrativeStrong = t.review.strong;
+  if (synthStrong > 0 || (narrativeStrong > 0 && t["case-report"].strong === 0)) {
+    const synth = t["meta-analysis"].sum + t["systematic-review"].sum;
+    if (synthStrong > narrativeStrong) {
+      const type = t["meta-analysis"].strong > 0 ? "meta-analysis" : "systematic-review";
+      return { type, best: synth, runner: t.review.sum };
+    }
+    return { type: "review", best: t.review.sum, runner: synth };
   }
 
-  // 2. Multilingual substring fallback for non-English abstracts.
-  for (const st of MULTILINGUAL_ORDER) {
-    if (st === "animal-study" && human) continue;
-    let hits = 0;
-    for (const term of MULTILINGUAL_TERMS[st]) {
-      if (lower.includes(term)) hits += 1;
-    }
-    if (hits > 0) return { studyType: st, hits };
+  // Animal/cell work with no human participants: a randomized mouse experiment is an animal study.
+  if (preclinicalOnly) {
+    const animal = t["animal-study"].sum;
+    const cells = t["in-vitro"].sum;
+    return { type: cells > animal ? "in-vitro" : "animal-study", best: animal + cells, runner: 0 };
   }
 
-  return { studyType: "unknown", hits: 0 };
+  // Strict `>` while walking weakest-first: ties stay with the lower tier.
+  let pick: DesignPick = { type: null, best: 0, runner: 0 };
+  for (const d of CONSERVATIVE_ORDER) {
+    if (PRECLINICAL.has(d)) continue;
+    const s = t[d].sum;
+    if (s > pick.best) pick = { type: d, best: s, runner: pick.best };
+    else if (s > pick.runner) pick.runner = s;
+  }
+  return pick;
+}
+
+/** Saturating in total cue weight, discounted when a rival design has comparable support. */
+function keywordConfidence(best: number, runner: number): number {
+  if (best <= 0) return 0.1;
+  const base = 1 - Math.exp(-best);
+  const dominance = best / (best + runner);
+  return Math.min(KEYWORD_CONFIDENCE_CAP, base * (0.5 + 0.5 * dominance));
+}
+
+interface KeywordClassification {
+  studyType: StudyType;
+  confidence: number;
+  tally: Tally;
+  /** Animal / in-vitro cues with no human participants in the study's own sentences. */
+  preclinicalOnly: boolean;
+  preclinicalCues: boolean;
+  /** Title + own-study sentences (preprocessed), for the rating-down checks. */
+  ownText: string;
+}
+
+function classifyByKeywords(title: string, abstract: string | undefined): KeywordClassification {
+  const sentences = toSentences(title, abstract);
+  let tally = tallyEnglish(sentences);
+  if (tallyTotal(tally) === 0) tally = tallyIntl(sentences);
+
+  const own = sentences.filter((s) => s.own);
+  const ownText = own.map((s) => s.text).join("\n");
+  const human = HUMAN_SUBJECT_RE.test(ownText) || own.some((s) => HUMAN_SUBJECT_INTL.some((h) => s.lower.includes(h)));
+  const preclinicalCues = tally["animal-study"].sum + tally["in-vitro"].sum > 0;
+  const preclinicalOnly = preclinicalCues && !human;
+
+  const pick = pickDesign(tally, preclinicalOnly);
+  return {
+    studyType: pick.type ?? "unknown",
+    confidence: pick.type ? keywordConfidence(pick.best, pick.runner) : 0.1,
+    tally,
+    preclinicalOnly,
+    preclinicalCues,
+    ownText,
+  };
 }
 
 function detectSex(text: string, lower: string): string | undefined {
@@ -363,7 +658,7 @@ function scoreBreadth(
     if (/multi-?ethnic/i.test(d.ancestry)) breadth += 0.2;
     else {
       breadth += 0.1;
-      notes.push(`Tested in one ancestry group (${d.ancestry}) — may not generalize.`);
+      notes.push(`Single ancestry group reported (${d.ancestry}) — applicability to other groups untested.`);
     }
   }
 
@@ -450,57 +745,104 @@ export function gradeText(
   language?: string,
 ): GradeResult {
   const text = `${title}\n${abstract ?? ""}`.trim();
+  const tags = new Set(publicationTypes.map((p) => p.trim().toLowerCase()));
 
-  // 1. Trust curated PublicationType tags when present.
-  const byPubType = classifyByPublicationType(publicationTypes);
-
-  // 2. Keyword classification (also used to corroborate / fall back).
-  const byKeyword = classifyByKeywords(text);
+  const tagRule = classifyByPublicationType(tags);
+  const kw = classifyByKeywords(title, abstract);
 
   let studyType: StudyType;
   let confidence: number;
-  if (byPubType) {
-    studyType = byPubType;
-    // High confidence: NLM-assigned. A corroborating keyword hit nudges it higher.
-    confidence = byKeyword.studyType === byPubType ? 0.95 : 0.85;
+  if (tagRule) {
+    const kwType = kw.studyType === "unknown" ? null : kw.studyType;
+    const refine = kwType != null && tagRule.refinable?.includes(kwType) === true && kw.tally[kwType].strong > 0;
+    if (refine) {
+      studyType = kwType;
+      confidence = 0.8;
+    } else {
+      studyType = tagRule.type;
+      confidence = kw.studyType === tagRule.type ? 0.95 : 0.85;
+    }
   } else {
-    studyType = byKeyword.studyType;
-    // Spec formula: positiveHits * 0.4 + 0.2, capped at 1.
-    confidence = studyType === "unknown" ? 0.1 : Math.min(1, byKeyword.hits * 0.4 + 0.2);
+    studyType = kw.studyType;
+    confidence = kw.confidence;
   }
 
   const extracted = extract(text);
   const limitations = [...(extracted.limitations ?? [])];
+  const note = (l: string): void => {
+    if (!limitations.includes(l)) limitations.push(l);
+  };
 
-  // Negative keywords halve confidence and are recorded as limitations.
-  let negativeHit = false;
-  for (const neg of NEGATIVE_PATTERNS) {
-    if (neg.pattern.test(text)) {
-      negativeHit = true;
-      if (!limitations.includes(neg.limitation)) limitations.push(neg.limitation);
+  // Rating down only; each step is recorded so the final score is auditable.
+  let score = SCORE_BY_TYPE[studyType];
+  const adjustments: ScoreAdjustment[] = [];
+  const rateDownTo = (target: number, reason: string): void => {
+    const next = Math.max(0, Math.min(score, target));
+    if (next < score) {
+      adjustments.push({ delta: next - score, reason });
+      score = next;
     }
+  };
+
+  if (tags.has("retracted publication") || tags.has("retraction of publication") || RETRACTED_TITLE_RE.test(title)) {
+    rateDownTo(0, "Retracted — findings are withdrawn and must not be used as evidence.");
   }
-  if (negativeHit) confidence = confidence / 2;
+
+  const protocol =
+    tags.has("clinical trial protocol") || PROTOCOL_TITLE_RE.test(title) || PROTOCOL_ABSTRACT_RE.test(abstract ?? "");
+  if (protocol) {
+    rateDownTo(0, "Study protocol — describes planned research and reports no results.");
+    note("Reads as a study protocol, not a completed study.");
+  } else if (FUTURE_TENSE_RE.test(text)) {
+    note("Future-tense wording suggests a protocol/plan, not results.");
+  }
+  if (protocol || FUTURE_TENSE_RE.test(text)) confidence /= 2;
+
+  if (tags.has("editorial") || tags.has("comment")) {
+    rateDownTo(0, "Editorial/commentary — discusses other research and is not itself evidence.");
+  }
+  if (tags.has("letter")) note("Published as a letter — may be correspondence about another study; check before citing.");
+  if (tags.has("preprint")) note("Preprint — not yet peer reviewed.");
+
+  const synthesis = studyType === "meta-analysis" || studyType === "systematic-review";
+  if (synthesis && kw.preclinicalOnly) {
+    rateDownTo(0, "Synthesis of animal or in-vitro studies — preclinical evidence, not directly applicable to humans.");
+  } else if (synthesis && OBSERVATIONAL_INPUTS_RE.test(kw.ownText) && !TRIAL_INPUTS_RE.test(kw.ownText)) {
+    rateDownTo(score - 1, "Synthesis of observational studies only — GRADE starts such evidence at low certainty.");
+  }
+
+  const primaryTrialOrCohort =
+    studyType === "randomized-controlled-trial" || studyType === "non-randomized-trial" || studyType === "cohort";
+  if (primaryTrialOrCohort && (PILOT_RE.test(rewrite(title)) || OWN_PILOT_RE.test(kw.ownText))) {
+    rateDownTo(score - 1, "Pilot/feasibility study — not powered to estimate efficacy.");
+  }
+
+  if (studyType === "randomized-controlled-trial" && SECONDARY_ANALYSIS_RE.test(kw.ownText)) {
+    note("Secondary/post-hoc analysis — exploratory; the comparison may not be protected by randomization.");
+  }
+  if (kw.preclinicalCues && !kw.preclinicalOnly && !PRECLINICAL.has(studyType) && !synthesis) {
+    note("Also mentions animal or in-vitro work — confirm which results come from human participants.");
+  }
 
   // Title-only grade (no abstract) is inherently less certain.
   if (!abstract) {
     confidence = Math.min(confidence, 0.5);
-    limitations.push("Graded from title only — no abstract available.");
+    note("Graded from title only — no abstract available.");
   }
 
-  // Non-English abstract we couldn't classify: flag it rather than silently
-  // pretend the keyword path was authoritative.
-  if (studyType === "unknown" && language && language.toLowerCase() !== "en" && abstract) {
-    limitations.push(
-      `Abstract is not in English (${language}); study type could not be classified from keywords.`,
-    );
+  if (studyType === "unknown") {
+    note("Study design could not be determined — a score of 0 here means unclassified, not weak evidence.");
+    if (language && language.toLowerCase() !== "en" && abstract) {
+      note(`Abstract is not in English (${language}); study type could not be classified from keywords.`);
+    }
   }
 
   const result: GradeResult = {
     studyType,
-    evidenceScore: SCORE_BY_TYPE[studyType],
+    evidenceScore: score,
     confidence: Math.max(0, Math.min(1, Number(confidence.toFixed(3)))),
   };
+  if (adjustments.length > 0) result.scoreAdjustments = adjustments;
   if (extracted.dosage) result.dosage = extracted.dosage;
   if (extracted.population) result.population = extracted.population;
   if (extracted.diversity) result.diversity = extracted.diversity;
@@ -516,9 +858,18 @@ export function keywordGrade(article: Article): GradedArticle {
     studyType: grade.studyType,
     evidenceScore: grade.evidenceScore,
     confidence: grade.confidence,
+    ...(grade.scoreAdjustments ? { scoreAdjustments: grade.scoreAdjustments } : {}),
     ...(grade.dosage ? { dosage: grade.dosage } : {}),
     ...(grade.population ? { population: grade.population } : {}),
     ...(grade.diversity ? { diversity: grade.diversity } : {}),
     ...(grade.limitations ? { limitations: grade.limitations } : {}),
   };
+}
+
+/** Surfaced when a score filter silently removes articles whose design is merely unknown. */
+export function unclassifiedDroppedWarning(count: number): string {
+  return (
+    `${count} result(s) with an undetermined study design were dropped by minEvidenceScore — ` +
+    `their score of 0 means "unclassified", not "weak evidence" (common for non-English abstracts).`
+  );
 }

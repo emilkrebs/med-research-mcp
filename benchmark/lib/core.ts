@@ -16,6 +16,7 @@ export {
   fetchLiterature,
   fetchFulltext,
   keywordGrade,
+  STUDY_TYPES,
   NcbiClient,
   LRUBackend,
   createCache,

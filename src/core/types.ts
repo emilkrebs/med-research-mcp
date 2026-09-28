@@ -3,16 +3,34 @@
  * No MCP or runtime dependency — safe to import from anywhere.
  */
 
-/** Evidence tiers, highest-quality first. `unknown` when nothing matches. */
-export type StudyType =
-  | "meta-analysis"
-  | "randomized-controlled-trial"
-  | "cohort"
-  | "review"
-  | "case-control"
-  | "case-report"
-  | "animal-study"
-  | "unknown";
+/**
+ * Study designs, roughly highest-evidence first. `review` is a narrative
+ * (non-systematic) review; `unknown` means the design could not be determined —
+ * it is unclassified, not weak.
+ */
+export const STUDY_TYPES = [
+  "meta-analysis",
+  "systematic-review",
+  "randomized-controlled-trial",
+  "non-randomized-trial",
+  "cohort",
+  "case-control",
+  "cross-sectional",
+  "case-report",
+  "review",
+  "animal-study",
+  "in-vitro",
+  "unknown",
+] as const;
+
+export type StudyType = (typeof STUDY_TYPES)[number];
+
+/** One rating-down step applied to the design's starting score. */
+export interface ScoreAdjustment {
+  /** Always ≤ 0 — scores are never rated up. */
+  delta: number;
+  reason: string;
+}
 
 /** Raw article metadata as returned by NCBI (esummary + efetch merged). */
 export interface Article {
@@ -76,10 +94,12 @@ export interface PopulationDiversity {
 /** An article with keyword-based evidence classification. */
 export interface GradedArticle extends Article {
   studyType: StudyType;
-  /** 0–5. Higher is stronger evidence. */
+  /** 0–5. Higher is stronger evidence. The design's tier minus any {@link scoreAdjustments}. */
   evidenceScore: number;
   /** 0–1 confidence in the assigned study type. */
   confidence: number;
+  /** Why the score is below the design's starting tier (retraction, protocol, pilot, …). */
+  scoreAdjustments?: ScoreAdjustment[];
   dosage?: string;
   population?: string;
   /** Structured breakdown of the tested population — see {@link PopulationDiversity}. */

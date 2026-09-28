@@ -13,7 +13,7 @@ Three tools, a triage-first workflow. **Always start with `literature_search`** 
 2. Sort attention by `evidenceScore`, but check `confidence` and `limitations` before trusting a grade.
 3. `literature_fetch` the specific ids you care about to read full abstracts.
 4. `literature_fulltext` **only** when you need more than the abstract — verify dosage, check sample sizes, read methods, detect statistical flaws.
-5. Non-PubMed results are graded keyword-only and score lower — treat their scores as provisional.
+5. Non-PubMed results are graded keyword-only — same score scale, lower `confidence`. Treat their study types as provisional.
 
 ## Writing good queries (`literature_search`)
 
@@ -26,20 +26,21 @@ Bare keywords match tens of thousands of papers and bury the signal. Use field t
 - Restrict to strong designs: `AND (randomized controlled trial[pt] OR meta-analysis[pt])` — `[pt]` is publication type.
 - Narrow first. On `QUERY_TOO_BROAD`, add a `[tiab]` term or an `AND` clause.
 
-Params: `database`, `maxResults` (default 10, max 50 — per-database, so two DBs return ~20), `minEvidenceScore` (4 = RCTs+meta-analyses; 3 = +cohorts/reviews), `studyTypes` (e.g. `["meta-analysis","randomized-controlled-trial"]`), `dateRange {from,to}`, `sort` ("relevance"|"date"), `language` (ISO 639-1; PubMed ignores it).
+Params: `database`, `maxResults` (default 10, max 50 — per-database, so two DBs return ~20), `minEvidenceScore` (4 = RCTs+meta-analyses/systematic reviews; 3 = +cohorts/non-randomized trials; unclassified results score 0 and get dropped too — read the warning), `studyTypes` (e.g. `["meta-analysis","randomized-controlled-trial"]`), `dateRange {from,to}`, `sort` ("relevance"|"date"), `language` (ISO 639-1; PubMed ignores it).
 
 ## Reading the grades (`GradedArticle`, higher = stronger)
 
 | Score | Study type | Reading |
 |-------|-----------|---------|
-| 5 | meta-analysis / systematic review | strongest; but a meta-analysis of weak studies is still weak — verify with fulltext if pivotal |
+| 5 | meta-analysis / systematic-review | strongest; but a meta-analysis of weak studies is still weak — verify with fulltext if pivotal |
 | 4 | randomized-controlled-trial | strong causal evidence |
-| 3 | cohort **or** review | observational/narrative; useful, not causal |
-| 2 | case-control | hypothesis-generating |
-| 1 | case-report | anecdote; one patient |
-| 0 | animal-study / unknown | not directly applicable to humans |
+| 3 | cohort / non-randomized-trial | observational or unrandomized; useful, confounding likely |
+| 2 | case-control / cross-sectional | hypothesis-generating |
+| 1 | case-report / review (narrative) | anecdote or unsystematic expert synthesis |
+| 0 | animal-study / in-vitro | not directly applicable to humans |
+| 0 | unknown | **unclassified, not weak** — fetch the abstract and judge yourself |
 
-Also read: `confidence` (0–1) — low confidence on a high score = escalate; `limitations[]` (`title-only`, `protocol`, `animal-study`, `small-sample`); `gradingMethod` (`"keyword"` vs `"llm"`); `dosage`/`population` (best-effort — confirm against the abstract).
+Scores start at the design's tier and are only rated **down**; `scoreAdjustments[]` says why (retracted, protocol, editorial, pilot, synthesis of animal/observational studies). Also read: `confidence` (0–1) — low confidence on a high score = escalate; `limitations[]` (`title-only`, `protocol`, `preprint`, `post-hoc`, `small-sample`); `dosage`/`population` (best-effort — confirm against the abstract).
 
 ## Tools, limits, errors
 

@@ -8,7 +8,7 @@ import { XMLParser } from "fast-xml-parser";
 import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors } from "./errors.js";
-import { keywordGrade } from "./grader.js";
+import { keywordGrade, unclassifiedDroppedWarning } from "./grader.js";
 import type { FetchInput, FetchOutput, GradedArticle, Article, SearchInput, SearchOutput, StudyType } from "./types.js";
 
 const EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
@@ -379,16 +379,21 @@ export async function searchPubMed(
   const typeFilter = input.studyTypes ? new Set<StudyType>(input.studyTypes) : null;
 
   const articles: GradedArticle[] = [];
+  let droppedUnclassified = 0;
   for (const pmid of pmids) {
     const summary = summaries.get(pmid);
     if (!summary) continue;
     const abstract = abstracts.get(pmid);
     const article: Article = abstract ? { ...summary, abstract } : summary;
     const graded = keywordGrade(article);
-    if (graded.evidenceScore < minScore) continue;
+    if (graded.evidenceScore < minScore) {
+      if (graded.studyType === "unknown") droppedUnclassified += 1;
+      continue;
+    }
     if (typeFilter && !typeFilter.has(graded.studyType)) continue;
     articles.push(graded);
   }
+  if (droppedUnclassified > 0) warnings.push(unclassifiedDroppedWarning(droppedUnclassified));
 
   return {
     articles,

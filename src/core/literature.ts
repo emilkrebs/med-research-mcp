@@ -6,16 +6,15 @@
  * lists, de-duplicates by DOI (keeping the higher-scored copy), and sorts by
  * evidence score. `fetchLiterature` fetches specific ids from one database.
  *
- * Non-PubMed articles lack NLM PublicationType tags, so
- * they are graded keyword-only (lower confidence) and PubMed results typically
- * rank higher in the merged list. Callers should treat non-PubMed scores as less
- * reliable.
+ * Non-PubMed articles lack NLM PublicationType tags, so they are graded
+ * keyword-only: their *confidence* is lower, but the score scale is the same —
+ * source and language never lower a score by themselves.
  */
 
 import { getAdapter, getAdapters, type DatabaseAdapter } from "./adapters/registry.js";
 import { doiKey } from "./adapters/util.js";
 import { LRUBackend, type Cache } from "./cache.js";
-import { keywordGrade } from "./grader.js";
+import { keywordGrade, unclassifiedDroppedWarning } from "./grader.js";
 import type {
   FetchOutput,
   GradedArticle,
@@ -99,16 +98,21 @@ export async function searchLiterature(
   const typeFilter = input.studyTypes ? new Set(input.studyTypes) : null;
 
   let total = 0;
+  let droppedUnclassified = 0;
   const graded: GradedArticle[] = [];
   for (const { count, articles } of perAdapter) {
     total += count;
     for (const article of articles) {
       const g = keywordGrade(article);
-      if (g.evidenceScore < minScore) continue;
+      if (g.evidenceScore < minScore) {
+        if (g.studyType === "unknown") droppedUnclassified += 1;
+        continue;
+      }
       if (typeFilter && !typeFilter.has(g.studyType)) continue;
       graded.push(g);
     }
   }
+  if (droppedUnclassified > 0) warnings.push(unclassifiedDroppedWarning(droppedUnclassified));
 
   const merged = dedupeByDoi(graded);
   // Stable sort by evidence score (then confidence) — equal-score items keep

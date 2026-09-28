@@ -32,21 +32,11 @@ import {
   NcbiClient,
   PubMedAdapter,
   searchLiterature,
+  STUDY_TYPES,
   type Cache,
   type CacheBackend,
   type DatabaseAdapter,
 } from "../core/index.js";
-
-const STUDY_TYPES = [
-  "meta-analysis",
-  "randomized-controlled-trial",
-  "cohort",
-  "review",
-  "case-control",
-  "case-report",
-  "animal-study",
-  "unknown",
-] as const;
 
 function formatError(payload: { code: string; message: string; recoverable?: boolean }): string {
   const recoverable = payload.recoverable === true ? "yes" : "no";
@@ -134,7 +124,9 @@ const literatureSearchShape = {
     .min(0)
     .max(5)
     .optional()
-    .describe("Drop results below this evidence score (0-5). Non-PubMed results are graded keyword-only and score lower."),
+    .describe(
+      "Drop results below this evidence score (0-5). Unclassified results (studyType 'unknown') score 0 and are dropped too — a warning reports how many.",
+    ),
   studyTypes: z.array(z.enum(STUDY_TYPES)).optional().describe("Keep only these study types."),
   dateRange: z
     .object({ from: z.string().optional(), to: z.string().optional() })
@@ -158,7 +150,9 @@ server.registerTool(
       "Search one or more scientific databases and return evidence-graded results. " +
       `Databases: ${DATABASES.join(", ")}, or "all" to fan out to every source. ` +
       "PubMed results are graded from NLM PublicationType tags; other databases are graded keyword-only " +
-      "(lower confidence, treat their scores as less reliable). Results are merged, de-duplicated by DOI, " +
+        "(lower confidence — the score itself is never lowered for source or language). The design sets a starting " +
+        "tier that is only rated down (retraction, protocol, pilot, synthesis of animal/observational studies), with " +
+        "each step listed in scoreAdjustments. Results are merged, de-duplicated by DOI, " +
       "and sorted by evidence score. Always cheap — no LLM calls. " +
       "Use literature_fetch to get full metadata for specific ids, and literature_fulltext for the article body.",
     inputSchema: literatureSearchShape,

@@ -71,28 +71,53 @@ Fetch an article's full text as markdown via DOI — database-agnostic. Tries Un
 
 ## Evidence grading system
 
-Study types are ordered highest evidence quality first. The keyword grader tries curated PubMed `PublicationType` tags before falling back to regex over the title and abstract; a curated tag, when present, always wins over the regex result.
+Grading has two steps: classify the **study design**, then rate the **evidence score** down from that design's starting tier. It is built to avoid optimistic bias — when the grader is unsure, it errs toward the lower tier, and it never rates a score up.
 
-| Study type | Score | Key patterns |
+### 1. Study design
+
+Curated PubMed `PublicationType` tags are used first, taking the most specific tag regardless of order. Generic tags (`Review`, `Observational Study`, `Clinical Trial`) can only be *refined* to a more specific design when the abstract states that design outright. For example, a pre-2019 systematic review that NLM tagged only as `Review` is refined, but an `Observational Study` is never promoted to an RCT. Veterinary tags map to `animal-study`.
+
+Without tags, weighted keyword cues vote for each design:
+
+- **The title counts double.** CONSORT 1a, STROBE 1a and PRISMA 1 all ask authors to name the design in the title.
+- **Sentences about other work cast no vote**, for example "previous meta-analyses have shown…", "unlike prior RCTs…", or "further randomized trials are needed". (English only.)
+- **Negations are handled.** "non-randomized" and "quasi-randomised" (and the equivalents in other supported languages) count as a non-randomized trial. "Institutional review board" and "chart review" are not treated as reviews.
+- **A declared synthesis wins over the designs it pools.** A meta-analysis of RCTs is a meta-analysis, and a narrative review of meta-analyses is a review.
+- **Preclinical work stays preclinical.** Animal or in-vitro cues with no human participants mean `animal-study` or `in-vitro`, even when the animals were randomized.
+- **Ties go to the lower tier.**
+
+| Study type | Starting score | Notes |
 | --- | --- | --- |
-| `meta-analysis` | 5 | `meta-analysis`, `systematic review`, `pooled analysis` |
-| `randomized-controlled-trial` | 4 | `randomized`/`randomised`, `double-blind`, `placebo-control(led)`, `RCT` |
-| `cohort` | 3 | `cohort`, `longitudinal`, `prospective`, `follow-up` |
-| `review` | 3 | `review`, `literature review`, `narrative review` (excludes `systematic review`, which is caught as `meta-analysis`) |
-| `case-control` | 2 | `case-control`, `matched control` |
-| `case-report` | 1 | `case report`, `case study`, `case presentation` |
-| `animal-study` | 0 | `murine`, `rodent(s)`, `animal model`, `mice`, `rats` — a match is downgraded (not forced to `animal-study`) when human terms (`humans`, `patients`, `adults`, `participants`, etc.) are also present |
+| `meta-analysis` | 5 | Quantitative synthesis |
+| `systematic-review` | 5 | Systematic search and appraisal, with or without pooling |
+| `randomized-controlled-trial` | 4 | |
+| `non-randomized-trial` | 3 | Single-arm, quasi-randomized, or controlled but not randomized (OCEBM level 3) |
+| `cohort` | 3 | Prospective or retrospective observational follow-up |
+| `case-control` | 2 | |
+| `cross-sectional` | 2 | Can't establish temporality |
+| `case-report` | 1 | Case report or case series |
+| `review` | 1 | Narrative, scoping or literature review. Unsystematic synthesis, ranked with expert opinion |
+| `animal-study` / `in-vitro` | 0 | Not directly applicable to humans |
+| `unknown` | 0 | **Unclassified, not weak.** Flagged in `limitations`. When `minEvidenceScore` drops these results, a warning reports how many |
 
-**Confidence.** When no curated `PublicationType` tag is available, confidence is `positiveHits * 0.4 + 0.2`, capped at `1`. Negative keywords (e.g. `study protocol`, future-tense `we will`, `unlike previous randomized trials…`) halve the confidence and are recorded as a limitation. A curated PubMed tag alone scores `0.85`–`0.95` confidence depending on whether the keyword pass corroborates it.
+### 2. Rating down
 
-**Known keyword-path weaknesses** (apply to `literature_search`):
+These signals lower the score, and each step is listed in `scoreAdjustments`:
 
-- Protocol papers ("we will randomize...") can misread as completed RCTs.
-- Meta-analyses that pool poor-quality underlying studies still score a flat `5`.
-- Comparative phrasing like "unlike previous randomized trials…" can trigger a false-positive RCT match.
-- Animal studies that mention humans only incidentally (e.g. "may inform future human trials") can escape the animal-study downgrade.
+| Signal | Effect |
+| --- | --- |
+| Retracted publication (NLM tag or `RETRACTED` title) | → 0 |
+| Study protocol (NLM `Clinical Trial Protocol`, protocol title, "this protocol describes…") | → 0 |
+| NLM `Editorial` / `Comment` | → 0 |
+| Meta-analysis or systematic review of animal / in-vitro studies | → 0 |
+| Meta-analysis or systematic review of observational studies only | −1 (GRADE starts such evidence at low certainty) |
+| Pilot or feasibility trial (title, or "this pilot…") | −1 (not powered for efficacy) |
 
-For papers where the keyword grade is suspicious, fetch the full abstract with `literature_fetch` and use `literature_fulltext` to read the methods section directly.
+The penalties are deliberately small wherever the detection is heuristic. **Nothing rates up**, because GRADE's upgrade criteria (large effect, dose-response) need effect sizes that regexes can't read reliably. `Preprint`, `Letter`, post-hoc analyses and mixed human/animal papers only add a `limitations` note. **The source database and the language never change a score.** Non-PubMed and non-English results only get lower `confidence`.
+
+**Confidence.** With an NLM tag, confidence is `0.95` when the keywords agree and `0.85` otherwise. A tag refined by keywords scores `0.8`. For keyword-only grades, confidence is `(1 − e^−w) · (0.5 + 0.5 · w / (w + r))`, where `w` is the winning design's cue weight and `r` is the runner-up's. It is capped at `0.8` so a regex never out-ranks a curated tag. Protocol or future-tense wording halves the confidence, and title-only grades are capped at `0.5`.
+
+**Remaining keyword-path limits:** `literature_search` doesn't read risk of bias, imprecision, inconsistency or indirectness, which need the methods and results sections. Sentence-level background detection only works in English. For a paper that will drive a decision, read it with `literature_fulltext` and appraise it (see the `med-research-ebm` skill).
 
 ## Configuration
 

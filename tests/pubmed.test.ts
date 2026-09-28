@@ -173,7 +173,7 @@ describe("searchPubMed orchestration", () => {
     expect(out.articles[0]?.studyType).toBe("randomized-controlled-trial");
     expect(out.articles[0]?.evidenceScore).toBe(4);
     expect(out.articles[1]?.studyType).toBe("review");
-    expect(out.articles[1]?.evidenceScore).toBe(3);
+    expect(out.articles[1]?.evidenceScore).toBe(1);
   });
 
   it("filters by minEvidenceScore", async () => {
