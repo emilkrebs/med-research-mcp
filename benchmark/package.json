@@ -15,17 +15,17 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^2.0.0",
-    "@ai-sdk/deepseek": "^1.0.0",
-    "@ai-sdk/openai": "^2.0.0",
-    "ai": "^5.0.0",
+    "@ai-sdk/anthropic": "^4.0.75",
+    "@ai-sdk/deepseek": "^3.0.61",
+    "@ai-sdk/openai": "^4.0.87",
+    "ai": "^7.0.131",
     "d3": "^7.9.0",
-    "jsdom": "^29.1.1"
+    "jsdom": "^30.1.2"
   },
   "devDependencies": {
     "@types/d3": "^7.4.3",
-    "@types/jsdom": "^28.0.3",
-    "@types/node": "^26.6.3",
+    "@types/jsdom": "^30.0.0",
+    "@types/node": "^26.6.4",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   }
