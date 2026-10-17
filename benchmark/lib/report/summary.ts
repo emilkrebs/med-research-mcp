@@ -42,6 +42,10 @@ interface ConditionSummary {
   speed_s: Stat;
   /** Fraction of all cited PMIDs that don't exist in PubMed. */
   fabrication_rate: number;
+  /** Pooled fraction of checked citations whose surrounding claim contradicts the record; null when none were checked. */
+  misattribution_rate: number | null;
+  /** Citations the attribution audit could check (the rate's denominator). */
+  citations_checked: number;
   /** Fraction of bullshit queries correctly rejected; null when none were run. */
   correct_rejection_rate: number | null;
 }
@@ -81,7 +85,7 @@ export interface Summary {
   [modelOrTests: string]: unknown;
 }
 
-const CATEGORY_ORDER: Category[] = ["factual", "drill-down", "synthesis", "edge-case", "compound", "bullshit"];
+const CATEGORY_ORDER: Category[] = ["factual", "drill-down", "synthesis", "edge-case", "compound", "recent", "bullshit"];
 
 const round = (x: number, dp = 4): number => Math.round(x * 10 ** dp) / 10 ** dp;
 
@@ -98,6 +102,8 @@ function summarizeCondition(rows: ScoreRow[]): ConditionSummary {
     rows.length > 0 ? round(rows.filter((r) => r.status === s).length / rows.length) : 0;
   const cited = ok.reduce((s, r) => s + r.pmids_cited, 0);
   const fabricated = ok.reduce((s, r) => s + r.pmids_fabricated, 0);
+  const checked = ok.reduce((s, r) => s + (r.citations_checked ?? 0), 0);
+  const misattributed = ok.reduce((s, r) => s + (r.citations_misattributed ?? 0), 0);
   const bullshitScores = ok.filter((r) => r.category === "bullshit").map((r) => r.bullshit_score).filter(Number.isFinite);
   return {
     n: rows.length,
@@ -116,6 +122,8 @@ function summarizeCondition(rows: ScoreRow[]): ConditionSummary {
     // per-row ratios. report/charts.ts's fabrication-rate.svg chart (`pooledRatioBars`)
     // uses this same pooled formula so the chart and this table always agree.
     fabrication_rate: cited > 0 ? round(fabricated / cited) : 0,
+    misattribution_rate: checked > 0 ? round(misattributed / checked) : null,
+    citations_checked: checked,
     correct_rejection_rate: bullshitScores.length > 0 ? round(mean(bullshitScores)) : null,
   };
 }
@@ -227,15 +235,20 @@ function failures(s: ConditionSummary): string {
   return parts.length > 0 ? parts.join(", ") : "—";
 }
 
+/** "4.2% (of 96)": the pooled rate and how many citations it is over; "—" when none were checked. */
+function misattributedCell(s: ConditionSummary): string {
+  return s.misattribution_rate === null || s.misattribution_rate === undefined ? "—" : `${pct(s.misattribution_rate)} (of ${s.citations_checked})`;
+}
+
 function conditionTable(perCondition: Record<string, ConditionSummary>): string {
   const header =
-    "| Condition | n (ok/all) | Composite | Accuracy (verified) | Evidence (0–5) | Bullshit (0–1) | Speed (s) | Fabrication rate | Non-ok |\n" +
-    "|---|---|--:|--:|--:|--:|--:|--:|--|";
+    "| Condition | n (ok/all) | Composite | Accuracy (verified) | Evidence (0–5) | Bullshit (0–1) | Speed (s) | Fabrication rate | Misattributed | Non-ok |\n" +
+    "|---|---|--:|--:|--:|--:|--:|--:|--:|--|";
   const rows = Object.keys(perCondition).map((c) => {
     const s = perCondition[c]!;
     return `| ${c} | ${s.n_ok}/${s.n} | ${fmt(s.composite)} | ${fmt(s.accuracy_verified)} | ${fmt(s.evidence_quality)} | ${fmt(
       s.bullshit,
-    )} | ${fmt(s.speed_s)} | ${pct(s.fabrication_rate)} | ${failures(s)} |`;
+    )} | ${fmt(s.speed_s)} | ${pct(s.fabrication_rate)} | ${misattributedCell(s)} | ${failures(s)} |`;
   });
   return [header, ...rows].join("\n");
 }

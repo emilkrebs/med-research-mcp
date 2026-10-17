@@ -68,4 +68,15 @@ describe("ChinaRXivAdapter", () => {
     expect(fetched[0]?.database).toBe("chinaxiv");
     expect(urls.length).toBe(before);
   });
+
+  it("cold fetch() uses the exact /papers/{id} endpoint and maps the date field", async () => {
+    const record = { id: "chinaxiv-202608.00133", title_en: "Outcome measures in TCM RCTs", date: "2026-08-26", source: "chinaxiv" };
+    const { http, urls } = fakeHttp(record);
+    const fetched = await new ChinaRXivAdapter(http).fetch(["chinaxiv-202608.00133"], new LRUBackend());
+    expect(urls[0]).toBe("https://chinarxiv.org/api/v1/papers/chinaxiv-202608.00133");
+    expect(fetched[0]?.pubDate).toBe("2026-08-26");
+
+    const other = fakeHttp({ ...record, id: "chinaxiv-202601.00001" });
+    expect(await new ChinaRXivAdapter(other.http).fetch(["chinaxiv-202608.00133"], new LRUBackend())).toEqual([]);
+  });
 });

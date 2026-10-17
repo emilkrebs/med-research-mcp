@@ -1,5 +1,7 @@
 /**
- * The 24-query benchmark set: 6 categories, matching the spec's counts.
+ * The 32-query benchmark set: the spec's 6 categories (24 queries) plus 4
+ * deterministic regional edge cases and a 7th category, `recent` (4 queries on
+ * papers newer than the benchmarked models' training data).
  * Edit this array to add/remove/tune queries. It's plain TypeScript, so `tsc`
  * checks every `category`, answer-key `kind`, and field against the types in
  * `lib/types.ts` — a typo fails the build instead of at run time.
@@ -8,7 +10,8 @@
  * checked-against-reality ground truth, not a subjective judgment call —
  *   - the four bullshit queries (the studies are fabricated *by us*, so "does
  *     not exist" is ground truth), and
- *   - the deterministic `values` keys, where the query forces the model to end
+ *   - the deterministic `values` keys (factual, drill-down-03, edge-case-03…06,
+ *     recent-01…04), where the query forces the model to end
  *     its answer in a fixed one-line format and the scorer checks the exact
  *     tokens it emitted against the correct ones. Each such key's expected
  *     tokens were confirmed on 2026-07-14 and RE-VERIFIED on 2026-10-17 against
@@ -16,7 +19,13 @@
  *     + 0–5 score are what the tool assigns, and every pinned PMID resolves
  *     (36615805 meta-analysis 5, 23439798 RCT 4, 22591295 cohort 3, 28202713,
  *     27633186). factual-01/02/03 prompts were rewritten on 2026-10-17 for the
- *     current taxonomy/scale and are at answerKeyVersion 3.
+ *     current taxonomy/scale and are at answerKeyVersion 3. The regional and
+ *     recent keys were read from each record's abstract on 2026-10-17 (quoted in
+ *     each key's `note`).
+ *
+ * On `topics`: terms a cited paper must mention to count as on-topic in the
+ * attribution audit (lib/scoring/attribution.ts). Kept broad on purpose — they
+ * only catch a citation to an unrelated paper, not a weak one.
  * The open-ended `rubric` keys (synthesis, edge-case, compound, and the
  * find-it-yourself drill-downs) still assert real-world facts that take human
  * judgment to weigh, so they stay `verified: false`: they run and score
@@ -48,6 +57,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "factual-01",
     category: "factual",
+    topics: ["caffeine"],
     prompt:
       "Classify the study behind PMID 36615805 and give the 0–5 evidence score an evidence-grading tool would assign its design. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — study type: <type> | evidence score: <n>/5`\nwhere <type> is exactly one of: meta-analysis, systematic-review, randomized-controlled-trial, non-randomized-trial, cohort, case-control, cross-sectional, case-report, review, animal-study, in-vitro (listed from highest to lowest evidence). If more than one type applies, give the first one in this list (e.g. a systematic review with a meta-analysis is `meta-analysis`). The score <n> is the integer 0–5 for that design (meta-analysis or systematic-review = 5, randomized-controlled-trial = 4, non-randomized-trial or cohort = 3, case-control or cross-sectional = 2, case-report or review (narrative) = 1, animal-study or in-vitro = 0).",
     answerKey: {
@@ -61,6 +71,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "factual-02",
     category: "factual",
+    topics: ["ashwagandha", "withania"],
     prompt:
       "Classify the study behind PMID 23439798 and give the 0–5 evidence score an evidence-grading tool would assign its design. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — study type: <type> | evidence score: <n>/5`\nwhere <type> is exactly one of: meta-analysis, systematic-review, randomized-controlled-trial, non-randomized-trial, cohort, case-control, cross-sectional, case-report, review, animal-study, in-vitro (listed from highest to lowest evidence). If more than one type applies, give the first one in this list (e.g. a systematic review with a meta-analysis is `meta-analysis`). The score <n> is the integer 0–5 for that design (meta-analysis or systematic-review = 5, randomized-controlled-trial = 4, non-randomized-trial or cohort = 3, case-control or cross-sectional = 2, case-report or review (narrative) = 1, animal-study or in-vitro = 0).",
     answerKey: {
@@ -74,6 +85,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "factual-03",
     category: "factual",
+    topics: ["coffee", "caffeine"],
     prompt:
       "Is PMID 22591295 a randomized controlled trial? Determine its actual study design. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — rct: <yes|no> | study type: <type>`\nwhere <type> is exactly one of: meta-analysis, systematic-review, randomized-controlled-trial, non-randomized-trial, cohort, case-control, cross-sectional, case-report, review, animal-study, in-vitro (listed from highest to lowest evidence). If more than one type applies, give the first one in this list (e.g. a systematic review with a meta-analysis is `meta-analysis`).",
     answerKey: {
@@ -87,6 +99,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "factual-04",
     category: "factual",
+    topics: ["vitamin d", "cholecalciferol", "ergocalciferol", "25-hydroxyvitamin"],
     prompt:
       "Identify the landmark 2017 BMJ meta-analysis of individual participant data by Martineau and colleagues on vitamin D supplementation to prevent acute respiratory tract infections, and give its PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number>`",
     answerKey: {
@@ -102,6 +115,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "drill-down-01",
     category: "drill-down",
+    topics: ["trazodone"],
     prompt: "What dose of trazodone was studied for insomnia in the most-cited recent meta-analysis you can find? Cite the PMID.",
     answerKey: {
       kind: "rubric",
@@ -114,6 +128,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "drill-down-02",
     category: "drill-down",
+    topics: ["ashwagandha", "withania"],
     prompt: "In the largest randomized trial of ashwagandha for stress you can find, what was the daily dose and the trial duration? Cite the PMID.",
     answerKey: {
       kind: "rubric",
@@ -126,6 +141,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "drill-down-03",
     category: "drill-down",
+    topics: ["semaglutide", "sustain"],
     // Deterministic: SUSTAIN-6 is a single named trial, so the endpoint, effect
     // size and PMID are fixed facts rather than "whatever you can find".
     prompt:
@@ -141,6 +157,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "drill-down-04",
     category: "drill-down",
+    topics: ["creatine"],
     prompt: "What sample size and follow-up duration did a major creatine-and-cognition randomized trial use? Cite the PMID.",
     answerKey: {
       kind: "rubric",
@@ -155,6 +172,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "synthesis-01",
     category: "synthesis",
+    topics: ["orexin", "suvorexant", "lemborexant", "daridorexant", "trazodone"],
     prompt: "Compare dual orexin receptor antagonists (DORAs) versus trazodone for sleep quality. Which has stronger evidence, and why?",
     answerKey: {
       kind: "rubric",
@@ -167,6 +185,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "synthesis-02",
     category: "synthesis",
+    topics: ["magnesium"],
     prompt: "What is the evidence that magnesium supplementation improves sleep onset or sleep quality? How strong is it?",
     answerKey: {
       kind: "rubric",
@@ -179,6 +198,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "synthesis-03",
     category: "synthesis",
+    topics: ["creatine", "alanine", "carnosine"],
     prompt: "Compare creatine monohydrate and beta-alanine for high-intensity exercise performance. What does the evidence favor?",
     answerKey: {
       kind: "rubric",
@@ -191,6 +211,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "synthesis-04",
     category: "synthesis",
+    topics: ["omega-3", "omega 3", "n-3", "eicosapentaenoic", "docosahexaenoic", "fish oil", "polyunsaturated", "pufa"],
     prompt: "Does omega-3 (EPA/DHA) supplementation reduce depressive symptoms? Summarize the strongest evidence and its limitations.",
     answerKey: {
       kind: "rubric",
@@ -203,6 +224,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "synthesis-05",
     category: "synthesis",
+    topics: ["berberine", "metformin"],
     prompt: "What does the evidence say about berberine versus metformin for glycemic control in type 2 diabetes?",
     answerKey: {
       kind: "rubric",
@@ -215,6 +237,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "synthesis-06",
     category: "synthesis",
+    topics: ["melatonin", "jet lag", "jet-lag", "jetlag"],
     prompt: "Summarize the evidence for melatonin dose and timing for preventing or reducing jet lag.",
     answerKey: {
       kind: "rubric",
@@ -227,6 +250,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "synthesis-07",
     category: "synthesis",
+    topics: ["ashwagandha", "withania"],
     prompt: "Is there good evidence that ashwagandha reduces cortisol or perceived stress? Characterize the quality of that evidence.",
     answerKey: {
       kind: "rubric",
@@ -239,6 +263,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "synthesis-08",
     category: "synthesis",
+    topics: ["time-restricted", "fasting", "caloric restriction", "calorie restriction", "energy restriction"],
     prompt: "Compare time-restricted eating and continuous caloric restriction for fat loss. Does one outperform the other on the evidence?",
     answerKey: {
       kind: "rubric",
@@ -249,10 +274,12 @@ export const QUERIES: BenchmarkQuery[] = [
     verified: false,
   },
 
-  // ─── Edge cases (2) ───────────────────────────────────────────────
+  // ─── Edge cases (6) ───────────────────────────────────────────────
   {
     id: "edge-case-01",
     category: "edge-case",
+    // "insomnia" too: surveying the field, an answer may cite (and label) non-acupuncture insomnia studies.
+    topics: ["acupuncture", "electroacupuncture", "acupoint", "insomnia"],
     prompt: "Find Chinese-language research on acupuncture for insomnia. What does it report?",
     answerKey: {
       kind: "rubric",
@@ -265,6 +292,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "edge-case-02",
     category: "edge-case",
+    topics: ["rhodiola", "adaptogen", "eleutherococcus", "schisandra"],
     prompt: "What Russian or Soviet-era research exists on adaptogens such as Rhodiola rosea for physical endurance?",
     answerKey: {
       kind: "rubric",
@@ -275,10 +303,68 @@ export const QUERIES: BenchmarkQuery[] = [
     verified: false,
   },
 
+  // Deterministic regional records: each exists only outside PubMed (0 PubMed hits for
+  // its formula/topic on 2026-10-17), so finding it takes a regional database. CBA =
+  // Chinese Biological Abstracts, reachable through Europe PMC; the last one is a
+  // ChinaXiv preprint. Expected values were read from the record's abstract on 2026-10-17.
+  {
+    id: "edge-case-03",
+    category: "edge-case",
+    topics: ["yishen", "rheumatoid"],
+    prompt:
+      "A clinical study published in 2005 in the Journal of Guangzhou University of Traditional Chinese Medicine randomized patients with rheumatoid arthritis to Yishen Zhuanggu Tongbi Decoction (taken orally, with the residue applied externally) or a conventional Western drug. How many patients were randomized in total, and which drug did the control group receive? Cite the record you found. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — patients: <number> | control drug: <drug name>`",
+    answerKey: {
+      kind: "values",
+      expected: ["patients: 44", "control drug: diclofenac"],
+      note: "Europe PMC CBA:521529 (Chen Zuhong, J Guangzhou Univ TCM 2005): \"Fortyfour cases of RA were randomized into two groups: group A (n=24) was treated with YZTD … group B (n=20) was treated with diclofenac sodium.\" Not in PubMed.",
+    },
+    verified: true,
+  },
+  {
+    id: "edge-case-04",
+    category: "edge-case",
+    topics: ["shengjiang", "dyspepsia"],
+    prompt:
+      "A clinical study published in 2003 in the Journal of Guangzhou University of Traditional Chinese Medicine compared Shengjiang Capsule with a Western prokinetic drug for functional dyspepsia with liver-depression and spleen-deficiency syndrome. How many patients were randomized, and what cure rate (in percent) did the Shengjiang Capsule group achieve? Cite the record you found. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — patients: <number> | cure rate: <percent>`",
+    answerKey: {
+      kind: "values",
+      expected: ["patients: 101", "cure rate: 37.3"],
+      note: "Europe PMC CBA:549902 (Sun Weifeng et al., J Guangzhou Univ TCM 2003): \"One hundred and one cases … randomized into Group A (n=51) and Group B (n=50) … The cure rate and symptom-relief rate were 37.3% and 45.1% in Group A\" (Group B: motilium). Not in PubMed.",
+    },
+    verified: true,
+  },
+  {
+    id: "edge-case-05",
+    category: "edge-case",
+    topics: ["sini", "renshen", "myocardial ischemia"],
+    prompt:
+      "A 2005 clinical study in the Chinese Archives of Traditional Chinese Medicine randomized patients with silent myocardial ischemia after subacute myocardial infarction to SiNi Jia RenShen Broth or a conventional nitrate. How many patients were randomized in total, and how many were in the SiNi Jia RenShen Broth group? Cite the record you found. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — patients: <number> | treatment group: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["patients: 43", "treatment group: 21"],
+      note: "Europe PMC CBA:614218 (Su Haifang et al., Chin Arch TCM 2005): \"43 patients with SMI after myocardial infarction were randomized into the treatment group with 21 patients and the control group with 22 patients\" (control: isosorbide mononitrate). Not in PubMed.",
+    },
+    verified: true,
+  },
+  {
+    id: "edge-case-06",
+    category: "edge-case",
+    topics: ["mycoplasma"],
+    prompt:
+      "A 2026 Chinese preprint analyzed the outcome measures used in randomized controlled trials of traditional Chinese medicine for refractory Mycoplasma pneumoniae pneumonia in children. How many studies did it include, and how many types of outcome indicators did it identify? Cite the record you found. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — studies: <number> | outcome indicator types: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["studies: 38", "outcome indicator types: 50"],
+      note: "ChinaXiv chinaxiv-202608.00133 (Su Die et al., posted 2026-08-26): \"A total of 38 relevant studies were included, involving 50 types of outcome indicators\". Not in PubMed or Europe PMC on 2026-10-17.",
+    },
+    verified: true,
+  },
+
   // ─── Compound research (2) ────────────────────────────────────────
   {
     id: "compound-01",
     category: "compound",
+    topics: ["gw501516", "gw-501516", "gw 501516", "cardarine", "ppar", "peroxisome proliferator"],
     prompt: "What does the evidence say about Cardarine (GW501516) and cancer risk?",
     answerKey: {
       kind: "rubric",
@@ -291,6 +377,7 @@ export const QUERIES: BenchmarkQuery[] = [
   {
     id: "compound-02",
     category: "compound",
+    topics: ["mots-c", "motsc", "mitochondrial-derived peptide", "mitochondrial derived peptide"],
     prompt: "Summarize the human evidence for MOTS-c as a performance or metabolic enhancer.",
     answerKey: {
       kind: "rubric",
@@ -299,6 +386,65 @@ export const QUERIES: BenchmarkQuery[] = [
       expectPmids: true,
     },
     verified: false,
+  },
+
+  // ─── Recent literature (4) ────────────────────────────────────────
+  // Papers first published online between 2026-08-27 and 2026-10-06, after the
+  // training data of the models benchmarked here, so they can only be answered by
+  // looking them up. Expected values were read from the PubMed abstracts on
+  // 2026-10-17. These keys age: once models are trained on late-2026 literature,
+  // replace them with newer papers (and bump the category's queries, not the keys).
+  {
+    id: "recent-01",
+    category: "recent",
+    topics: ["creatine"],
+    prompt:
+      "A three-level meta-analysis of resistance training combined with creatine supplementation was published in the Journal of the International Society of Sports Nutrition in 2026. How many studies did it include, and what pooled effect size (Hedges' g) did it report for upper-body strength? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | studies: <number> | upper-body strength g: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 42765482", "studies: 63", "upper-body strength g: 0.54"],
+      note: "PMID 42765482 (Wang et al., J Int Soc Sports Nutr, epub 2026-09-21): \"Sixty-three studies (n = 1489) were included … upper-body strength (g = 0.54, p < 0.001)\".",
+    },
+    verified: true,
+  },
+  {
+    id: "recent-02",
+    category: "recent",
+    topics: ["melatonin"],
+    prompt:
+      "A randomized, double-blind, placebo-controlled trial of oral melatonin for sleep quality in patients with head and neck cancer was published in the Indian Journal of Cancer in 2026. How many patients were randomized, and what was the melatonin group's mean Pittsburgh Sleep Quality Index (PSQI) score on day 14? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | patients: <number> | melatonin PSQI day 14: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 42714195", "patients: 70", "melatonin psqi day 14: 8.11"],
+      note: "PMID 42714195 (Pushpa et al., Indian J Cancer, epub 2026-09-08): \"70 patients … were randomised to oral melatonin 3 mg (Group M, n = 35) or multivitamin (placebo) … Day-14 PSQI scores were lower in Group M than Group P (8.11 ± 1.55 versus 9.66 ± 1.83)\".",
+    },
+    verified: true,
+  },
+  {
+    id: "recent-03",
+    category: "recent",
+    topics: ["ashwagandha", "withania"],
+    prompt:
+      "A 2026 systematic review and meta-analysis in Nutrients examined adjunctive ashwagandha (Withania somnifera) supplementation during structured resistance training in healthy adults. How many randomized controlled trials were eligible, and how many participants were in the pooled analysis? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | eligible RCTs: <number> | pooled participants: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 42738987", "eligible rcts: 4", "pooled participants: 161"],
+      note: "PMID 42738987 (Lee & Heo, Nutrients, epub 2026-08-27): \"Four RCTs were eligible; three (n = 161) provided poolable data\".",
+    },
+    verified: true,
+  },
+  {
+    id: "recent-04",
+    category: "recent",
+    topics: ["acupuncture", "xiaoxuming"],
+    prompt:
+      "A 2026 randomized controlled trial in the Journal of Visualized Experiments tested standardized acupuncture plus modified Xiaoxuming Decoction, added to standard care, in adults with acute ischemic stroke. How many participants were randomized to each group, and what adjusted difference in the day-28 NIHSS score did it report? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | participants per group: <number> | adjusted NIHSS difference: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 42841486", "participants per group: 64", "adjusted nihss difference: -1.30"],
+      note: "PMID 42841486 (Huang et al., J Vis Exp, epub 2026-10-06): \"randomized 1:1 … with 64 participants per group … (adjusted difference: -1.30 points; 95% confidence interval: -2.36 to -0.24; P = 0.017)\".",
+    },
+    verified: true,
   },
 
   // ─── Bullshit detection (4) — the studies below do not exist ──────

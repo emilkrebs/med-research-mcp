@@ -80,7 +80,21 @@ describe("extractCitations", () => {
     );
     expect(c.pmcids).toEqual(["PMC1234567"]);
     const kinds = c.other.map((o) => o.kind).sort();
-    expect(kinds).toEqual(["arxiv-like", "arxiv-like", "europepmc", "url"]);
+    expect(kinds).toEqual(["arxiv-like", "url"]);
+    // Europe PMC preprints and ChinaXiv ids are looked up in their own database.
+    expect(c.regional).toEqual([
+      { database: "europepmc", id: "PPR123456" },
+      { database: "chinaxiv", id: "chinaxiv-202101.00012" },
+    ]);
+  });
+
+  it("reads Europe PMC source-prefixed ids and record links", () => {
+    const c = extractCitations(
+      "CBA:521529; https://europepmc.org/article/CBA/614218 ; https://europepmc.org/article/MED/28202713 ; https://europepmc.org/abstract/PPR/PPR555",
+    );
+    expect(c.regional.map((r) => r.id).sort()).toEqual(["CBA:521529", "CBA:614218", "PPR555"]);
+    expect(c.pmids).toEqual(["28202713"]);
+    expect(c.other).toEqual([]);
   });
 });
 
@@ -107,6 +121,19 @@ describe("auditCitations", () => {
     expect(audit.cited).toEqual([]);
     expect(audit.fabricated).toEqual([]);
     expect(audit.other.map((o) => o.kind).sort()).toEqual(["doi", "europepmc"]);
+  });
+
+  it("counts a regional record found in its database like a valid PMID, and keeps unfound ones in `other`", async () => {
+    const verifier = new Verifier({
+      fetchArticles: async () => ({ found: [], missing: [] }),
+      resolveId: async () => null,
+      lookupRegional: async (item) => (item.id === "CBA:521529" ? { ...facts("CBA:521529"), database: "europepmc" } : null),
+    });
+    const audit = await auditCitations("Europe PMC CBA:521529 and CBA:999999", "q", verifier);
+    expect(audit.cited).toEqual(["CBA:521529"]);
+    expect(audit.valid.map((f) => f.database)).toEqual(["europepmc"]);
+    expect(audit.fabricated).toEqual([]);
+    expect(audit.other).toEqual([{ id: "CBA:999999", kind: "europepmc" }]);
   });
 
   it("marks genuinely missing PMIDs as fabricated", async () => {
@@ -189,4 +216,24 @@ describe("defaultFetch control-PMID guard", () => {
     expect(first.found.map((f) => f.pmid)).toEqual(["111111"]);
     await expect(defaultFetch(["222222"], ncbi, fetcher)).rejects.toThrow(/control PMID/);
   });
+
+  it("throws when abstracts silently failed to load, so a record is never graded on its title alone", async () => {
+    const { defaultFetch } = await import("../lib/scoring/verify.js");
+    const fetcher = (async (input: { ids: string[] }) => ({
+      articles: input.ids.map((pmid) => ({ pmid, title: "t", authors: [], publicationTypes: [] })),
+      missing: [],
+      warnings: ["Some abstracts could not be fetched."],
+    })) as unknown as Parameters<typeof defaultFetch>[2];
+    await expect(defaultFetch(["111111"], {} as Parameters<typeof defaultFetch>[1], fetcher)).rejects.toThrow(/abstracts/);
+  });
+
+  it("throws when efetch failed silently (the control PMID came back without its abstract)", async () => {
+    const { defaultFetch } = await import("../lib/scoring/verify.js");
+    const fetcher = (async (input: { ids: string[] }) => ({
+      articles: input.ids.map((pmid) => ({ pmid, title: "t", authors: [], publicationTypes: [] })),
+      missing: [],
+    })) as unknown as Parameters<typeof defaultFetch>[2];
+    await expect(defaultFetch(["111111"], {} as Parameters<typeof defaultFetch>[1], fetcher)).rejects.toThrow(/abstracts/);
+  });
 });
+

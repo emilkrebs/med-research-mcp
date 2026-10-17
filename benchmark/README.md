@@ -12,10 +12,11 @@ performance.
 | **closed-book** | none | the model from training data alone (optional baseline) |
 | **web-search** | `web_search` (Brave), `web_fetch` | a standalone web baseline: search plus opening result pages (optional baseline) |
 
-24 queries across 6 categories (factual, drill-down, synthesis, edge-case,
-compound, bullshit) × MCP-only by default × N models × R runs. Every response is
-scored on accuracy, evidence quality, fabrication, speed, and token cost,
-combined into a 0–10 composite. Paired significance tests against the baselines are
+32 queries across 7 categories (factual, drill-down, synthesis, edge-case,
+compound, recent, bullshit) × MCP-only by default × N models × R runs. Every
+response is scored on accuracy, evidence quality, fabrication, speed, and token
+cost, combined into a 0–10 composite, plus a citation **misattribution** rate
+reported next to it. Paired significance tests against the baselines are
 generated only when baselines are included.
 
 **Read [Validity and limitations](#validity-and-limitations) before citing any number.**
@@ -55,7 +56,7 @@ bad answer.
 ## Run
 
 ```bash
-# Default: MCP-only, all enabled models, 3 runs, all 24 queries
+# Default: MCP-only, all enabled models, 3 runs, all 32 queries
 npx tsx benchmark/run.ts
 
 # Smoke test: one run, one model, a couple of queries
@@ -149,7 +150,7 @@ out silently.
 model, run, status, accuracy, accuracy_source, evidence_quality,
 bullshit_score, speed_s, input_tokens, output_tokens, total_tokens,
 tool_calls, tools_used, pmids_cited, pmids_valid, pmids_fabricated,
-other_citations, composite`. Unscored values (NaN) are written as empty cells
+other_citations, citations_checked, citations_misattributed, composite`. Unscored values (NaN) are written as empty cells
 (NA in R/pandas), not 0. Filter on `status == "ok"` before averaging.
 `accuracy_source` is one of `deterministic` (values key), `reject` (bullshit
 query), `human` (graded via `grade.ts`), or `proxy` (provisional, see below).
@@ -161,15 +162,36 @@ query), `human` (graded via `grade.ts`), or `proxy` (provisional, see below).
   fetched from live PubMed. One that doesn't resolve is a **fabrication**; one
   that does is graded with the library's own grader (`keywordGrade`), so
   *evidence quality* is measured on the exact 0–5 scale the MCP reports.
-  Other identifier types are counted in `other_citations` but neither graded
-  nor penalized. PMIDs that already appear in the prompt are excluded (echoing
-  the question is not citing). A transient NCBI failure yields a
-  `scoring-error`, never a "fabricated" verdict.
+  Regional records are looked up in their own database: Europe PMC ids outside
+  PubMed (`CBA:521529` for Chinese Biological Abstracts, `PPR…` preprints,
+  `europepmc.org/article/SRC/ID` links) and ChinaXiv ids (`chinaxiv-…`). Found
+  ones are graded and counted like a valid PMID; ones that don't resolve stay
+  in `other_citations`, never fabricated. Other identifier types are counted in
+  `other_citations` but neither graded nor penalized. PMIDs that already appear
+  in the prompt are excluded (echoing the question is not citing). A transient
+  NCBI failure (including abstracts that fail to load) yields a
+  `scoring-error`, never a "fabricated" verdict or a title-only grade.
+- **Misattribution (reported, not in the composite).** A real paper cited for
+  something it doesn't say passes the fabrication check, so
+  [`lib/scoring/attribution.ts`](lib/scoring/attribution.ts) compares the text
+  next to each resolved citation with the record, deterministically (no LLM):
+  the paper must mention one of the query's `topics`; a stated year must be
+  within ±1; "Surname et al." must name one of its authors; a claimed design
+  (meta-analysis, RCT, cohort) must fit its graded type or NLM tags; and of two
+  or more stated figures, at least one must appear in the abstract. Each check
+  fires only on a clear contradiction and abstains when unsure (several
+  citations sharing a clause, two years, no abstract, …), so the rate counts
+  contradicted claims, not proven-supported ones. Every flag is stored in the
+  raw JSON under `_scoring.attribution.issues` with the claimed and actual
+  value, for audit. On the first Haiku 5.5 run (144 answers), all 25 flags were
+  checked by hand and all were real (e.g. "Sutton et al. 2018, Cell Metabolism"
+  pointing at a review of muscle development).
 - **Accuracy (0–10)** depends on the query's answer key:
-  - `values` keys (5 deterministic queries: `factual-01`–`04`, `drill-down-03`):
-    the model must end with a line like `ANSWER — study type: … | score: … |
-    pmid: …`. The scorer parses that final line field by field and checks each
-    expected field (study type, 0–5 score, PMID); accuracy is the fraction
+  - `values` keys (13 deterministic queries: `factual-01`–`04`, `drill-down-03`,
+    `edge-case-03`–`06`, `recent-01`–`04`): the model must end with a line like
+    `ANSWER — study type: … | score: … | pmid: …`. The scorer parses that final
+    line field by field and checks each expected field; numeric values compare
+    as numbers (`0.6` = `0.60`, `37.3%` = `37.3`). Accuracy is the fraction
     matched × 10. Fully automated.
   - `reject` keys (4 bullshit queries): see below.
   - `rubric` keys (15 open-ended queries) have no ground-truth string, so they
@@ -211,7 +233,7 @@ query), `human` (graded via `grade.ts`), or `proxy` (provisional, see below).
 
 ## Grading rubric answers
 
-15 of the 24 queries are open-ended `rubric` keys. `grade.ts` makes human
+15 of the 32 queries are open-ended `rubric` keys. `grade.ts` makes human
 grading fast and blind:
 
 ```bash
@@ -283,8 +305,17 @@ aggregation. Rows graded by humans get `accuracy_source = human`. Use
 
 ## Answer keys and publishable claims
 
-Nine queries have `verified: true` keys: the four **bullshit** queries (the
-studies are fabricated by us) and the five deterministic **`values`** queries.
+Seventeen queries have `verified: true` keys: the four **bullshit** queries (the
+studies are fabricated by us) and the thirteen deterministic **`values`** queries.
+Two groups among the latter test what a closed-book model cannot do:
+
+- **Regional records** (`edge-case-03`–`06`): TCM trials that exist only in
+  Europe PMC's Chinese Biological Abstracts source, and a ChinaXiv preprint —
+  none of them in PubMed — so answering takes a non-PubMed database.
+- **Recent literature** (`recent-01`–`04`): papers first published online
+  between 2026-08-27 and 2026-10-06, after the benchmarked models' training
+  data. These keys age: replace them with newer papers once models are trained
+  on that period.
 Verification is a **live check, not a one-time claim**: run
 
 ```bash
@@ -319,9 +350,13 @@ paper.**
   phrasings (false negatives) and can accept a hedged hybrid that rejects the
   study but still describes findings. Review bullshit rows by hand and use
   overrides where needed.
-- **Small query set.** 24 queries, only 4 of them bullshit. Per-category
-  numbers rest on 4 to 5 queries and are noisy; tests have n = number of
+- **Small query set.** 32 queries, only 4 of them bullshit. Per-category
+  numbers rest on 2 to 8 queries and are noisy; tests have n = number of
   queries.
+- **Misattribution is lexical and conservative.** It finds contradicted claims
+  (wrong paper, year, author, design, or figures absent from the abstract), not
+  unsupported ones; figures reported only in the full text are never flagged
+  because the numbers check needs two figures with none found.
 - **The query set is public**, so future models may have seen it in training
   (contamination), especially the closed-book condition.
 - **Blinding is partial** (answer text can reveal the condition) and several
@@ -336,5 +371,7 @@ paper.**
 - **Queries** — add to [`queries.data.ts`](queries.data.ts); pick the answer-key
   kind that fits and set `verified` honestly (bump `answerKeyVersion` when a key
   changes so `--rescore` refreshes old data). `tsc` checks the category and kind.
+  Give it `topics` (terms any on-topic paper mentions) so the misattribution
+  check can catch citations to unrelated papers.
 - **Weights / normalization** — `WEIGHTS` and `NORMALIZATION` in
   [`lib/config.ts`](lib/config.ts).

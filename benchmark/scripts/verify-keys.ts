@@ -158,9 +158,13 @@ export function liveLookups(): Lookups {
   return {
     async fetchPmids(pmids) {
       const ids = pmids.includes(CONTROL_PMID) ? pmids : [...pmids, CONTROL_PMID];
-      const { articles, missing } = await fetchLiterature({ ids, database: "pubmed" }, cache);
+      const { articles, missing, warnings } = await fetchLiterature({ ids, database: "pubmed" }, cache);
       if (missing.includes(CONTROL_PMID) || !articles.some((a) => a.pmid === CONTROL_PMID)) {
         throw new Error("PubMed returned no data for the control PMID (transient failure?)");
+      }
+      // Grading reads the abstract: a silently failed efetch would show up as a study-type MISMATCH.
+      if (warnings?.some((w) => /abstracts could not be fetched/i.test(w)) || !articles.find((a) => a.pmid === CONTROL_PMID)?.abstract) {
+        throw new Error("PubMed returned no abstracts (transient failure?)");
       }
       const out = new Map<string, PmidInfo>(pmids.map((p) => [p, { exists: false }]));
       for (const a of articles) {

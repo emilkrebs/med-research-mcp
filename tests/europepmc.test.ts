@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { EuropePmcAdapter, parseEuropePmc } from "../src/core/adapters/europepmc";
+import { EuropePmcAdapter, exactIdQuery, parseEuropePmc, toEpmcId } from "../src/core/adapters/europepmc";
 import type { AdapterHttp } from "../src/core/adapters/http";
 import { LRUBackend } from "../src/core/cache";
 
@@ -96,5 +96,39 @@ describe("EuropePmcAdapter", () => {
     const adapter = new EuropePmcAdapter(http);
     await adapter.search({ query: "peptide", dateRange: { from: "2020-01-01", to: "2021-12-31" } });
     expect(urls[0]).toContain("FIRST_PDATE");
+  });
+
+  it("cold fetch() looks a record up by EXT_ID + SRC and rejects a non-matching hit", async () => {
+    const cba = {
+      hitCount: 1,
+      resultList: { result: [{ id: "521529", source: "CBA", title: "Yishen Zhuanggu Tongbi Decoction", pubYear: "2005" }] },
+    };
+    const { http, urls } = recordingHttp(cba);
+    const fetched = await new EuropePmcAdapter(http).fetch(["CBA:521529"], new LRUBackend());
+    expect(decodeURIComponent(urls[0]!.replace(/\+/g, " "))).toContain("query=EXT_ID:521529 AND SRC:CBA");
+    expect(fetched.map((a) => a.pmid)).toEqual(["CBA:521529"]);
+
+    // A bare PMID is looked up in MED; a hit for some other record is not returned as that id.
+    const wrong = recordingHttp(RESPONSE);
+    expect(await new EuropePmcAdapter(wrong.http).fetch(["42756947"], new LRUBackend())).toEqual([]);
+    expect(decodeURIComponent(wrong.urls[0]!.replace(/\+/g, " "))).toContain("query=EXT_ID:42756947 AND SRC:MED");
+  });
+});
+
+describe("Europe PMC ids", () => {
+  it("prefixes numeric non-PubMed ids with their source so they cannot collide with PMIDs", () => {
+    expect(toEpmcId("MED", "33000001")).toBe("33000001");
+    expect(toEpmcId("CBA", "521529")).toBe("CBA:521529");
+    expect(toEpmcId("PPR", "PPR12345")).toBe("PPR12345");
+    expect(parseEuropePmc({ resultList: { result: [{ id: "521529", source: "CBA" }] } }).articles[0]?.url).toBe(
+      "https://europepmc.org/article/CBA/521529",
+    );
+  });
+
+  it("builds an exact-match query for every id shape", () => {
+    expect(exactIdQuery("CBA:521529")).toBe("EXT_ID:521529 AND SRC:CBA");
+    expect(exactIdQuery("PPR12345")).toBe("EXT_ID:PPR12345 AND SRC:PPR");
+    expect(exactIdQuery("PMC1234567")).toBe("PMCID:PMC1234567");
+    expect(exactIdQuery("33000001")).toBe("EXT_ID:33000001 AND SRC:MED");
   });
 });

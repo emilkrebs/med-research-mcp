@@ -13,10 +13,14 @@
  *  - DOIs and PMCIDs are resolved to PMIDs through NCBI E-utilities, then
  *    verified and graded like any other PMID (so URL-citing web-search answers
  *    are scored on the same footing as PMID-citing ones).
- *  - Everything else (a DOI PubMed has never heard of, Europe PMC preprints,
- *    arXiv-style ids, publisher article URLs) is reported in `other`: counted,
- *    NOT graded, and NEVER counted as fabricated — we cannot prove a DOI or a
- *    preprint doesn't exist, so we don't punish it.
+ *  - Regional records — Europe PMC ids outside PubMed (`CBA:521529`, `PPR123`,
+ *    europepmc.org/article/SRC/ID links) and ChinaXiv ids (`chinaxiv-202608.00133`)
+ *    — are looked up in their own database and, when found, graded with the same
+ *    grader and counted like a valid PMID. Not found stays in `other`.
+ *  - Everything else (a DOI PubMed has never heard of, arXiv-style ids,
+ *    publisher article URLs, regional ids that don't resolve) is reported in
+ *    `other`: counted, NOT graded, and NEVER counted as fabricated — we cannot
+ *    prove a DOI or a preprint doesn't exist, so we don't punish it.
  *
  * Resilience: a transient NCBI failure must never turn into "fabricated". The
  * default lookup throws on network/parse errors, and additionally guards the
@@ -27,8 +31,11 @@
  * lookups is the only cache) because a cached control PMID would pass the guard
  * without proving NCBI answered. Failures are never memoized.
  *
- * Known limitation: `fetchLiterature` swallows abstract-fetch failures, so a
- * transient efetch outage can degrade grading to title-only for that PMID.
+ * `fetchLiterature` treats abstracts as best-effort and only warns when efetch
+ * fails; the default lookup turns that warning — or a control PMID that came
+ * back without its abstract — into a failure too, because both the evidence
+ * grade and the attribution audit read the abstract: a silently title-only
+ * record would change scores depending on NCBI's rate limits.
  */
 
 import { fetchLiterature, keywordGrade, NcbiClient, PubMedAdapter, NullCache } from "../core.js";
@@ -36,12 +43,34 @@ import type { StudyType } from "../core.js";
 import type { EvidenceDetail } from "../types.js";
 
 export interface PmidFacts {
+  /** PMID, or the regional id for a non-PubMed record (`CBA:521529`, `chinaxiv-…`). */
   pmid: string;
   exists: boolean;
   evidenceScore: number; // 0–5, meaningful only when exists
   studyType: StudyType;
   title: string;
   abstract: string;
+  /** Set for non-PubMed records ("europepmc", "chinaxiv"); absent means PubMed. */
+  database?: string;
+  /** Author names as the database lists them ("Wang X", "Chen Zuhong"). Read by the attribution check. */
+  authors?: string[];
+  pubYear?: number;
+  /** NLM publication types (PubMed only). */
+  publicationTypes?: string[];
+  meshHeadings?: string[];
+}
+
+/** First plausible year in a free-form date ("2026 Sep 21", "2026-08-26", "2005"). */
+export function yearOf(date: string | undefined): number | undefined {
+  const m = /\b(1[89]\d\d|20\d\d)\b/.exec(date ?? "");
+  return m ? Number(m[1]) : undefined;
+}
+
+/** A citation to a record outside PubMed that can still be looked up. */
+export interface RegionalId {
+  database: "europepmc" | "chinaxiv";
+  /** `CBA:521529` / `PPR123456` for Europe PMC, `chinaxiv-202608.00133` for ChinaXiv. */
+  id: string;
 }
 
 /** A non-PubMed (or unresolvable) identifier: counted, never graded. */
@@ -54,6 +83,8 @@ export interface ExtractedCitations {
   dois: string[];
   /** Uppercase, e.g. `PMC1234567`. */
   pmcids: string[];
+  /** Europe PMC (non-PubMed) and ChinaXiv records, looked up in their own database. */
+  regional: RegionalId[];
   /** Identifiers that can never map to PubMed (preprints, arXiv-style, publisher URLs). */
   other: OtherCitation[];
 }
@@ -111,6 +142,10 @@ function trimTrailing(raw: string): string {
   }
 }
 
+/** Europe PMC sources whose numeric ids collide with PMIDs, so they are cited `SRC:id`. */
+const EPMC_PREFIXED_RE = /\b(CBA|AGR|CTX|ETH|HIR|PAT)\s*[:#]\s*(\d{3,12})\b/g;
+const EPMC_URL_RE = /europepmc\.org\/(?:abstract|article)\/(MED|PMC|PPR|CBA|AGR|CTX|ETH|HIR|PAT)\/(\w+)/gi;
+const CHINAXIV_ID_RE = /\bchinaxiv[-:](\d{6}\.\d{4,6})\b/gi;
 const DOI_RE = /\b10\.\d{4,9}\/[^\s<>"'`]+/gi;
 const PMCID_RE = /\bPMC\d{4,9}\b/gi;
 const EUROPEPMC_RE = /\bPPR\d{3,}\b/g;
@@ -121,7 +156,7 @@ const ARTICLE_URL_RE =
 
 /** Find every citation-shaped identifier in `text`. */
 export function extractCitations(text: string): ExtractedCitations {
-  const pmids = extractPmids(text);
+  const pmids = new Set(extractPmids(text));
   const dois = new Set<string>();
   for (const m of text.matchAll(DOI_RE)) {
     const d = trimTrailing(m[0]).toLowerCase();
@@ -130,19 +165,35 @@ export function extractCitations(text: string): ExtractedCitations {
   const pmcids = new Set<string>();
   for (const m of text.matchAll(PMCID_RE)) pmcids.add(m[0].toUpperCase());
 
+  const regional = new Map<string, RegionalId>();
+  const addRegional = (database: RegionalId["database"], id: string): void => {
+    regional.set(`${database}:${id}`, { database, id });
+  };
+  for (const m of text.matchAll(EPMC_PREFIXED_RE)) addRegional("europepmc", `${m[1]}:${m[2]}`);
+  for (const m of text.matchAll(EUROPEPMC_RE)) addRegional("europepmc", m[0]);
+  for (const m of text.matchAll(EPMC_URL_RE)) {
+    const src = m[1]!.toUpperCase();
+    const id = m[2]!;
+    if (src === "MED" && /^\d{1,9}$/.test(id)) pmids.add(id);
+    else if (src === "PMC") pmcids.add(id.toUpperCase().startsWith("PMC") ? id.toUpperCase() : `PMC${id}`);
+    else if (src === "PPR") addRegional("europepmc", id.toUpperCase());
+    else if (/^\d+$/.test(id)) addRegional("europepmc", `${src}:${id}`);
+  }
+  for (const m of text.matchAll(CHINAXIV_ID_RE)) addRegional("chinaxiv", `chinaxiv-${m[1]}`);
+
   const other = new Map<string, OtherCitation>();
-  for (const m of text.matchAll(EUROPEPMC_RE)) other.set(m[0], { id: m[0], kind: "europepmc" });
   for (const m of text.matchAll(ARXIV_RE)) {
     const id = trimTrailing(m[0]).toLowerCase().replace(/\s+/g, "");
+    if (/^chinaxiv[-:]\d{6}\.\d{4,6}$/.test(id)) continue; // a ChinaXiv id, handled above
     other.set(id, { id, kind: "arxiv-like" });
   }
   for (const m of text.matchAll(ARTICLE_URL_RE)) {
     const url = trimTrailing(m[0]);
-    // A URL that embeds a DOI is already captured as a DOI.
-    if (/\b10\.\d{4,9}\//.test(url)) continue;
+    // A URL that embeds a DOI is already captured as a DOI; a Europe PMC record link above.
+    if (/\b10\.\d{4,9}\//.test(url) || new RegExp(EPMC_URL_RE.source, "i").test(url)) continue;
     other.set(url.toLowerCase(), { id: url, kind: "url" });
   }
-  return { pmids, dois: [...dois], pmcids: [...pmcids], other: [...other.values()] };
+  return { pmids: [...pmids], dois: [...dois], pmcids: [...pmcids], regional: [...regional.values()], other: [...other.values()] };
 }
 
 /** Result of one batched PMID lookup: which ids resolved (graded) and which are genuinely absent. */
@@ -170,6 +221,13 @@ export interface VerifierOptions {
    * and there is no unique match. MUST throw on transient failure.
    */
   resolveId?: (item: IdToResolve) => Promise<string | null>;
+  /**
+   * Look up and grade a regional record. Return `null` when the database answered
+   * and has no such record; MUST throw on transient failure. Defaults to live
+   * Europe PMC / ChinaXiv lookups only when `fetchArticles` is also the default,
+   * so an injected (offline) verifier never touches the network.
+   */
+  lookupRegional?: (item: RegionalId) => Promise<PmidFacts | null>;
 }
 
 /** PMID known to exist (pinned factual-01 subject); fetched with each batch to detect silent NCBI failures. */
@@ -181,11 +239,14 @@ export class Verifier {
   private readonly resolveMemo = new Map<string, string | null>();
   private readonly fetchArticles: (pmids: string[]) => Promise<FetchResult>;
   private readonly resolveId: (item: IdToResolve) => Promise<string | null>;
+  private readonly regionalMemo = new Map<string, PmidFacts | null>();
+  private readonly lookupRegional: (item: RegionalId) => Promise<PmidFacts | null>;
 
   constructor(options: VerifierOptions = {}) {
     const ncbi = options.ncbi ?? new NcbiClient();
     this.fetchArticles = options.fetchArticles ?? ((pmids) => defaultFetch(pmids, ncbi));
     this.resolveId = options.resolveId ?? ((item) => defaultResolve(item, ncbi));
+    this.lookupRegional = options.lookupRegional ?? (options.fetchArticles ? async () => null : defaultRegionalLookup);
   }
 
   async verify(pmids: string[]): Promise<Map<string, PmidFacts>> {
@@ -214,6 +275,17 @@ export class Verifier {
     return result;
   }
 
+  /** Look up regional records (`null` = not in that database). Answers are memoized; failures throw. */
+  async verifyRegional(items: RegionalId[]): Promise<Map<string, PmidFacts | null>> {
+    const out = new Map<string, PmidFacts | null>();
+    for (const item of items) {
+      const key = `${item.database}:${item.id}`;
+      if (!this.regionalMemo.has(key)) this.regionalMemo.set(key, await this.lookupRegional(item));
+      out.set(key, this.regionalMemo.get(key) ?? null);
+    }
+    return out;
+  }
+
   /** Resolve DOIs / PMCIDs to PMIDs (`null` = NCBI has no unique match). Successful answers are memoized. */
   async resolve(items: IdToResolve[]): Promise<Map<string, string | null>> {
     const out = new Map<string, string | null>();
@@ -235,9 +307,15 @@ export async function defaultFetch(
   const withControl = pmids.includes(CONTROL_PMID) ? pmids : [...pmids, CONTROL_PMID];
   // NullCache, never an LRU: a cached control PMID would make the guard below pass
   // without touching the network, so it could not detect a later silent failure.
-  const { articles, missing } = await fetcher({ ids: withControl, database: "pubmed" }, new NullCache(), new PubMedAdapter(ncbi));
+  const { articles, missing, warnings } = await fetcher({ ids: withControl, database: "pubmed" }, new NullCache(), new PubMedAdapter(ncbi));
   if (missing.includes(CONTROL_PMID) || !articles.some((a) => a.pmid === CONTROL_PMID)) {
     throw new Error("NCBI lookup returned no data for the control PMID; treating the batch as a transient failure");
+  }
+  // efetch can also fail silently (an error body with HTTP 200 parses as "no articles");
+  // the control PMID always has an abstract, so a missing one means the batch's abstracts are gone.
+  const control = articles.find((a) => a.pmid === CONTROL_PMID);
+  if (warnings?.some((w) => /abstracts could not be fetched/i.test(w)) || !control?.abstract) {
+    throw new Error("NCBI efetch returned no abstracts; treating the batch as a transient failure");
   }
   const found: PmidFacts[] = [];
   for (const article of articles) {
@@ -250,9 +328,74 @@ export async function defaultFetch(
       studyType: graded.studyType,
       title: article.title,
       abstract: article.abstract ?? "",
+      authors: article.authors,
+      ...(yearOf(article.pubDate) !== undefined ? { pubYear: yearOf(article.pubDate) } : {}),
+      publicationTypes: article.publicationTypes,
+      ...(article.meshHeadings ? { meshHeadings: article.meshHeadings } : {}),
     });
   }
   return { found, missing: missing.filter((p) => p !== CONTROL_PMID) };
+}
+
+const EPMC_SEARCH = "https://www.ebi.ac.uk/europepmc/webservices/rest/search";
+const CHINAXIV_PAPERS = "https://chinarxiv.org/api/v1/papers";
+
+/** Grade a regional record exactly like a PubMed one (same keyword grader, no NLM publication types). */
+function regionalFacts(id: string, database: string, a: { title: string; abstract: string; authors: string[]; pubDate: string; journal: string }): PmidFacts {
+  const graded = keywordGrade({ pmid: id, title: a.title, abstract: a.abstract, authors: a.authors, journal: a.journal, pubDate: a.pubDate, publicationTypes: [] });
+  return {
+    pmid: id,
+    exists: true,
+    evidenceScore: graded.evidenceScore,
+    studyType: graded.studyType,
+    title: a.title,
+    abstract: a.abstract,
+    database,
+    authors: a.authors,
+    ...(yearOf(a.pubDate) !== undefined ? { pubYear: yearOf(a.pubDate) } : {}),
+  };
+}
+
+async function getJson(url: string): Promise<{ status: number; body: unknown }> {
+  const res = await fetch(url, { signal: AbortSignal.timeout(20_000), headers: { accept: "application/json" } });
+  if (res.status === 404) return { status: 404, body: null };
+  if (!res.ok) throw new Error(`${url} answered HTTP ${res.status}`);
+  return { status: res.status, body: await res.json() };
+}
+
+/**
+ * Default regional lookup: Europe PMC by EXT_ID + SRC (an exact match, unlike a
+ * bare-id query), ChinaXiv by its `/papers/{id}` endpoint. Throws on network errors.
+ */
+export async function defaultRegionalLookup(item: RegionalId): Promise<PmidFacts | null> {
+  if (item.database === "chinaxiv") {
+    const { status, body } = await getJson(`${CHINAXIV_PAPERS}/${encodeURIComponent(item.id)}`);
+    const r = body as Record<string, unknown> | null;
+    if (status === 404 || !r || r.id !== item.id) return null;
+    const str = (v: unknown): string => (typeof v === "string" ? v : "");
+    const authors = (Array.isArray(r.authors) ? r.authors : []).flatMap((x) => String(x).split(/[;,]/)).map((x) => x.trim()).filter(Boolean);
+    return regionalFacts(item.id, "chinaxiv", {
+      title: str(r.title_en) || str(r.title),
+      abstract: str(r.abstract_en) || str(r.abstract),
+      authors,
+      pubDate: str(r.date) || str(r.pub_date) || str(r.year),
+      journal: str(r.publication) || "ChinaXiv",
+    });
+  }
+  const prefixed = /^([A-Z]{3}):(\d+)$/.exec(item.id);
+  const [src, extId] = prefixed ? [prefixed[1]!, prefixed[2]!] : ["PPR", item.id];
+  const params = new URLSearchParams({ query: `EXT_ID:${extId} AND SRC:${src}`, format: "json", resultType: "core", pageSize: "1" });
+  const { body } = await getJson(`${EPMC_SEARCH}?${params.toString()}`);
+  const r = (body as { resultList?: { result?: Record<string, unknown>[] } } | null)?.resultList?.result?.[0];
+  if (!r || String(r.id) !== extId) return null;
+  const str = (v: unknown): string => (typeof v === "string" ? v : "");
+  return regionalFacts(item.id, "europepmc", {
+    title: str(r.title).replace(/\.$/, ""),
+    abstract: str(r.abstractText).replace(/<[^>]+>/g, ""),
+    authors: str(r.authorString).split(/[;,]/).map((x) => x.trim().replace(/\.$/, "")).filter(Boolean),
+    pubDate: str(r.pubYear) || str(r.firstPublicationDate),
+    journal: str(r.journalTitle),
+  });
 }
 
 /** Default DOI/PMCID resolution via PubMed esearch (`<doi>[doi]`, `PMC123[pmcid]`). Exactly one hit resolves. */
@@ -264,7 +407,7 @@ async function defaultResolve(item: IdToResolve, ncbi: NcbiClient): Promise<stri
 
 /** Summary of a response's citations after verification. */
 export interface CitationAudit {
-  /** PMIDs cited (directly or via a resolved DOI/PMCID), excluding those echoed from the prompt. */
+  /** PMIDs cited (directly or via a resolved DOI/PMCID) plus resolved regional ids, excluding those echoed from the prompt. */
   cited: string[];
   valid: PmidFacts[];
   fabricated: string[];
@@ -311,6 +454,19 @@ export async function auditCitations(text: string, prompt: string, verifier: Ver
     const f = facts.get(pmid);
     if (f?.exists) valid.push(f);
     else fabricated.push(pmid);
+  }
+
+  // Regional records count like PMIDs when their database has them; otherwise they
+  // stay in `other` (never fabricated: absence from a regional index proves little).
+  const regional = await verifier.verifyRegional(extracted.regional);
+  for (const item of extracted.regional) {
+    const f = regional.get(`${item.database}:${item.id}`);
+    if (f) {
+      counted.push(f.pmid);
+      valid.push(f);
+    } else {
+      other.set(item.id.toLowerCase(), { id: item.id, kind: item.database === "chinaxiv" ? "arxiv-like" : "europepmc" });
+    }
   }
   const evidenceQuality = valid.length > 0 ? valid.reduce((s, f) => s + f.evidenceScore, 0) / valid.length : 0;
   return { cited: counted, valid, fabricated, evidenceQuality, other: [...other.values()], echoedFromPrompt };

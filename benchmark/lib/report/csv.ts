@@ -23,6 +23,8 @@ const COLUMNS: (keyof ScoreRow)[] = [
   "pmids_valid",
   "pmids_fabricated",
   "other_citations",
+  "citations_checked",
+  "citations_misattributed",
   "composite",
 ];
 

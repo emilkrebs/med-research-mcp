@@ -43,7 +43,7 @@ function toArticle(r: Record_): Article | null {
     title,
     authors: strArray(r.authors),
     journal: first(r.journal) ?? first(r.publication) ?? "ChinaRXiv",
-    pubDate: first(r.pub_date) ?? first(r.year) ?? "",
+    pubDate: first(r.pub_date) ?? first(r.date) ?? first(r.year) ?? "",
     publicationTypes: [],
     database: source === "russiarxiv" ? "russiarxiv" : "chinaxiv",
     url,
@@ -89,8 +89,9 @@ export class ChinaRXivAdapter extends RestAdapter {
   }
 
   protected async fetchOne(id: string): Promise<Article | null> {
-    const params = new URLSearchParams({ q: id, limit: "1", page: "1" });
-    const data = await this.http.json<PaperResponse>(`${BASE}?${params.toString()}`);
-    return parsePapers(data).articles[0] ?? null;
+    // Exact lookup by id; a `q=` text search for the id can return a different paper.
+    const record = await this.http.json<Record_>(`${BASE}/${encodeURIComponent(id)}`);
+    const article = parsePapers({ data: [record] }).articles[0];
+    return article?.pmid === id ? article : null;
   }
 }

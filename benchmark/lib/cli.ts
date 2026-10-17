@@ -9,7 +9,7 @@ import { CONDITIONS, DEFAULT_MODELS, DEFAULTS, MODELS, type ModelSpec } from "./
 import { QUERIES, queryById } from "./queries.js";
 import type { BenchmarkQuery, Category, ConditionId } from "./types.js";
 
-export const CATEGORIES: Category[] = ["factual", "drill-down", "synthesis", "edge-case", "compound", "bullshit"];
+export const CATEGORIES: Category[] = ["factual", "drill-down", "synthesis", "edge-case", "compound", "recent", "bullshit"];
 
 /** A usage error: print `message` and exit non-zero, no stack trace. */
 export class CliError extends Error {}

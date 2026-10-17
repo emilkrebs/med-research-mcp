@@ -2,7 +2,8 @@
  * Turn one raw `RunRecord` into a fully-scored `ScoreRow`.
  *
  * Order: classify the run's status → verify citations (existence + evidence
- * grade) → bullshit sub-score → accuracy (deterministic answer-key, or a
+ * grade) → attribution audit (do the claims next to each citation match it?) →
+ * bullshit sub-score → accuracy (deterministic answer-key, or a
  * provisional citation-quality proxy for rubric queries until a human grade is
  * applied via overrides) → composite. For bullshit queries, accuracy is the
  * rejection outcome on the 0–10 scale so the category still contributes to the
@@ -26,6 +27,7 @@ import type {
   ScoreRow,
 } from "../types.js";
 import { auditCitations, type CitationAudit, type Verifier } from "./verify.js";
+import { checkAttribution } from "./attribution.js";
 import { bullshitScore, hasRejectionLanguage } from "./bullshit.js";
 import { scoreAccuracy } from "./accuracy.js";
 import { compositeForCategory } from "./composite.js";
@@ -34,9 +36,10 @@ import { compositeForCategory } from "./composite.js";
  * Bump when scoring logic changes in a way that alters scores (v1 = substring
  * `values` matcher and PMID-only extraction; v2 = ANSWER-line parser, DOI/PMCID
  * resolution, prompt-echo exclusion, study-specific rejection patterns; v3 =
- * passive-voice rejections, markdown-tolerant PMID anchors, `contextTruncated` runs score as `truncated`).
+ * passive-voice rejections, markdown-tolerant PMID anchors, `contextTruncated` runs score as `truncated`;
+ * v5 = attribution audit, Europe PMC / ChinaXiv citations looked up and graded).
  */
-export const SCORER_VERSION = 4;
+export const SCORER_VERSION = 5;
 
 export interface ScoreResult {
   row: ScoreRow;
@@ -116,6 +119,9 @@ async function scoreRunUnsafe(run: RunRecord, query: BenchmarkQuery, verifier: V
     ? { score: bs * 10, detail: { score: round2(bs * 10), kind: query.answerKey.kind } }
     : scoreAccuracy(query, text, audit);
 
+  // Reported next to the composite, not inside it (see lib/scoring/attribution.ts).
+  const attribution = checkAttribution(text, audit.valid, [...audit.cited, ...audit.echoedFromPrompt], query.topics);
+
   const composite = compositeForCategory(run.category, {
     accuracy: acc.score,
     evidenceQuality: audit.evidenceQuality,
@@ -132,13 +138,14 @@ async function scoreRunUnsafe(run: RunRecord, query: BenchmarkQuery, verifier: V
       pmids: audit.cited.map((pmid) => {
         const v = audit.valid.find((f) => f.pmid === pmid);
         return v
-          ? { pmid, valid: true, evidenceScore: v.evidenceScore, studyType: v.studyType, title: v.title }
+          ? { pmid, valid: true, evidenceScore: v.evidenceScore, studyType: v.studyType, title: v.title, ...(v.database ? { database: v.database } : {}) }
           : { pmid, valid: false };
       }),
       other: audit.other,
       echoedFromPrompt: audit.echoedFromPrompt,
     },
     bullshit: { score: round2(bs), rejected, fabricatedPmids: audit.fabricated },
+    attribution,
     composite,
     answerKeyVersion: query.answerKeyVersion,
     scorerVersion: SCORER_VERSION,
@@ -177,6 +184,9 @@ export function rowFromBreakdown(record: RunRecord, breakdown: ScoreBreakdown): 
     pmids_valid: pmids.filter((p) => p.valid).length,
     pmids_fabricated: fabricated,
     other_citations: breakdown.evidenceQuality?.other?.length ?? 0,
+    ...(breakdown.attribution
+      ? { citations_checked: breakdown.attribution.checked, citations_misattributed: breakdown.attribution.misattributed }
+      : {}),
     composite: round2(breakdown.composite ?? 0),
   };
 }

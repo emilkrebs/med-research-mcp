@@ -52,9 +52,19 @@ export function parseAnswerFields(line: string): Map<string, string> {
   return fields;
 }
 
-/** Value equals expected, or starts with it followed by a space, "(", "," or ";" (so "0.74 (95% ci …)" passes, "not sure" doesn't match "no"). */
-function valueMatches(actual: string, expected: string): boolean {
+const NUMBER_PREFIX = /^-?\d[\d,]*(?:\.\d+)?(?![\d.])/;
+
+/**
+ * Value equals expected, or starts with it followed by a space, "(", "," or ";" (so "0.74 (95% ci …)" passes,
+ * "not sure" doesn't match "no"). A purely numeric expected value is compared as a number against the
+ * answer's leading number, so "0.6" matches "0.60", "1,489" matches "1489" and "37.3%" matches "37.3".
+ */
+export function valueMatches(actual: string, expected: string): boolean {
   if (actual === expected) return true;
+  if (NUMBER_PREFIX.test(expected) && expected.match(NUMBER_PREFIX)![0] === expected) {
+    const lead = actual.match(NUMBER_PREFIX)?.[0];
+    return lead !== undefined && Number(lead.replace(/,/g, "")) === Number(expected.replace(/,/g, ""));
+  }
   if (!actual.startsWith(expected)) return false;
   return /[ (,;]/.test(actual[expected.length]!);
 }

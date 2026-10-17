@@ -100,6 +100,9 @@ export function toScoreRow(r: Record<string, string>): ScoreRow {
     pmids_valid: num(r.pmids_valid),
     pmids_fabricated: num(r.pmids_fabricated),
     other_citations: r.other_citations !== undefined && r.other_citations !== "" ? Number(r.other_citations) : 0,
+    ...(r.citations_checked !== undefined && r.citations_checked !== ""
+      ? { citations_checked: Number(r.citations_checked), citations_misattributed: num(r.citations_misattributed) }
+      : {}),
     composite: num(r.composite),
   };
 }

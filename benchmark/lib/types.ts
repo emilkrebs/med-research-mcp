@@ -1,13 +1,14 @@
 /** Shared benchmark types: queries, raw run records, and scored rows. */
 
-/** The six query families from the spec. */
+/** The query families: the spec's six plus `recent` (literature newer than the models' training data). */
 export type Category =
   | "factual"
   | "drill-down"
   | "synthesis"
   | "edge-case"
   | "compound"
-  | "bullshit";
+  | "bullshit"
+  | "recent";
 
 /** The three experimental conditions. */
 export type ConditionId = "closed-book" | "web-search" | "mcp";
@@ -59,6 +60,13 @@ export interface BenchmarkQuery {
    * rescorer re-scores raw data that was scored with an older version.
    */
   answerKeyVersion?: number;
+  /**
+   * Terms a cited paper must mention (title, abstract or MeSH; case-insensitive,
+   * matched at a word start, so `creatin` covers "creatine"). At least one must
+   * appear, or the citation is flagged as off-topic by the attribution check.
+   * Omit when any paper could legitimately be cited (e.g. bullshit queries).
+   */
+  topics?: string[];
 }
 
 /**
@@ -183,6 +191,10 @@ export interface ScoreRow {
   pmids_fabricated: number;
   /** Non-PubMed identifiers cited (DOIs that don't map to a PMID, preprint ids). Counted, not graded. */
   other_citations: number;
+  /** Resolved citations the attribution check could test (absent on rows scored before scorer v5). */
+  citations_checked?: number;
+  /** Of those, citations whose surrounding claim contradicts the record (wrong topic/year/author/design/numbers). */
+  citations_misattributed?: number;
   composite: number; // 0–10
 }
 
@@ -199,7 +211,8 @@ export interface AccuracyDetail {
 
 export interface EvidenceDetail {
   score: number; // 0–5 mean
-  pmids: { pmid: string; valid: boolean; evidenceScore?: number; studyType?: string; title?: string }[];
+  /** Every resolved citation; regional records (Europe PMC non-PubMed, ChinaXiv) carry `database`. */
+  pmids: { pmid: string; valid: boolean; evidenceScore?: number; studyType?: string; title?: string; database?: string }[];
   /** Non-PubMed identifiers found in the answer (counted, not graded). */
   other?: { id: string; kind: "doi" | "europepmc" | "arxiv-like" | "url" }[];
   /** PMIDs that appeared in the answer but were excluded because the prompt itself contains them. */
@@ -212,11 +225,33 @@ export interface BullshitDetail {
   fabricatedPmids: string[];
 }
 
+/** One way a citation's surrounding claim contradicts the cited record. */
+export interface AttributionIssue {
+  /** The cited id (PMID, `CBA:…`, `chinaxiv-…`). */
+  id: string;
+  check: "topic" | "year" | "author" | "design" | "numbers";
+  /** What the answer said next to the citation. */
+  claimed: string;
+  /** What the record says. */
+  actual: string;
+}
+
+/** Deterministic citation-attribution audit (lib/scoring/attribution.ts). */
+export interface AttributionDetail {
+  /** Resolved citations with at least one applicable check. */
+  checked: number;
+  /** Of those, citations failing at least one check. */
+  misattributed: number;
+  issues: AttributionIssue[];
+}
+
 export interface ScoreBreakdown {
   status: RunStatus;
   accuracy: AccuracyDetail;
   evidenceQuality: EvidenceDetail;
   bullshit: BullshitDetail;
+  /** Absent on breakdowns from scorer v4 and earlier. */
+  attribution?: AttributionDetail;
   composite: number;
   answerKeyVersion?: number;
   /** `SCORER_VERSION` from lib/scoring/score.ts at scoring time; rescore re-scores older breakdowns. */
