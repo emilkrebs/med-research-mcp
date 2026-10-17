@@ -28,6 +28,8 @@ export interface CliOptions {
   temperature: number;
   maxSteps: number;
   concurrency: number;
+  /** Only print one result line per job (no step/tool events or heartbeats). */
+  quiet: boolean;
   /** Stop starting new runs once this many tokens have been spent (undefined = no limit). */
   tokenBudget?: number;
   /** Soft per-run cap: past it, the model must answer without more tool calls. */
@@ -46,6 +48,7 @@ const OPTION_SPEC = {
   "max-steps": { type: "string" },
   concurrency: { type: "string" },
   "token-budget": { type: "string" },
+  quiet: { type: "boolean" },
   "run-token-cap": { type: "string" },
   out: { type: "string" },
   resume: { type: "string" },
@@ -152,6 +155,7 @@ export function parseCli(argv: string[]): CliOptions {
     temperature: parseTemperature(values.temperature, DEFAULTS.temperature),
     maxSteps: parsePositiveInt("max-steps", values["max-steps"], DEFAULTS.maxSteps),
     concurrency: parsePositiveInt("concurrency", values.concurrency, 1),
+    quiet: Boolean(values.quiet),
     ...(values["token-budget"] !== undefined ? { tokenBudget: parsePositiveInt("token-budget", values["token-budget"], 0) } : {}),
     ...(values["run-token-cap"] !== undefined ? { runTokenCap: parsePositiveInt("run-token-cap", values["run-token-cap"], 0) } : {}),
     ...(values.out !== undefined ? { out: values.out } : {}),
@@ -182,6 +186,7 @@ Pass 1 - Run + score:
                       and listed; a run already in flight may overshoot by its own cost.
   --run-token-cap <n> soft per-run cap: once a run has used n tokens its next step is
                       text-only, so it must answer instead of searching further
+  --quiet             one line per finished run; no live step/tool progress or heartbeats
   --out <dir>         output root (default benchmark/results)
   --resume <dir>      reuse raw records from an existing results dir and only run the rest.
                       A record is reused only if its model id, settings (temperature,

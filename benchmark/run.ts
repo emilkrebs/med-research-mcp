@@ -30,9 +30,11 @@ import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { NORMALIZATION, WEIGHTS, missingKeyFor, type ModelSpec } from "./lib/config.js";
+import { DEFAULTS, NORMALIZATION, WEIGHTS, missingKeyFor, type ModelSpec } from "./lib/config.js";
 import { QUERIES, queryById } from "./lib/queries.js";
 import { runOne } from "./lib/agent.js";
+import { ProgressReporter } from "./lib/progress.js";
+import { colorEnabled, palette, type Palette } from "./lib/color.js";
 import { CliError, helpText, parseCli, type CliOptions } from "./lib/cli.js";
 import {
   buildManifest,
@@ -103,8 +105,12 @@ export function statusTally(rows: ScoreRow[]): Record<RunStatus, number> {
   return t;
 }
 
-const formatTally = (t: Record<RunStatus, number>): string =>
-  `ok ${t.ok} | provider-error ${t["provider-error"]} | truncated ${t.truncated} | scoring-error ${t["scoring-error"]}`;
+/** "ok 3 | provider-error 1 | …" — ok in green, any non-zero failure count in red. */
+const formatTally = (t: Record<RunStatus, number>, c: Palette = palette(false)): string =>
+  [
+    c.green(`ok ${t.ok}`),
+    ...(["provider-error", "truncated", "scoring-error"] as const).map((k) => (t[k] > 0 ? c.red(`${k} ${t[k]}`) : `${k} ${t[k]}`)),
+  ].join(" | ");
 
 /** Preflight: keys present for the work we're about to do. Returns fatal problems. */
 function preflight(models: ModelSpec[], conditions: ConditionId[]): string[] {
@@ -297,8 +303,21 @@ async function loadResumePool(resumeDir: string): Promise<ResumePool> {
   return { contents };
 }
 
+/** Why a run did not end `ok`, in words a person can act on. */
+function failureReason(record: RunRecord, breakdown: ScoreBreakdown | undefined): string {
+  if (record.error) return record.error;
+  if (breakdown?.scoringError) return breakdown.scoringError;
+  if (record.contextTruncated) {
+    return `provider truncated the context (input tokens per step: ${record.stepInputTokens?.join(" → ")}) — raise the model's context window`;
+  }
+  if (record.finishReason === "tool-calls") return "still calling tools when the loop ended (no answer)";
+  if (record.finishReason === "length") return "cut off by the output length limit";
+  return "no final answer";
+}
+
 async function runBenchmark(opts: CliOptions, argv: string[]): Promise<void> {
   const { publish, runs, models, conditions, queries, temperature, maxSteps, concurrency } = opts;
+  const c = palette(colorEnabled());
   // Anchor the default to the package dir (not cwd) so `npx tsx run.ts` lands in
   // `benchmark/results` from anywhere. An explicit `--out` is resolved relative to cwd.
   const outRoot = opts.out ?? join(import.meta.dirname, "results");
@@ -315,17 +334,17 @@ async function runBenchmark(opts: CliOptions, argv: string[]): Promise<void> {
   );
   console.log(`Conditions: ${conditions.join(", ")}  |  Models: ${models.map((m) => m.label).join(", ")}`);
   if (unverified.length > 0)
-    console.warn(`⚠️  ${unverified.length} selected queries have UNVERIFIED answer keys: ${unverified.join(", ")}`);
+    console.warn(c.yellow(`⚠️  ${unverified.length} selected queries have UNVERIFIED answer keys: ${unverified.join(", ")}`));
   if (publish && unverified.length > 0)
     console.warn("⚠️  --publish with unverified keys: results are provisional. Review the keys before quoting numbers.");
   if (unpinned.length > 0) {
-    console.warn(`⚠️  UNPINNED model id(s) (moving aliases, results may drift): ${unpinned.join(", ")}`);
+    console.warn(c.yellow(`⚠️  UNPINNED model id(s) (moving aliases, results may drift): ${unpinned.join(", ")}`));
     if (publish) console.warn("⚠️⚠️  --publish with UNPINNED models: these results are NOT reproducible. Pin the model ids in models.data.ts first.");
   }
 
   const problems = preflight(models, conditions);
   if (problems.length > 0) {
-    console.error(`\nPreflight problems:\n  - ${problems.join("\n  - ")}`);
+    console.error(c.red(`\nPreflight problems:\n  - ${problems.join("\n  - ")}`));
     if (!opts.dryRun) {
       console.error("\nFix the above or run with --dry-run to plan without API calls.");
       process.exitCode = 1;
@@ -382,29 +401,47 @@ async function runBenchmark(opts: CliOptions, argv: string[]): Promise<void> {
 
   const verifier = newVerifier();
   const entries: RawRowWithBreakdown[] = [];
-  let done = 0;
   let tokensSpent = 0;
   const skippedForBudget: string[] = [];
 
-  await mapPool(jobs, concurrency, async (job) => {
+  const limits = [
+    `timeout ${Math.round(DEFAULTS.timeoutMs / 1000)}s/run`,
+    `max ${maxSteps} steps`,
+    ...(opts.runTokenCap !== undefined ? [`answer forced after ${opts.runTokenCap} tok/run`] : []),
+    ...(opts.tokenBudget !== undefined ? [`stop at ${opts.tokenBudget} tok total`] : []),
+  ];
+  console.log(`\n${c.dim("Writing to")} ${c.bold(outDir)}`);
+  console.log(`${c.dim("Limits:")} ${limits.join(c.dim(" · "))}${concurrency > 1 ? ` · ${concurrency} runs in parallel` : ""}\n`);
+
+  const progress = new ProgressReporter({
+    total: jobs.length,
+    concurrency,
+    quiet: opts.quiet,
+    color: c.enabled,
+    timeoutMs: DEFAULTS.timeoutMs,
+    ...(opts.tokenBudget !== undefined ? { tokenBudget: opts.tokenBudget } : {}),
+  });
+
+  await mapPool(jobs, concurrency, async (job, i) => {
     const filename = rawFilename(job);
     const stored = reuse.get(filename);
+    const jp = progress.job({ index: i + 1, queryId: job.query.id, condition: job.condition, model: job.model.label, run: job.run });
     let content: Record<string, unknown>;
     if (stored) {
       content = stored;
-      console.log(`  ↩  Reusing existing: ${filename}`);
     } else {
       if (opts.tokenBudget !== undefined && tokensSpent >= opts.tokenBudget) {
         skippedForBudget.push(filename.replace(/\.json$/, ""));
-        done++;
-        console.log(`[${done}/${jobs.length}] ${job.query.id} ${job.condition} ${job.model.label} r${job.run} — SKIPPED: token budget (${opts.tokenBudget}) spent`);
+        jp.skipped(`token budget (${opts.tokenBudget}) spent`);
         return;
       }
+      jp.start();
       content = {
         ...(await runOne(job.query, job.condition, job.model, job.run, {
           temperature,
           maxSteps,
           ...(opts.runTokenCap !== undefined ? { tokenCap: opts.runTokenCap } : {}),
+          onEvent: (e) => jp.event(e),
         })),
       };
       tokensSpent += (content as unknown as RunRecord).usage.totalTokens;
@@ -413,28 +450,21 @@ async function runBenchmark(opts: CliOptions, argv: string[]): Promise<void> {
 
     let breakdown = content._scoring as ScoreBreakdown | undefined;
     if (rescoreReason(breakdown, job.query) !== undefined) {
+      if (!record.error && String(record.text ?? "").trim() !== "") jp.scoring();
       breakdown = (await scoreRun(record, job.query, verifier)).breakdown;
     }
     const row = rowFromBreakdown(record, breakdown!);
 
     await writeFile(join(rawDir, filename), JSON.stringify({ ...content, _scoring: breakdown }, null, 2));
     entries.push({ filename, row, breakdown: breakdown!, record: content });
-    done++;
 
-    const detail =
-      row.status === "ok"
-        ? `composite ${row.composite.toFixed(2)} | acc ${row.accuracy.toFixed(1)} ev ${row.evidence_quality.toFixed(1)} bs ${row.bullshit_score.toFixed(2)}`
-        : `${row.status.toUpperCase()}: ${
-            record.error ??
-            breakdown?.scoringError ??
-            (record.contextTruncated
-              ? `provider truncated the context (input tokens per step: ${record.stepInputTokens?.join(" → ")}) — raise the model's context window`
-              : "no final answer")
-          }`;
-    console.log(`[${done}/${jobs.length}] ${job.query.id} ${job.condition} ${job.model.label} r${job.run} — ${detail}`);
+    jp.finished(row, record, {
+      reused: Boolean(stored),
+      ...(row.status === "ok" ? {} : { reason: failureReason(record, breakdown) }),
+    });
   });
   if (skippedForBudget.length > 0) {
-    console.warn(`\n⚠️  ${skippedForBudget.length} run(s) skipped because the token budget was spent (${tokensSpent} tokens used): ${skippedForBudget.join(", ")}`);
+    console.warn(c.yellow(`\n⚠️  ${skippedForBudget.length} run(s) skipped because the token budget was spent (${tokensSpent} tokens used): ${skippedForBudget.join(", ")}`));
   }
 
   const overridesPath = await seedOverrides(outDir);
@@ -445,11 +475,11 @@ async function runBenchmark(opts: CliOptions, argv: string[]): Promise<void> {
   });
 
   const tally = statusTally(rows);
-  console.log(`\n✅ Done. Results in ${outDir}`);
-  console.log(`   Status: ${formatTally(tally)}`);
+  console.log(`\n${c.green("✅ Done.")} Results in ${c.bold(outDir)}`);
+  console.log(`   Status: ${formatTally(tally, c)}`);
   console.log(`   To correct any scores: edit ${overridesPath}, then --rescore ${outDir}`);
   if (tally.ok === 0) {
-    console.error("❌ No job ended ok.");
+    console.error(c.red("❌ No job ended ok."));
     process.exitCode = 1;
   }
 }

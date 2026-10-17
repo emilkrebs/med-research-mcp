@@ -18,6 +18,14 @@ export const MODELS: ModelSpec[] = [
   // Both use the DashScope OpenAI-compatible API; the key is separate from the
   // generic OPENAI_* vars so it can't collide with another OpenAI-compatible provider.
   {
+    label: "deepseek-v4.1-flash",
+    provider: "openai",
+    modelId: "deepseek-v4.1-flash",
+    apiKeyEnv: "DASHSCOPE_API_KEY",
+    baseUrlEnv: "DASHSCOPE_BASE_URL",
+    legacyFunctions: true,
+  },
+  {
     label: "qwen3.8-flash",
     provider: "openai",
     modelId: "qwen3.8-flash",

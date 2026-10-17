@@ -77,6 +77,38 @@ export function detectContextTruncation(stepInputTokens: (number | undefined)[])
   return false;
 }
 
+/**
+ * Live progress events from one run, for the runner's progress output. They are
+ * purely observational: nothing in the RunRecord depends on them.
+ *  - `step-start`: a model call is about to be made (`forced` = tools removed,
+ *    the model must answer; `reason` says why).
+ *  - `tool-start` / `tool-end`: one tool execution (the model asked for it).
+ *  - `step-end`: the model call and its tool executions finished.
+ */
+export type RunEvent =
+  | { type: "step-start"; step: number; forced?: "step limit" | "token cap"; tokensSoFar: number }
+  | { type: "tool-start"; step: number; toolName: string; input: unknown }
+  | { type: "tool-end"; step: number; toolName: string; durationMs: number; outputChars: number; error?: string }
+  | {
+      type: "step-end";
+      step: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      finishReason?: string;
+      toolCalls: number;
+      textChars: number;
+    };
+
+/** Character length of a tool output as the model sees it (strings as-is, objects serialized). */
+function outputLength(out: unknown): number {
+  if (typeof out === "string") return out.length;
+  try {
+    return JSON.stringify(out)?.length ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 /** What the `execute` wrapper observed for one tool call, keyed by `toolCallId`. */
 interface ToolTiming {
   durationMs: number;
@@ -85,11 +117,16 @@ interface ToolTiming {
 }
 
 /**
- * Wrap every tool's `execute` to time it. Done generically on the ToolSet so it
- * works for MCP-proxied and local tools alike. Streaming (async-iterable)
- * executes are passed through untimed.
+ * Wrap every tool's `execute` to time it (and report it live via `emit`). Done
+ * generically on the ToolSet so it works for MCP-proxied and local tools alike.
+ * Streaming (async-iterable) executes are passed through untimed.
  */
-function timeTools(tools: ToolSet, timings: Map<string, ToolTiming>): ToolSet {
+function timeTools(
+  tools: ToolSet,
+  timings: Map<string, ToolTiming>,
+  emit: (e: RunEvent) => void = () => {},
+  currentStep: () => number = () => 0,
+): ToolSet {
   const wrapped: ToolSet = {};
   for (const [name, t] of Object.entries(tools)) {
     const orig = (t as { execute?: (input: unknown, options: { toolCallId: string }) => unknown }).execute;
@@ -101,15 +138,19 @@ function timeTools(tools: ToolSet, timings: Map<string, ToolTiming>): ToolSet {
       ...t,
       execute: async (input: unknown, options: { toolCallId: string }) => {
         const t0 = Date.now();
+        const step = currentStep();
+        emit({ type: "tool-start", step, toolName: name, input });
         try {
           const out = await orig.call(t, input, options);
-          timings.set(options.toolCallId, { durationMs: Date.now() - t0 });
+          const durationMs = Date.now() - t0;
+          timings.set(options.toolCallId, { durationMs });
+          emit({ type: "tool-end", step, toolName: name, durationMs, outputChars: outputLength(out) });
           return out;
         } catch (err) {
-          timings.set(options.toolCallId, {
-            durationMs: Date.now() - t0,
-            error: err instanceof Error ? err.message : String(err),
-          });
+          const durationMs = Date.now() - t0;
+          const error = err instanceof Error ? err.message : String(err);
+          timings.set(options.toolCallId, { durationMs, error });
+          emit({ type: "tool-end", step, toolName: name, durationMs, outputChars: 0, error });
           throw err;
         }
       },
@@ -162,6 +203,11 @@ export interface RunOptions {
    * must answer. Soft because the step that crosses the line is already paid for.
    */
   tokenCap?: number;
+  /**
+   * Live progress callback (step starts/ends, tool calls). Must not throw; any
+   * exception it raises is swallowed so progress output can never break a run.
+   */
+  onEvent?: (event: RunEvent) => void;
   /** Test injection: use this model instead of resolving `model` via providers. */
   languageModel?: LanguageModel;
   /** Test injection: use these tools instead of the condition's toolset. */
@@ -206,8 +252,19 @@ export async function runOne(
     const handle: ToolHandle = opts.tools ? { tools: opts.tools, close: noClose } : await toolsFor(condition);
     close = handle.close;
     const timings = new Map<string, ToolTiming>();
-    const tools = handle.tools ? timeTools(handle.tools, timings) : undefined;
+    const emit = (e: RunEvent): void => {
+      try {
+        opts.onEvent?.(e);
+      } catch {
+        /* progress output must never break a run */
+      }
+    };
+    let currentStep = 0;
+    const tools = handle.tools ? timeTools(handle.tools, timings, emit, () => currentStep) : undefined;
 
+    // First step with the tools removed. Dropping the tool definitions shrinks the prompt, so
+    // that step's input tokens legitimately fall; it must not be read as context truncation.
+    let forcedAt: number | undefined;
     const result = (await generateText({
       model: llm,
       system: SYSTEM_PROMPT,
@@ -215,21 +272,42 @@ export async function runOne(
       temperature,
       maxRetries,
       abortSignal,
-      ...(tools
-        ? {
-            tools,
-            stopWhen: stepCountIs(maxSteps),
-            // `stepNumber` is 0-based, so the last allowed step is maxSteps - 1.
-            // Forbid tool calls there (or once the token cap is spent) so the model
-            // must write its answer instead of leaving `text` empty. Some providers
-            // ignore `toolChoice: "none"`, so the tools are also taken off the table.
-            prepareStep: ({ stepNumber, steps }: { stepNumber: number; steps: Array<{ usage?: { totalTokens?: number } }> }) => {
-              const spent = steps.reduce((sum, st) => sum + (st.usage?.totalTokens ?? 0), 0);
-              const mustAnswer = stepNumber >= maxSteps - 1 || (opts.tokenCap !== undefined && spent >= opts.tokenCap);
-              return mustAnswer ? { toolChoice: "none" as const, activeTools: [] } : undefined;
-            },
-          }
-        : {}),
+      ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
+      // Runs for every step, with or without tools. `stepNumber` is 0-based, so the
+      // last allowed step is maxSteps - 1. With tools, forbid tool calls there (or
+      // once the token cap is spent) so the model must write its answer instead of
+      // leaving `text` empty. Some providers ignore `toolChoice: "none"`, so the
+      // tools are also taken off the table.
+      prepareStep: ({ stepNumber, steps }: { stepNumber: number; steps: Array<{ usage?: { totalTokens?: number } }> }) => {
+        currentStep = stepNumber;
+        const spent = steps.reduce((sum, st) => sum + (st.usage?.totalTokens ?? 0), 0);
+        const forced: "step limit" | "token cap" | undefined = !tools
+          ? undefined
+          : stepNumber >= maxSteps - 1
+            ? "step limit"
+            : opts.tokenCap !== undefined && spent >= opts.tokenCap
+              ? "token cap"
+              : undefined;
+        if (forced && forcedAt === undefined) forcedAt = stepNumber;
+        emit({ type: "step-start", step: stepNumber, ...(forced ? { forced } : {}), tokensSoFar: spent });
+        return forced ? { toolChoice: "none" as const, activeTools: [] } : undefined;
+      },
+      onStepEnd: (step: {
+        usage?: { inputTokens?: number; outputTokens?: number };
+        finishReason?: string;
+        toolCalls?: unknown[];
+        text?: string;
+      }) => {
+        emit({
+          type: "step-end",
+          step: currentStep,
+          ...(typeof step.usage?.inputTokens === "number" ? { inputTokens: step.usage.inputTokens } : {}),
+          ...(typeof step.usage?.outputTokens === "number" ? { outputTokens: step.usage.outputTokens } : {}),
+          ...(step.finishReason !== undefined ? { finishReason: String(step.finishReason) } : {}),
+          toolCalls: step.toolCalls?.length ?? 0,
+          textChars: step.text?.length ?? 0,
+        });
+      },
     })) as unknown as Record<string, unknown>;
 
     const toolCalls = extractToolCalls(result, timings);
@@ -251,7 +329,7 @@ export async function runOne(
       stepCount: steps.length,
       // Unreported steps are stored as 0 so the array stays index-aligned with steps.
       ...(stepTokens.length > 0 ? { stepInputTokens: stepTokens.map((t) => t ?? 0) } : {}),
-      ...(detectContextTruncation(stepTokens) ? { contextTruncated: true } : {}),
+      ...(detectContextTruncation(forcedAt === undefined ? stepTokens : stepTokens.slice(0, forcedAt)) ? { contextTruncated: true } : {}),
       finishedAt: new Date().toISOString(),
     };
   } catch (err) {

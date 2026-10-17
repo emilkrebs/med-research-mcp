@@ -56,6 +56,45 @@ describe("runOne", () => {
     expect(rec.text).toBe("final answer");
   });
 
+  it("does not flag the forced text-only step (smaller prompt: no tool definitions) as context truncation", async () => {
+    const big = { ...usage, inputTokens: { total: 20000, noCache: 20000, cacheRead: 0, cacheWrite: 0 } };
+    const small = { ...usage, inputTokens: { total: 19000, noCache: 19000, cacheRead: 0, cacheWrite: 0 } };
+    const llm = new MockLanguageModelV4({
+      doGenerate: async (options) =>
+        options.tools?.length ? { ...toolCallResult("c"), usage: big } : { ...textResult("final answer"), usage: small },
+    });
+    const rec = await runOne(query, "mcp", spec, 0, { maxSteps: 2, languageModel: llm, tools: stubTools });
+    expect(rec.stepInputTokens).toEqual([20000, 19000]);
+    expect(rec.contextTruncated).toBeUndefined();
+  });
+
+  it("emits live progress events in order (step start, tool start/end, step end)", async () => {
+    let n = 0;
+    const llm = new MockLanguageModelV4({
+      doGenerate: async (options) => (options.tools?.length && n++ === 0 ? toolCallResult("c1") : textResult("done")),
+    });
+    const events: string[] = [];
+    await runOne(query, "mcp", spec, 0, {
+      maxSteps: 4,
+      languageModel: llm,
+      tools: stubTools,
+      onEvent: (e) => events.push(`${e.type}:${e.step}${e.type === "tool-start" || e.type === "tool-end" ? `:${e.toolName}` : ""}`),
+    });
+    expect(events).toEqual(["step-start:0", "tool-start:0:lookup", "tool-end:0:lookup", "step-end:0", "step-start:1", "step-end:1"]);
+  });
+
+  it("a throwing progress callback never breaks the run", async () => {
+    const llm = new MockLanguageModelV4({ doGenerate: async () => textResult("fine") });
+    const rec = await runOne(query, "closed-book", spec, 0, {
+      languageModel: llm,
+      onEvent: () => {
+        throw new Error("boom");
+      },
+    });
+    expect(rec.error).toBeUndefined();
+    expect(rec.text).toBe("fine");
+  });
+
   it("forces an answer once the soft token cap is spent", async () => {
     // Each step reports 15 tokens; a cap of 20 is crossed after two steps.
     const llm = new MockLanguageModelV4({
