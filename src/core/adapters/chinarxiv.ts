@@ -113,18 +113,21 @@ export class ChinaRXivAdapter extends RestAdapter {
         } catch {
           article = undefined;
         }
-        if (article) {
-          if (this.full.size >= FULL_CAP) this.full.clear();
-          cache.setSummary(key, article);
-        } else {
-          // Detail endpoint unavailable: fall back to whatever preview search left behind.
-          article = (await this.fetch([id], cache))[0];
-        }
+        if (article) cache.setSummary(key, article);
       }
       if (article) {
-        this.full.set(id, article);
+        if (!this.full.has(id)) {
+          if (this.full.size >= FULL_CAP) this.full.clear();
+          this.full.set(id, article);
+        }
         out.push(article);
+        continue;
       }
+      // Detail endpoint unavailable: serve the preview search left behind, without
+      // re-requesting the detail endpoint or memoizing the preview as complete, so
+      // the next explicit fetch tries the detail endpoint again.
+      const preview = this.cached(id, cache);
+      if (preview) out.push(preview);
     }
     return out;
   }

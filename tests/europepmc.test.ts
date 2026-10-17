@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { EuropePmcAdapter, exactIdQuery, parseEuropePmc, toEpmcId } from "../src/core/adapters/europepmc";
 import type { AdapterHttp } from "../src/core/adapters/http";
 import { LRUBackend } from "../src/core/cache";
+import { fetchLiterature } from "../src/core/literature";
 
 const RESPONSE = {
   hitCount: 2,
@@ -130,5 +131,21 @@ describe("Europe PMC ids", () => {
     expect(exactIdQuery("PPR12345")).toBe("EXT_ID:PPR12345 AND SRC:PPR");
     expect(exactIdQuery("PMC1234567")).toBe("PMCID:PMC1234567");
     expect(exactIdQuery("33000001")).toBe("EXT_ID:33000001 AND SRC:MED");
+  });
+
+  it("accepts any case and looks non-numeric ids from other sources up without a SRC clause", () => {
+    expect(exactIdQuery("cba:521529")).toBe("EXT_ID:521529 AND SRC:CBA");
+    expect(exactIdQuery("ppr12345")).toBe("EXT_ID:PPR12345 AND SRC:PPR");
+    expect(exactIdQuery("IND44331483")).toBe('EXT_ID:"IND44331483"');
+    expect(exactIdQuery("NBK623750")).toBe('EXT_ID:"NBK623750"');
+    expect(exactIdQuery("CN101548780")).toBe('EXT_ID:"CN101548780"');
+  });
+
+  it("fetchLiterature() returns a lower-case id's record and does not report it missing", async () => {
+    const ppr = { hitCount: 1, resultList: { result: [{ id: "PPR12345", source: "PPR", title: "A preprint", pubYear: "2025" }] } };
+    const { http } = recordingHttp(ppr);
+    const out = await fetchLiterature({ ids: ["ppr12345"], database: "europepmc" }, new LRUBackend(), new EuropePmcAdapter(http));
+    expect(out.articles.map((a) => a.pmid)).toEqual(["PPR12345"]);
+    expect(out.missing).toEqual([]);
   });
 });

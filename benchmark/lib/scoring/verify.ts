@@ -89,9 +89,13 @@ export interface ExtractedCitations {
   other: OtherCitation[];
 }
 
-/** Real PMIDs have 1–9 digits; lists after the first anchored id need ≥6 to avoid years etc. */
+/**
+ * Real PMIDs have 1–9 digits; lists after the first anchored id need ≥6 to avoid years etc.
+ * The first id may be short, but not a 19xx/20xx year or the start of a decimal or DOI
+ * ("PMID: 10.1001/jama…" must not read as PMID 10).
+ */
 const PMID_ANCHOR = /(?:pmids?|pubmed\s*(?:ids?|identifiers?|uids?))[)\]]?\s*[:#=]?\s*/gi;
-const PMID_FIRST = /\(?\s*(\d{1,9})(?!\d)\)?\s*(?:[,;&/]|and)?\s*/y;
+const PMID_FIRST = /\(?\s*(?!(?:19|20)\d\d(?!\d))(\d{1,9})(?!\.?\d)\)?\s*(?:[,;&/]|and)?\s*/y;
 const PMID_NEXT = /\(?\s*(\d{6,9})(?!\d)\)?\s*(?:[,;&/]|and)?\s*/y;
 const PMID_URL = /(?:pubmed\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov\/pubmed)\/(\d{1,9})(?!\d)/gi;
 

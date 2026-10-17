@@ -106,5 +106,33 @@ describe("ChinaRXivAdapter", () => {
     expect((await adapter.fetchFull(ids, cache))[0]?.abstract).toContain("38 studies");
     expect(urls.length).toBe(before);
   });
+
+  it("fetchFull() falls back to the preview once when the detail endpoint fails, then retries it", async () => {
+    const preview = { ...RESPONSE.data[0]!, abstract_en: "Background: a long background that the search endpoint cuts off..." };
+    const full = { ...RESPONSE.data[0]!, abstract_en: "Background: … Results: 38 studies were included." };
+    let detailUp = false;
+    const urls: string[] = [];
+    const http: AdapterHttp = {
+      json: async <T>(url: string): Promise<T> => {
+        urls.push(url);
+        if (url.includes("/papers?")) return { total: 1, data: [preview] } as T;
+        if (!detailUp) throw new Error("HTTP 503");
+        return full as T;
+      },
+      text: async () => "",
+    };
+    const adapter = new ChinaRXivAdapter(http);
+    const cache = new LRUBackend();
+    const { ids } = await adapter.search({ query: "tcm" });
+
+    let before = urls.length;
+    expect((await adapter.fetchFull(ids, cache))[0]?.abstract).toContain("cuts off");
+    expect(urls.length - before).toBe(1); // one failed detail request, no repeat
+
+    detailUp = true;
+    before = urls.length;
+    expect((await adapter.fetchFull(ids, cache))[0]?.abstract).toContain("38 studies");
+    expect(urls.length - before).toBe(1);
+  });
 });
 

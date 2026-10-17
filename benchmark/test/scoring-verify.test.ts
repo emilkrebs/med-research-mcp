@@ -64,6 +64,15 @@ describe("extractPmids", () => {
     expect(extractPmids("PMID 12345678, 2019 was a good year")).toEqual(["12345678"]);
     expect(extractPmids("PMID 1234567890")).toEqual([]);
   });
+
+  it("does not read a DOI, decimal or year after the anchor as a short PMID", () => {
+    expect(extractPmids("See PMID: 10.1001/jama.2020.1234 for details.")).toEqual([]);
+    expect(extractPmids("PMID 12.5")).toEqual([]);
+    expect(extractPmids("PMIDs 2019 and 2021 trials")).toEqual([]);
+    // Still fine: a short PMID ending a sentence, and an 8-digit PMID starting with 19/20.
+    expect(extractPmids("Classic paper (PMID 4567).")).toEqual(["4567"]);
+    expect(extractPmids("PMID: 19876543.")).toEqual(["19876543"]);
+  });
 });
 
 describe("extractCitations", () => {

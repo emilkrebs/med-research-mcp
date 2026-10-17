@@ -37,9 +37,10 @@ import { compositeForCategory } from "./composite.js";
  * `values` matcher and PMID-only extraction; v2 = ANSWER-line parser, DOI/PMCID
  * resolution, prompt-echo exclusion, study-specific rejection patterns; v3 =
  * passive-voice rejections, markdown-tolerant PMID anchors, `contextTruncated` runs score as `truncated`;
- * v5 = attribution audit, Europe PMC / ChinaXiv citations looked up and graded).
+ * v5 = attribution audit, Europe PMC / ChinaXiv citations looked up and graded;
+ * v6 = a DOI, decimal or year after a PMID anchor is no longer read as a short PMID).
  */
-export const SCORER_VERSION = 5;
+export const SCORER_VERSION = 6;
 
 export interface ScoreResult {
   row: ScoreRow;

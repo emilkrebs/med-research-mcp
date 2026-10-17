@@ -12,7 +12,8 @@
  * Ids are only unique within a source: non-PubMed sources such as CBA (Chinese
  * Biological Abstracts) reuse plain numbers that collide with PMIDs, so those
  * records are keyed `SRC:id` ("CBA:521529"). PubMed records keep the bare PMID;
- * PPR/PMC ids are already prefixed.
+ * PPR/PMC ids are already prefixed, and other non-numeric ids (AGR "IND…",
+ * NBK…, patents) are unique across sources, so they stay as-is.
  */
 
 import { defaultHttp, type AdapterHttp } from "./http.js";
@@ -47,13 +48,15 @@ export function toEpmcId(source: string, id: string): string {
   return source !== "MED" && /^\d+$/.test(id) ? `${source}:${id}` : id;
 }
 
-/** Europe PMC query matching exactly the record behind an id produced by `toEpmcId`. */
+/** Europe PMC query matching exactly the record behind an id produced by `toEpmcId` (any case). */
 export function exactIdQuery(id: string): string {
-  const prefixed = /^([A-Z]{3}):(\d+)$/.exec(id);
-  if (prefixed) return `EXT_ID:${prefixed[2]} AND SRC:${prefixed[1]}`;
+  const prefixed = /^([A-Z]{3}):(\d+)$/i.exec(id);
+  if (prefixed) return `EXT_ID:${prefixed[2]} AND SRC:${prefixed[1]!.toUpperCase()}`;
   if (/^PPR\d+$/i.test(id)) return `EXT_ID:${id.toUpperCase()} AND SRC:PPR`;
   if (/^PMC\d+$/i.test(id)) return `PMCID:${id.toUpperCase()}`;
-  return `EXT_ID:${id} AND SRC:MED`;
+  if (/^\d+$/.test(id)) return `EXT_ID:${id} AND SRC:MED`;
+  // Non-numeric ids from other sources can't collide with a PMID, so no SRC clause.
+  return `EXT_ID:"${id.replace(/"/g, "")}"`;
 }
 
 function toArticle(r: EpmcResult): Article | null {
@@ -136,6 +139,6 @@ export class EuropePmcAdapter extends RestAdapter {
     const article = parseEuropePmc(data).articles[0];
     if (!article) return null;
     // A PMCID query returns the record under its PubMed id; anything else must match.
-    return article.pmid === id || /^PMC\d+$/i.test(id) ? article : null;
+    return article.pmid.toUpperCase() === id.toUpperCase() || /^PMC\d+$/i.test(id) ? article : null;
   }
 }

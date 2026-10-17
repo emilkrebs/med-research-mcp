@@ -20,7 +20,8 @@
 import "../lib/loadenv.js";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fetchLiterature, keywordGrade, searchLiterature, LRUBackend } from "../lib/core.js";
+import { searchLiterature, NcbiClient, PubMedAdapter } from "../lib/core.js";
+import { defaultFetch } from "../lib/scoring/verify.js";
 import { QUERIES } from "../lib/queries.js";
 import type { BenchmarkQuery } from "../lib/types.js";
 
@@ -149,33 +150,25 @@ export function exitCodeFor(results: KeyResult[]): number {
   return results.some((r) => r.status === "MISMATCH" || r.status === "ERROR") ? 1 : 0;
 }
 
-/** Control PMID: if it fails to resolve, PubMed is effectively down and "missing" can't be trusted. */
-const CONTROL_PMID = "36615805";
-
 /** Live lookups backed by the core library. */
 export function liveLookups(): Lookups {
-  const cache = new LRUBackend();
+  // One NCBI client so lookups and probe searches share its rate limiter.
+  const ncbi = new NcbiClient();
+  const pubmed = [new PubMedAdapter(ncbi)];
   return {
     async fetchPmids(pmids) {
-      const ids = pmids.includes(CONTROL_PMID) ? pmids : [...pmids, CONTROL_PMID];
-      const { articles, missing, warnings } = await fetchLiterature({ ids, database: "pubmed" }, cache);
-      if (missing.includes(CONTROL_PMID) || !articles.some((a) => a.pmid === CONTROL_PMID)) {
-        throw new Error("PubMed returned no data for the control PMID (transient failure?)");
-      }
-      // Grading reads the abstract: a silently failed efetch would show up as a study-type MISMATCH.
-      if (warnings?.some((w) => /abstracts could not be fetched/i.test(w)) || !articles.find((a) => a.pmid === CONTROL_PMID)?.abstract) {
-        throw new Error("PubMed returned no abstracts (transient failure?)");
-      }
+      // The scorer's guarded fetch: it adds a control PMID and bypasses caches, so a
+      // silent NCBI failure (or efetch losing the abstracts) throws instead of reading
+      // as "missing" or as a study-type MISMATCH.
+      const { found } = await defaultFetch(pmids, ncbi);
       const out = new Map<string, PmidInfo>(pmids.map((p) => [p, { exists: false }]));
-      for (const a of articles) {
-        if (!pmids.includes(a.pmid)) continue;
-        const g = keywordGrade(a);
-        out.set(a.pmid, { exists: true, studyType: g.studyType, evidenceScore: g.evidenceScore, title: a.title });
+      for (const f of found) {
+        out.set(f.pmid, { exists: true, studyType: f.studyType, evidenceScore: f.evidenceScore, title: f.title });
       }
       return out;
     },
     async searchPubmed(query) {
-      const { articles } = await searchLiterature({ query, database: "pubmed", maxResults: 5 }, cache);
+      const { articles } = await searchLiterature({ query, database: "pubmed", maxResults: 5 }, undefined, pubmed);
       return articles.map((a) => ({ pmid: a.pmid, title: a.title }));
     },
   };
