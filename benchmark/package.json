@@ -12,21 +12,31 @@
     "smoke": "tsx run.ts --runs 1 --queries factual-01",
     "smoke-baselines": "tsx run.ts --runs 1 --with-baselines --queries factual-01",
     "grade": "tsx grade.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "merge": "tsx merge.ts",
+    "verify-keys": "tsx scripts/verify-keys.ts",
+    "rescore": "tsx run.ts --rescore"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.75",
     "@ai-sdk/deepseek": "^3.0.61",
     "@ai-sdk/openai": "^4.0.87",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@mozilla/readability": "^0.6.0",
     "ai": "^7.0.131",
     "d3": "^7.9.0",
-    "jsdom": "^30.1.2"
+    "jsdom": "^30.1.2",
+    "turndown": "^7.2.4",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/d3": "^7.4.3",
     "@types/jsdom": "^30.0.0",
     "@types/node": "^26.6.4",
+    "@types/turndown": "^5.0.6",
     "tsx": "^4.23.15",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
   }
 }

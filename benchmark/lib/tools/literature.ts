@@ -1,74 +1,75 @@
 /**
- * Condition C tools: the three literature_* tools the MCP server exposes,
- * wired straight to the core library (no stdio). The schemas and semantics
- * mirror `src/mcp/index.ts` so the benchmark measures the real MCP surface.
+ * Condition C tools: the real med-research-mcp server, driven in-process.
  *
- * A single in-memory cache is shared across a run's tool calls, exactly as the
- * MCP server shares one cache for the life of its process.
+ * `mcpTools()` builds a fresh server (`createServer`), links it to an MCP
+ * client over an in-memory transport, and exposes each tool the server lists as
+ * an AI SDK tool. Descriptions and input schemas come straight from the server,
+ * so the benchmark measures the actual MCP surface and cannot drift from it.
+ *
+ * The AI SDK (v7) ships no MCP client and `@ai-sdk/mcp` is not installed, so
+ * this is a small hand-rolled adapter. Results are presented as an MCP host
+ * would hand them to the model: the tool's text content, including for
+ * `isError` results (the server formats those as "Error: ... (CODE)"), so the
+ * model sees the error text rather than the harness throwing.
+ *
+ * Isolation: each call gets its own server, cache and PubMed adapter, so one
+ * run's results are never served from another run's cache. The NcbiClient is
+ * deliberately shared process-wide (`sharedNcbi`): it holds no data, only
+ * NCBI's request-rate limiter, and per-run clients would let `--concurrency`
+ * multiply the request rate past NCBI's ceiling. The core's non-PubMed adapter
+ * registry (`ADAPTERS` in `src/core/adapters/registry.ts`) is process-global
+ * and keeps its own per-instance memo, so those databases are not run-isolated.
  */
 
-import { tool } from "ai";
-import { z } from "zod";
-import {
-  searchLiterature,
-  fetchLiterature,
-  fetchFulltext,
-  NcbiClient,
-  LRUBackend,
-  STUDY_TYPES,
-  type Cache,
-} from "../core.js";
-
-const DATABASES = "pubmed, europepmc, chinaxiv, russiarxiv";
+import { jsonSchema, tool, type ToolSet } from "ai";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { createServer, LRUBackend, NcbiClient } from "../core.js";
 
 /**
- * Build the condition-C toolset over one shared cache + NCBI client.
- * The NcbiClient's rate limiter serializes all E-utilities calls, so parallel
- * tool calls from the agent won't exceed NCBI's request ceiling.
+ * One NcbiClient (= one rate limiter) for every MCP server in the process. The
+ * scorer's Verifier should use it too, so scoring and agent runs share the budget.
  */
-export function literatureTools(cache: Cache = new LRUBackend(), ncbi: NcbiClient = new NcbiClient()) {
+export const sharedNcbi = new NcbiClient();
+
+/** Flatten an MCP tool result's content blocks into the text the model sees. */
+function contentToText(content: unknown): string {
+  if (!Array.isArray(content)) return JSON.stringify(content ?? null);
+  return content
+    .map((block: { type?: string; text?: string }) =>
+      block.type === "text" && typeof block.text === "string" ? block.text : JSON.stringify(block),
+    )
+    .join("\n");
+}
+
+/**
+ * Start a fresh in-process MCP server + client and return its tools.
+ * Call `close()` when the run finishes.
+ */
+export async function mcpTools(): Promise<{ tools: ToolSet; close: () => Promise<void> }> {
+  const server = createServer({ cache: new LRUBackend(), ncbi: sharedNcbi });
+  const client = new Client({ name: "med-research-benchmark", version: "0.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+  const { tools: listed } = await client.listTools();
+  const tools: ToolSet = {};
+  for (const t of listed) {
+    tools[t.name] = tool({
+      description: t.description ?? "",
+      inputSchema: jsonSchema(t.inputSchema as Parameters<typeof jsonSchema>[0]),
+      execute: async (args: unknown) => {
+        const result = await client.callTool({ name: t.name, arguments: args as Record<string, unknown> });
+        return contentToText(result.content);
+      },
+    });
+  }
+
   return {
-    literature_search: tool({
-      description:
-        "Search one or more scientific databases and return evidence-graded results " +
-        `(databases: ${DATABASES}, or "all"). PubMed results are graded from NLM PublicationType tags; ` +
-        "other databases are graded keyword-only (lower confidence). Results are merged, de-duplicated by DOI, " +
-        "and sorted by evidence score. Always cheap — no LLM calls.",
-      inputSchema: z.object({
-        query: z
-          .string()
-          .describe("Search query. PubMed field tags ([tiab], [mesh], [au]) apply to the pubmed database."),
-        database: z
-          .union([z.string(), z.array(z.string())])
-          .optional()
-          .describe(`Database(s): a single id, an array, or "all". Default "pubmed". Options: ${DATABASES}.`),
-        maxResults: z.number().int().min(1).max(50).optional().describe("Results per database. Default 10, max 50."),
-        minEvidenceScore: z.number().min(0).max(5).optional().describe("Drop results below this evidence score (0-5)."),
-        studyTypes: z.array(z.enum(STUDY_TYPES)).optional().describe("Keep only these study types."),
-      }),
-      execute: async (args) => searchLiterature(args, cache),
-    }),
-
-    literature_fetch: tool({
-      description:
-        "Fetch full metadata and abstracts for one or more ids from a specific database. " +
-        "Returns raw article objects — no grading. Use after literature_search to drill into specific papers.",
-      inputSchema: z.object({
-        ids: z.array(z.string()).min(1).max(50).describe("Database-specific ids (PMIDs for pubmed)."),
-        database: z.string().describe(`Which database the ids belong to: ${DATABASES}.`),
-      }),
-      execute: async (args) => fetchLiterature(args, cache),
-    }),
-
-    literature_fulltext: tool({
-      description:
-        "Attempt to fetch an article's full text as markdown via open access, an institutional proxy, or direct DOI; " +
-        "falls back to abstract-only if paywalled. Use when the abstract isn't enough (verify dosage, sample sizes, methods).",
-      inputSchema: z.object({
-        id: z.string().describe("Article id (PMID, or a database id when a DOI is supplied)."),
-        doi: z.string().optional().describe("DOI — required when the id is not a numeric PMID."),
-      }),
-      execute: async (args) => fetchFulltext({ id: args.id, ...(args.doi ? { doi: args.doi } : {}) }, cache, ncbi),
-    }),
+    tools,
+    close: async () => {
+      await client.close();
+      await server.close();
+    },
   };
 }

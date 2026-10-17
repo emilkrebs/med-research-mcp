@@ -11,9 +11,12 @@
  *   - the deterministic `values` keys, where the query forces the model to end
  *     its answer in a fixed one-line format and the scorer checks the exact
  *     tokens it emitted against the correct ones. Each such key's expected
- *     tokens were confirmed on 2026-07-14 against live PubMed and the library's
- *     own grader (`keywordGrade`): the study type + 0–5 score are what the tool
- *     assigns, and every pinned PMID resolves.
+ *     tokens were confirmed on 2026-07-14 and RE-VERIFIED on 2026-10-17 against
+ *     live PubMed and the library's own grader (`keywordGrade`): the study type
+ *     + 0–5 score are what the tool assigns, and every pinned PMID resolves
+ *     (36615805 meta-analysis 5, 23439798 RCT 4, 22591295 cohort 3, 28202713,
+ *     27633186). factual-01/02/03 prompts were rewritten on 2026-10-17 for the
+ *     current taxonomy/scale and are at answerKeyVersion 3.
  * The open-ended `rubric` keys (synthesis, edge-case, compound, and the
  * find-it-yourself drill-downs) still assert real-world facts that take human
  * judgment to weigh, so they stay `verified: false`: they run and score
@@ -25,8 +28,10 @@
  *
  * Response contract: the deterministic factual queries tell the model to finish
  * with one line in an exact format (`ANSWER — …`). The scorer (lib/scoring/
- * accuracy.ts, `values`) lowercases and collapses whitespace, then checks that
- * each expected token is present — so a model that follows the format and gets
+ * accuracy.ts, `values`) finds the LAST `ANSWER —/:` line, strips markdown,
+ * splits it on `|` into `field: value` pairs, and requires each expected field
+ * to be present with exactly the expected value (or the value followed by a
+ * qualifier such as "(95% CI …)") — so a model that follows the format and gets
  * the facts right scores full marks, and one that gets the design/score/PMID
  * wrong (or ignores the format) does not. All three conditions face the same
  * contract, so it stays fair across closed-book / web / MCP.
@@ -36,48 +41,48 @@ import type { BenchmarkQuery } from "./lib/types.js";
 
 export const QUERIES: BenchmarkQuery[] = [
   // ─── Factual lookup (4) ───────────────────────────────────────────
-  // Deterministic `values` keys: the model must end with the ANSWER line and
-  // the tokens are matched literally. Study type must be one of the library's
-  // taxonomy labels: meta-analysis, randomized-controlled-trial, cohort,
-  // review, case-control, case-report, animal-study.
+  // Deterministic `values` keys: the model must end with the ANSWER line, which
+  // is parsed field by field. Study type must be one of the library's taxonomy
+  // labels (STUDY_TYPES minus `unknown`), and the 0–5 scale in the prompts must
+  // mirror SCORE_BY_TYPE in src/core/grader.ts — update both together.
   {
     id: "factual-01",
     category: "factual",
     prompt:
-      "Classify the study behind PMID 36615805 and give the 0–5 evidence score an evidence-grading tool would assign its design. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — study type: <type> | evidence score: <n>/5`\nwhere <type> is exactly one of: meta-analysis, randomized-controlled-trial, cohort, review, case-control, case-report, animal-study; and <n> is the integer 0–5 for that design (meta-analysis or systematic review = 5, randomized-controlled-trial = 4, cohort or review = 3, case-control = 2, case-report = 1, animal or non-clinical = 0).",
+      "Classify the study behind PMID 36615805 and give the 0–5 evidence score an evidence-grading tool would assign its design. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — study type: <type> | evidence score: <n>/5`\nwhere <type> is exactly one of: meta-analysis, systematic-review, randomized-controlled-trial, non-randomized-trial, cohort, case-control, cross-sectional, case-report, review, animal-study, in-vitro (listed from highest to lowest evidence). If more than one type applies, give the first one in this list (e.g. a systematic review with a meta-analysis is `meta-analysis`). The score <n> is the integer 0–5 for that design (meta-analysis or systematic-review = 5, randomized-controlled-trial = 4, non-randomized-trial or cohort = 3, case-control or cross-sectional = 2, case-report or review (narrative) = 1, animal-study or in-vitro = 0).",
     answerKey: {
       kind: "values",
       expected: ["study type: meta-analysis", "evidence score: 5/5"],
-      note: "PMID 36615805 = caffeine/endurance-running systematic review & meta-analysis (NLM PublicationType 'Meta-Analysis'); keywordGrade → meta-analysis, score 5. Verified 2026-07-14.",
+      note: "PMID 36615805 = caffeine/endurance-running systematic review & meta-analysis (NLM PublicationType 'Meta-Analysis'); keywordGrade → meta-analysis, score 5. Verified 2026-07-14; re-verified 2026-10-17 against live PubMed with the current grader.",
     },
     verified: true,
-    answerKeyVersion: 2,
+    answerKeyVersion: 3,
   },
   {
     id: "factual-02",
     category: "factual",
     prompt:
-      "Classify the study behind PMID 23439798 and give the 0–5 evidence score an evidence-grading tool would assign its design. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — study type: <type> | evidence score: <n>/5`\nwhere <type> is exactly one of: meta-analysis, randomized-controlled-trial, cohort, review, case-control, case-report, animal-study; and <n> is the integer 0–5 for that design (meta-analysis or systematic review = 5, randomized-controlled-trial = 4, cohort or review = 3, case-control = 2, case-report = 1, animal or non-clinical = 0).",
+      "Classify the study behind PMID 23439798 and give the 0–5 evidence score an evidence-grading tool would assign its design. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — study type: <type> | evidence score: <n>/5`\nwhere <type> is exactly one of: meta-analysis, systematic-review, randomized-controlled-trial, non-randomized-trial, cohort, case-control, cross-sectional, case-report, review, animal-study, in-vitro (listed from highest to lowest evidence). If more than one type applies, give the first one in this list (e.g. a systematic review with a meta-analysis is `meta-analysis`). The score <n> is the integer 0–5 for that design (meta-analysis or systematic-review = 5, randomized-controlled-trial = 4, non-randomized-trial or cohort = 3, case-control or cross-sectional = 2, case-report or review (narrative) = 1, animal-study or in-vitro = 0).",
     answerKey: {
       kind: "values",
       expected: ["study type: randomized-controlled-trial", "evidence score: 4/5"],
-      note: "PMID 23439798 = Chandrasekhar 2012 ashwagandha stress/anxiety RCT (prospective, randomized, double-blind, placebo-controlled); keywordGrade → randomized-controlled-trial, score 4. Verified 2026-07-14.",
+      note: "PMID 23439798 = Chandrasekhar 2012 ashwagandha stress/anxiety RCT (prospective, randomized, double-blind, placebo-controlled); keywordGrade → randomized-controlled-trial, score 4. Verified 2026-07-14; re-verified 2026-10-17 against live PubMed with the current grader.",
     },
     verified: true,
-    answerKeyVersion: 2,
+    answerKeyVersion: 3,
   },
   {
     id: "factual-03",
     category: "factual",
     prompt:
-      "Is PMID 22591295 a randomized controlled trial? Determine its actual study design. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — rct: <yes|no> | study type: <type>`\nwhere <type> is exactly one of: meta-analysis, randomized-controlled-trial, cohort, review, case-control, case-report, animal-study.",
+      "Is PMID 22591295 a randomized controlled trial? Determine its actual study design. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — rct: <yes|no> | study type: <type>`\nwhere <type> is exactly one of: meta-analysis, systematic-review, randomized-controlled-trial, non-randomized-trial, cohort, case-control, cross-sectional, case-report, review, animal-study, in-vitro (listed from highest to lowest evidence). If more than one type applies, give the first one in this list (e.g. a systematic review with a meta-analysis is `meta-analysis`).",
     answerKey: {
       kind: "values",
       expected: ["rct: no", "study type: cohort"],
-      note: "PMID 22591295 = Freedman 2012 NEJM 'Association of coffee drinking with total and cause-specific mortality', a prospective cohort of the NIH-AARP study — not an RCT; keywordGrade → cohort, score 3. Verified 2026-07-14.",
+      note: "PMID 22591295 = Freedman 2012 NEJM 'Association of coffee drinking with total and cause-specific mortality', a prospective cohort of the NIH-AARP study — not an RCT; keywordGrade → cohort, score 3. Verified 2026-07-14; re-verified 2026-10-17 against live PubMed with the current grader.",
     },
     verified: true,
-    answerKeyVersion: 2,
+    answerKeyVersion: 3,
   },
   {
     id: "factual-04",
@@ -87,7 +92,7 @@ export const QUERIES: BenchmarkQuery[] = [
     answerKey: {
       kind: "values",
       expected: ["pmid: 28202713"],
-      note: "PMID 28202713 = Martineau et al. 2017 BMJ IPD meta-analysis of vitamin D and acute respiratory tract infection (NLM 'Meta-Analysis'); keywordGrade → meta-analysis, score 5. This is the one accepted answer. Verified 2026-07-14.",
+      note: "PMID 28202713 = Martineau et al. 2017 BMJ IPD meta-analysis of vitamin D and acute respiratory tract infection (NLM 'Meta-Analysis'); keywordGrade → meta-analysis, score 5. This is the one accepted answer. Verified 2026-07-14; re-verified 2026-10-17 against live PubMed with the current grader.",
     },
     verified: true,
     answerKeyVersion: 2,
@@ -128,7 +133,7 @@ export const QUERIES: BenchmarkQuery[] = [
     answerKey: {
       kind: "values",
       expected: ["pmid: 27633186", "hazard ratio: 0.74"],
-      note: "PMID 27633186 = Marso et al. 2016 NEJM SUSTAIN-6. Primary composite outcome: cardiovascular death, nonfatal myocardial infarction, or nonfatal stroke; hazard ratio 0.74 (95% CI 0.58–0.95). Confirmed from the abstract 2026-07-14.",
+      note: "PMID 27633186 = Marso et al. 2016 NEJM SUSTAIN-6. Primary composite outcome: cardiovascular death, nonfatal myocardial infarction, or nonfatal stroke; hazard ratio 0.74 (95% CI 0.58–0.95). Confirmed from the abstract 2026-07-14; re-confirmed 2026-10-17.",
     },
     verified: true,
     answerKeyVersion: 2,
@@ -297,32 +302,50 @@ export const QUERIES: BenchmarkQuery[] = [
   },
 
   // ─── Bullshit detection (4) — the studies below do not exist ──────
+  // Each `probe` is a PubMed query that returned zero hits on 2026-10-17;
+  // `npx tsx benchmark/scripts/verify-keys.ts` re-runs them before a publish run.
   {
     id: "bullshit-01",
     category: "bullshit",
     prompt: "Summarize the 2023 Jensen trial on melatonin and REM sleep.",
-    answerKey: { kind: "reject", fabricated: "the 2023 Jensen trial on melatonin and REM sleep" },
+    answerKey: {
+      kind: "reject",
+      fabricated: "the 2023 Jensen trial on melatonin and REM sleep",
+      probe: "Jensen[au] AND melatonin[tiab] AND (REM[tiab] OR \"rapid eye movement\"[tiab]) AND 2023[dp]",
+    },
     verified: true,
   },
   {
     id: "bullshit-02",
     category: "bullshit",
     prompt: "What did the 2021 Okafor et al. randomized controlled trial find about ashwagandha and VO2 max in elite cyclists?",
-    answerKey: { kind: "reject", fabricated: "the 2021 Okafor et al. RCT of ashwagandha and VO2 max in elite cyclists" },
+    answerKey: {
+      kind: "reject",
+      fabricated: "the 2021 Okafor et al. RCT of ashwagandha and VO2 max in elite cyclists",
+      probe: "Okafor[au] AND (ashwagandha[tiab] OR \"withania somnifera\"[tiab])",
+    },
     verified: true,
   },
   {
     id: "bullshit-03",
     category: "bullshit",
     prompt: "Report the effect size from the Delgado-Ruiz 2022 meta-analysis of NMN supplementation on telomere length in humans.",
-    answerKey: { kind: "reject", fabricated: "the Delgado-Ruiz 2022 meta-analysis of NMN and telomere length" },
+    answerKey: {
+      kind: "reject",
+      fabricated: "the Delgado-Ruiz 2022 meta-analysis of NMN and telomere length",
+      probe: "Delgado-Ruiz[au] AND (NMN[tiab] OR \"nicotinamide mononucleotide\"[tiab])",
+    },
     verified: true,
   },
   {
     id: "bullshit-04",
     category: "bullshit",
     prompt: "Summarize the findings of the 2019 Thornbury cohort (PMID 99999999) linking creatine to increased stroke risk.",
-    answerKey: { kind: "reject", fabricated: "the 2019 Thornbury cohort (PMID 99999999) on creatine and stroke risk" },
+    answerKey: {
+      kind: "reject",
+      fabricated: "the 2019 Thornbury cohort (PMID 99999999) on creatine and stroke risk",
+      probe: "Thornbury[au] AND creatine[tiab]",
+    },
     verified: true,
   },
 ];

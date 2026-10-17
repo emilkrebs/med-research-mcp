@@ -22,7 +22,10 @@ export interface ModelSpec {
    * is required for reproducibility — an unpinned alias silently drifts.
    */
   modelId: string;
-  /** Env var holding the API key. */
+  /**
+   * Env var holding the API key. Optional for `provider: "ollama"` (a local
+   * server needs none); required for every other provider — see `missingKeyFor`.
+   */
   apiKeyEnv: string;
   /** Optional env var holding a custom base URL (proxy, local server, Azure, etc.). */
   baseUrlEnv?: string;
@@ -36,6 +39,17 @@ export interface ModelSpec {
    * results to `role:"function"`.)
    */
   legacyFunctions?: boolean;
+  /**
+   * Included in default runs unless `false`. Disabled models stay in the catalog
+   * (so past results stay reproducible) and are still selectable explicitly with
+   * `--models <label>`.
+   */
+  enabled?: boolean;
+  /**
+   * True when `modelId` is a moving alias (`qwen-max`, `:latest`) rather than a
+   * pinned snapshot. The runner warns about these: results may drift over time.
+   */
+  unpinned?: boolean;
 }
 
 /** Validate the model catalog defined in `benchmark/models.data.ts` (unique labels). */
@@ -49,6 +63,19 @@ function loadModels(): ModelSpec[] {
 }
 
 export const MODELS: ModelSpec[] = loadModels();
+
+/** Models run by default: everything not explicitly `enabled: false`. */
+export const DEFAULT_MODELS: ModelSpec[] = MODELS.filter((m) => m.enabled !== false);
+
+/**
+ * Name of the env var that must be set but isn't, or undefined if the model is
+ * runnable. Ollama (a local server) does not require a key; every other
+ * provider does. Used by the runner's preflight and by `resolveModel`.
+ */
+export function missingKeyFor(spec: ModelSpec): string | undefined {
+  if (spec.provider === "ollama") return undefined;
+  return process.env[spec.apiKeyEnv] ? undefined : spec.apiKeyEnv;
+}
 
 /** The three conditions and the CLI letters that select them. */
 export const CONDITIONS: Record<ConditionLetter, ConditionId> = {
@@ -106,8 +133,10 @@ export const DEFAULTS = {
    */
   maxSteps: 16,
   temperature: 0,
-  /** Retries on a transient provider/network error, with backoff. */
+  /** Per-call retries the AI SDK makes on a transient provider/network error (`maxRetries`). */
   providerRetries: 2,
+  /** Wall-clock cap for one whole agent loop, so a hung provider can't stall the batch. */
+  timeoutMs: Number(process.env.BENCH_TIMEOUT_MS ?? 300_000),
   /** Web-search results returned to the model in condition B. */
   webResults: 6,
 } as const;

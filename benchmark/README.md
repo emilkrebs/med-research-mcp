@@ -8,9 +8,9 @@ performance.
 
 | Condition | Tools | What it measures |
 |---|---|---|
-| **MCP** (default) | `literature_search`, `literature_fetch`, `literature_fulltext` | the MCP, imported directly from `../src/core` (no stdio) |
+| **MCP** (default) | `literature_search`, `literature_fetch`, `literature_fulltext` | the real MCP server (`createServer()` from `../src/mcp/server.ts`), driven in-process over an MCP in-memory transport |
 | **closed-book** | none | the model from training data alone (optional baseline) |
-| **web-search** | `web_search` (Brave) | a standalone web-search baseline (optional baseline) |
+| **web-search** | `web_search` (Brave), `web_fetch` | a standalone web baseline: search plus opening result pages (optional baseline) |
 
 24 queries across 6 categories (factual, drill-down, synthesis, edge-case,
 compound, bullshit) × MCP-only by default × N models × R runs. Every response is
@@ -18,159 +18,323 @@ scored on accuracy, evidence quality, fabrication, speed, and token cost,
 combined into a 0–10 composite. Paired significance tests against the baselines are
 generated only when baselines are included.
 
+**Read [Validity and limitations](#validity-and-limitations) before citing any number.**
+
 ## Setup
 
+The harness imports the MCP from source (`../src/core`, `../src/mcp/server`), so
+**both** installs are required:
+
 ```bash
+npm install            # repo root: the MCP source the harness imports
 cd benchmark
 npm install
 cp .env.example .env   # then fill in keys (or export them in your shell)
 ```
 
 Keys are read from the environment. You only need the providers your selected
-models use. `BRAVE_API_KEY` is required only when running the web-search
-baseline. `NCBI_EMAIL` is strongly recommended so PubMed doesn't throttle. See
-`.env.example`.
+models use (`openai`, `anthropic`, `deepseek`, `ollama`). `BRAVE_API_KEY` is
+required only when running the web-search baseline. `NCBI_EMAIL` is strongly
+recommended so PubMed doesn't throttle (`NCBI_API_KEY` raises the rate limit).
+`BENCH_TIMEOUT_MS` caps one agent loop (default 300000). See `.env.example`.
 
-Which models run is defined in [`lib/config.ts`](lib/config.ts) (`MODELS`). The
-defaults are the spec's DeepSeek examples — **edit them to model ids you can
-actually call, and keep them pinned** (`gpt-4o-2024-08-06`, not `gpt-4o`).
+**Models** live in [`models.data.ts`](models.data.ts) (not `lib/config.ts`).
+Only entries without `enabled: false` run by default; others stay in the
+catalog and are selected with `--models <label>`. **Keep model ids pinned**
+(`gpt-4o-2024-08-06`, not `gpt-4o`); entries marked `unpinned: true` (moving
+aliases such as `:latest`) trigger a warning because results can drift.
+
+**Ollama.** Ollama's default 4096-token context silently truncates
+tool-heavy conversations (the model loses the question or earlier tool
+results without any error). Start it with `OLLAMA_CONTEXT_LENGTH=32768` or
+more, e.g. `OLLAMA_CONTEXT_LENGTH=32768 ollama serve`. The harness also detects
+context truncation (input tokens shrinking between steps of one run) and marks
+that run `truncated`, so it drops out of the means instead of scoring as a
+bad answer.
 
 ## Run
 
 ```bash
-# Default: MCP-only, all models, 3 runs, all 24 queries
+# Default: MCP-only, all enabled models, 3 runs, all 24 queries
 npx tsx benchmark/run.ts
 
-# Smoke test: one run, one model, MCP condition, a couple of queries
-npx tsx benchmark/run.ts --runs 1 --models deepseek-v4-pro --queries factual-01,bullshit-01
+# Smoke test: one run, one model, a couple of queries
+npx tsx benchmark/run.ts --runs 1 --models deepseek-v3.2 --queries factual-01,bullshit-01
 
 # Include the optional baselines (closed-book + web-search)
 npx tsx benchmark/run.ts --with-baselines
 
-# Plan only — validates the matrix and keys, makes no API calls
+# Plan only: validates the matrix and keys, makes no API calls
 npx tsx benchmark/run.ts --dry-run
 
-# Full MCP-only pre-publish run + report
-npx tsx benchmark/run.ts --publish
+# Before a publish run: live check of the answer keys (see below)
+npm --prefix benchmark run verify-keys
 
-# Full comparison run (MCP + both baselines)
+# Canonical publication run (all enabled models, 3 runs)
+npx tsx benchmark/run.ts --publish
 npx tsx benchmark/run.ts --publish --with-baselines
 ```
 
-Run from the repo root (paths in the output are written relative to it). `--help`
-lists every flag. `--conditions` accepts `A|B|C` or the long names; `--queries`
-accepts query id and/or category names.
+Run from the repo root (paths in the output are written relative to it). Flags
+(`--help` lists them all):
+
+| Flag | Meaning |
+|---|---|
+| `--runs <n>` | runs per query per model (default 3) |
+| `--models <list>` | model labels (default: every enabled model) |
+| `--conditions <list>` | `A\|B\|C` or `closed-book\|web-search\|mcp` (default `mcp`) |
+| `--with-baselines` | add closed-book and web-search |
+| `--queries <list>` | query ids and/or category names |
+| `--temperature <t>` | default 0 |
+| `--max-steps <n>` | tool-call rounds per run (default 16) |
+| `--concurrency <n>` | parallel runs (default 1; NCBI rate limits favor 1) |
+| `--out <dir>` | output root (default `benchmark/results`) |
+| `--resume <dir>` | reuse finished records, run only the rest (see Reproducibility) |
+| `--publish` | all enabled models, 3 runs; cannot be combined with `--models`/`--runs`; warns about unpinned models and unverified keys |
+| `--dry-run` | plan and preflight only |
+| `--rescore <dir>` | regenerate reports from `raw/` + overrides |
+| `--overrides <path>` | overrides file for `--rescore` (default `<dir>/overrides.json`) |
+
+npm scripts (in `benchmark/`): `bench`, `smoke`, `smoke-baselines`, `grade`,
+`rescore`, `merge`, `verify-keys`, `typecheck`, `test`.
+
+### What the agent loop does
+
+- One `generateText` loop per (query × condition × model × run), identical
+  system prompt in every condition; only the toolset differs.
+- **MCP condition:** a fresh server, in-memory client pair and cache per run.
+  Tool names, descriptions and schemas come from the server itself, so they
+  cannot drift from the shipped MCP. One process-wide NCBI client (the rate
+  limiter, no data) is shared by all runs and by the scorer so concurrency
+  cannot exceed NCBI's request budget. The core's non-PubMed adapters keep
+  process-global state and are not run-isolated.
+- **Web-search condition:** `web_search` (Brave) and `web_fetch`, which opens a
+  page and returns HTML→markdown or PDF→text using the same extraction code as
+  the MCP's full-text tool (about 20,000 characters, 2 MB cap), so the baseline
+  is not handicapped to snippets.
+- **Limits:** a per-run wall-clock timeout (`BENCH_TIMEOUT_MS`, default 300 s);
+  the AI SDK's per-call retries (2) are the only retries, no whole-run reruns;
+  the final step (`--max-steps`) is forced to answer with tool calls disabled.
+- **Recorded in `raw/`:** full tool outputs, per-tool timings, finish reason,
+  step count, tokens, wall-clock.
 
 ## Output
 
 Each run writes a timestamped tree under `benchmark/results/<timestamp>/`:
 
 ```
-raw/                       # full, auditable per-response JSON (text, tool calls, tokens, timing)
-overrides.json             # human score corrections for THIS run (seeded empty; edit + --rescore)
-scores.csv                 # one row per response — load into R / pandas / Excel
-summary.json               # means, SDs, fabrication rates, paired significance tests
+manifest.json              # provenance: git commit + dirty flag, versions, settings, models, query key versions
+raw/                       # full, auditable per-response JSON (text, tool calls and outputs, tokens, timing)
+overrides.json             # human score corrections for THIS run (seeded empty; written by grade.ts)
+scores.csv                 # one row per response, including failed ones
+summary.json               # means, SDs, failure rates, fabrication rates, paired tests, per-category composites
 summary.md                 # the same, as Markdown tables (also printed to the console)
 charts/*.svg               # 6 standalone figures
 ```
 
-`scores.csv` is the source of truth — pivot on `condition`, facet by `category`,
-color by `model`. `summary.json`'s `statistical_tests` pairs MCP against each
-baseline on matched (query × run) observations, per model, but only when the
-corresponding baseline was run.
+**Run status.** Every row has a `status`:
 
-**Correcting a score.** Each run keeps its own `overrides.json` next to its
-`raw/` files, so a correction lives with the run it applies to (not in a global
-repo-root file). The seeded file carries an inline `_example` showing the schema:
-while auditing a raw response, add an entry to `overrides` keyed by
-`queryId`/`condition`/`model`/`run` — the raw filename spells those out, and
-`"*"` wildcards a field — set a dimension to a number to replace it or `null` to
-drop it from aggregation, give a `reason`, then re-run
-`npx tsx benchmark/run.ts --rescore results/<timestamp>` to regenerate the
-reports. Point `--overrides <path>` at a shared file to apply the same
-corrections across several runs.
+| Status | Meaning |
+|---|---|
+| `ok` | answered and scored |
+| `provider-error` | the model call threw or timed out |
+| `truncated` | no final answer (empty text, e.g. step limit or timeout mid-tool-call) or context truncation detected |
+| `scoring-error` | answered, but scoring failed (e.g. PubMed unreachable); a later `--rescore` retries it |
+
+Only `ok` rows enter means, charts and tests; failure rates per condition are
+reported in the summary so a failing condition cannot look better by dropping
+out silently.
+
+`scores.csv` is the source of truth. Columns: `query_id, category, condition,
+model, run, status, accuracy, accuracy_source, evidence_quality,
+bullshit_score, speed_s, input_tokens, output_tokens, total_tokens,
+tool_calls, tools_used, pmids_cited, pmids_valid, pmids_fabricated,
+other_citations, composite`. Unscored values (NaN) are written as empty cells
+(NA in R/pandas), not 0. Filter on `status == "ok"` before averaging.
+`accuracy_source` is one of `deterministic` (values key), `reject` (bullshit
+query), `human` (graded via `grade.ts`), or `proxy` (provisional, see below).
 
 ## How scoring works
 
-- **Citations are never trusted.** Every `PMID` in a response is fetched from
-  live PubMed. One that doesn't resolve is a **fabrication**; one that does is
-  graded with the library's own grader, so *evidence quality* is measured on the
-  exact 0–5 scale the MCP reports.
-- **Accuracy (0–10)** depends on the query's answer key: the deterministic
-  factual queries force the model to end in a fixed `ANSWER — …` line and a
-  `values` key checks the exact tokens it emitted (study type, 0–5 score, PMID)
-  against the correct ones — fully automated, no human or judge involved.
-  Open-ended synthesis/drill-down/edge-case/compound queries (`rubric` keys)
-  have no ground-truth string to match, so they're graded by a **human**, using
-  [`grade.ts`](grade.ts) (see "Grading rubric answers" below), which writes the
-  0–10 score into that run's `overrides.json` for `--rescore` to apply. There is
-  no LLM judge — one existed earlier in this project and was removed. **Until a
-  human grades a rubric response, its accuracy is a provisional citation-quality
-  proxy** (mean evidence grade of its cited PMIDs × 2, `lib/scoring/
-  accuracy.ts`) — that reflects the *tier* of the sources cited, not whether the
-  answer is actually correct, and must not be quoted as accuracy on its own.
-  Bullshit queries score on correct rejection.
-- **Bullshit (0–1)** is deterministic: a fabricated-study query is correct only
-  if the model signals it can't corroborate the study *and* invents no PMID.
-- **Composite (0–10)** = `0.40·accuracy + 0.25·evidence + 0.25·bullshit +
-  0.05·speed + 0.05·cost`, each term normalized to [0,1] (speed/cost against the
-  references in `config.NORMALIZATION`) then rescaled to 0–10.
-- **Significance**: paired t-test when the paired differences look roughly normal,
-  Wilcoxon signed-rank otherwise; Cohen's d/rank-biserial effect size and 95% CIs.
-  Generated only when both MCP and the relevant baseline are run.
+- **Citations are never trusted.** Recognized citation forms are PMIDs, PubMed
+  URLs, and DOIs / PMCIDs (resolved to PMIDs through NCBI). Every PMID is
+  fetched from live PubMed. One that doesn't resolve is a **fabrication**; one
+  that does is graded with the library's own grader (`keywordGrade`), so
+  *evidence quality* is measured on the exact 0–5 scale the MCP reports.
+  Other identifier types are counted in `other_citations` but neither graded
+  nor penalized. PMIDs that already appear in the prompt are excluded (echoing
+  the question is not citing). A transient NCBI failure yields a
+  `scoring-error`, never a "fabricated" verdict.
+- **Accuracy (0–10)** depends on the query's answer key:
+  - `values` keys (5 deterministic queries: `factual-01`–`04`, `drill-down-03`):
+    the model must end with a line like `ANSWER — study type: … | score: … |
+    pmid: …`. The scorer parses that final line field by field and checks each
+    expected field (study type, 0–5 score, PMID); accuracy is the fraction
+    matched × 10. Fully automated.
+  - `reject` keys (4 bullshit queries): see below.
+  - `rubric` keys (15 open-ended queries) have no ground-truth string, so they
+    are graded by a **human** with [`grade.ts`](grade.ts) (next section), which
+    writes into `overrides.json` for `--rescore` to apply. There is no LLM
+    judge. **Until a human grades a rubric response, its accuracy is a
+    provisional citation-quality proxy** (mean evidence grade of the cited,
+    valid PMIDs × 2; 0 if citations were expected but none resolved;
+    `lib/scoring/accuracy.ts`). That reflects the *tier* of the sources cited,
+    not whether the answer is correct, and must not be quoted as accuracy on
+    its own. The summary's "Accuracy (verified)" column excludes proxy rows.
+- **Bullshit (0–1)**. For a fabricated-study query, 1 only if the response
+  contains rejection language about the study itself (could not find or verify
+  the study, no such trial, does not exist, appears fabricated, PMID does not
+  correspond) **and** cites no non-existent PMID. Generic hedges ("there is no
+  evidence of adverse effects") do not count. For every other query it tracks
+  citation integrity: the share of cited PMIDs that resolve.
+- **Composite (0–10)** = `10 · (0.40·accuracy/10 + 0.25·evidence/5 +
+  0.25·bullshit + 0.05·speed + 0.05·cost)`. Speed and cost are normalized
+  against `config.NORMALIZATION` (`BENCH_SPEED_REF_S`, default 60 s;
+  `BENCH_TOKEN_REF`, default 20,000 total tokens): 1 = instant/free, 0 = at or
+  beyond the reference. **Exception: for bullshit queries the composite is
+  `rejection × 10`**; evidence, speed and cost do not apply, since the only
+  correct behavior is refusing to corroborate the study.
+- **Scorer version.** `SCORER_VERSION` in `lib/scoring/score.ts` is stored in
+  every scored record; `--rescore` re-scores stale ones (see Reproducibility).
+- **Summary and significance.**
+  - Runs are averaged per query before pairing, so **n = number of queries**,
+    not queries × runs.
+  - Paired t-test when the differences look roughly normal, otherwise Wilcoxon
+    signed-rank (exact p for n ≤ 25 without ties, tie-corrected normal
+    approximation otherwise).
+  - Effect sizes: Cohen's dz (paired t) or matched-pairs rank-biserial r
+    (Wilcoxon), with 95% CIs.
+  - p-values across all tests in a summary are **Holm-adjusted** as one family
+    (`p_value_holm`).
+  - `summary.md` also has a per-category composite table.
+  - Tests are generated only when MCP and the relevant baseline were both run.
 
 ## Grading rubric answers
 
-15 of the 24 queries (synthesis, edge-case, compound, and three drill-downs)
-are open-ended `rubric` keys with no ground-truth string to match — they need a
-human to read the answer and judge it against the rubric. `grade.ts` makes
-that fast:
+15 of the 24 queries are open-ended `rubric` keys. `grade.ts` makes human
+grading fast and blind:
 
 ```bash
-npx tsx benchmark/grade.ts <results-dir>
+npx tsx benchmark/grade.ts <results-dir> --grader alice
 # e.g.
-npx tsx benchmark/grade.ts benchmark/results/2026-07-14-141739
+npx tsx benchmark/grade.ts benchmark/results/2026-07-14-141739 --grader alice
 ```
 
-For each rubric response in `<results-dir>/raw/` that hasn't already been
-graded, it shows you the prompt, the rubric to grade against, the model's full
-answer, and its cited PMIDs (validity, study type, evidence grade — read
-offline from the run's own data, nothing is re-fetched from PubMed), then asks
-for a single `accuracy 0–10`. Enter a score (optionally followed by a one-line
-reason), skip with Enter/`s`, or stop early with `q` — everything graded so far
-is already saved. Each grade is written immediately into that run's
-`overrides.json` (so quitting mid-session loses nothing) and the script is
-resumable: re-run it and it picks up where you left off. When you're done, it
-prints the exact follow-up command:
+| Option | Meaning |
+|---|---|
+| `--grader <id>` | grader id, written as `author` (default `$USER`, else `human`) |
+| `--seed <n>` | shuffle seed (default derived from the grader id; always printed) |
+| `--overrides <path>` | read/write this file instead of `<dir>/overrides.json` |
+| `--unblind` | show condition, model, run and proxy score (debugging only) |
+| `--agreement` | print inter-rater agreement and exit |
+
+By default grading is **blind and randomized**: the grader sees an opaque item
+id, the prompt, the rubric, the full answer, and the cited PMIDs' validity,
+study type and evidence grade (read offline from the run's data), but not the
+condition, model, run, or proxy score; items come in a seeded shuffled order.
+Enter a 0–10 score (optionally followed by a one-line reason), `s`/Enter to
+skip, `q` to save and quit. Each grade is saved immediately, and re-running
+resumes where you left off. Afterwards:
 
 ```bash
 npx tsx benchmark/run.ts --rescore <results-dir>
 ```
 
-which regenerates `scores.csv`/`summary.*` with your human accuracy substituted
-for the provisional citation-quality proxy on every response you graded.
+**Known limitation:** the answer text itself can still reveal the condition
+("I searched PubMed...", or an ungrounded closed-book style), so blinding is
+partial.
 
-## ⚠️ Answer keys and publishable claims
+**Multiple graders.** Run `grade.ts` once per grader with different `--grader`
+ids; grades on the same response are averaged. `--agreement` reports
+Krippendorff's α (interval), ICC(2,1), the mean absolute difference, and the
+list of items where graders differ by more than 3 points, for adjudication.
+
+**Overrides in general.** `overrides.json` lives next to `raw/`, keyed by
+`queryId`/`condition`/`model`/`run` (`"*"` wildcards a field), with a mandatory
+`reason`. A human accuracy override **recomputes the composite**; setting a
+dimension to `null` drops that dimension (and the recomputed composite) from
+aggregation. Rows graded by humans get `accuracy_source = human`. Use
+`--overrides <path>` to apply one shared file across runs.
+
+## Reproducibility
+
+- **`manifest.json`** records the git commit and whether the tree was dirty,
+  MCP and benchmark versions, run settings (temperature, max steps, timeout,
+  retries), models (including model ids), and answer-key versions. Prefer
+  publishing from a clean tree.
+- **`--resume <dir>`** reuses a stored record only when its model id, settings
+  (temperature, max steps, timeout), prompt and system prompt all match the
+  new run; legacy records without these fields are re-run. The old dir's
+  `overrides.json` is copied over.
+- **`--rescore <dir>`** re-scores against live PubMed only records with no
+  embedded scoring, an older `SCORER_VERSION`, a different answer-key version,
+  or a `scoring-error`; the rest reuse their embedded scoring offline. New
+  breakdowns are written back to `raw/`.
+- **Merging runs.** `npx tsx benchmark/merge.ts [dir ...] [--min-rows <n>]`
+  combines results dirs (default: every subdir of `results/` except
+  `combined`) into `results/combined/` with one `scores.csv`, summary and
+  charts. For a shared (query, condition, model, run) cell the later dir wins,
+  but a failed row never replaces an `ok` one. `combined/provenance.json`
+  records the source dir of every cell. `--min-rows` skips small dirs (smoke
+  runs). It warns when the merged dirs come from different MCP commits,
+  scorer versions or answer-key versions, in which case the numbers are not
+  strictly comparable.
+- **Tests:** `cd benchmark && npm test` (offline; no network or API keys).
+
+## Answer keys and publishable claims
 
 Nine queries have `verified: true` keys: the four **bullshit** queries (the
-studies are fabricated by us), and the five deterministic **`values`** queries
-(`factual-01`–`04`, `drill-down-03`), whose expected tokens were checked against
-live PubMed and the library grader — the study type + 0–5 score are what
-`keywordGrade` assigns, and every pinned PMID resolves. Every remaining key is an
-open-ended **`rubric`** query that asserts a real-world biomedical fact — there
-is no automatic ground truth for these, so they stay `verified: false` and the
-harness warns (and `summary.md` lists them) because their accuracy is only a
-provisional citation-quality proxy until a human grades them with
-[`grade.ts`](grade.ts) (see "Grading rubric answers" above). **Grade the
-unverified queries with `grade.ts` and `--rescore`, or otherwise review the
-keys in [`queries.data.ts`](queries.data.ts), before quoting numbers in a
+studies are fabricated by us) and the five deterministic **`values`** queries.
+Verification is a **live check, not a one-time claim**: run
+
+```bash
+npm --prefix benchmark run verify-keys    # = npx tsx benchmark/scripts/verify-keys.ts
+```
+
+before every publish run. For `values` keys it checks that every pinned PMID
+resolves and that the live `keywordGrade` still produces the expected study
+type and score; for bullshit (`reject`) keys it runs the optional `probe`
+PubMed search, which must return no hits (hits are warnings with titles for a
+human to judge), and checks that any fabricated PMID in the prompt does not
+resolve. It exits 1 on any mismatch or error.
+
+The other 15 keys are open-ended `rubric` queries asserting real-world
+biomedical facts. They stay `verified: false`, the harness warns, and
+`summary.md` lists them: their accuracy is a provisional proxy until humans
+grade them. **Grade them with `grade.ts` and `--rescore`, or otherwise review
+the keys in [`queries.data.ts`](queries.data.ts), before quoting accuracy in a
 paper.**
+
+## Validity and limitations
+
+- **Evidence quality is measured with the MCP's own grader.** The 0–5 score is
+  `keywordGrade` from the MCP, and the MCP condition sees that same grade in
+  its tool results. This is a structural advantage for the MCP condition on
+  the evidence term (25% of the composite); it is not an independent
+  measurement.
+- **Rubric accuracy is a provisional proxy** (citation tier) until humans
+  grade it. Only the `values` queries and bullshit rejection have automated
+  ground truth.
+- **Rejection detection is lexical.** Pattern matching can miss unusual
+  phrasings (false negatives) and can accept a hedged hybrid that rejects the
+  study but still describes findings. Review bullshit rows by hand and use
+  overrides where needed.
+- **Small query set.** 24 queries, only 4 of them bullshit. Per-category
+  numbers rest on 4 to 5 queries and are noisy; tests have n = number of
+  queries.
+- **The query set is public**, so future models may have seen it in training
+  (contamination), especially the closed-book condition.
+- **Blinding is partial** (answer text can reveal the condition) and several
+  other limits apply: speed depends on provider load and network, and the
+  non-PubMed adapters in the MCP are not run-isolated.
 
 ## Extending
 
 - **Models** — add entries to [`models.data.ts`](models.data.ts) (`openai`,
-  `anthropic`, `deepseek` providers are wired; add more in
+  `anthropic`, `deepseek`, `ollama` providers are wired; add more in
   [`lib/providers.ts`](lib/providers.ts)). `tsc` checks each entry.
 - **Queries** — add to [`queries.data.ts`](queries.data.ts); pick the answer-key
-  kind that fits and set `verified` honestly. `tsc` checks the category and kind.
-- **Weights / normalization** — `WEIGHTS` and `NORMALIZATION` in `config.ts`.
+  kind that fits and set `verified` honestly (bump `answerKeyVersion` when a key
+  changes so `--rescore` refreshes old data). `tsc` checks the category and kind.
+- **Weights / normalization** — `WEIGHTS` and `NORMALIZATION` in
+  [`lib/config.ts`](lib/config.ts).

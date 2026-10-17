@@ -13,7 +13,7 @@
  */
 
 import type { LanguageModel } from "ai";
-import type { ModelSpec, Provider } from "./config.js";
+import { missingKeyFor, type ModelSpec, type Provider } from "./config.js";
 
 // ─── Legacy function-calling fetch interceptor ───────────────────────────────
 
@@ -120,10 +120,12 @@ async function loadProvider(provider: Provider): Promise<ProviderFactory> {
 
 /** Resolve a model spec to a live model handle, reading its API key from env. */
 export async function resolveModel(spec: ModelSpec): Promise<LanguageModel> {
-  const apiKey = process.env[spec.apiKeyEnv];
-  if (!apiKey) {
-    throw new Error(`Missing API key: set ${spec.apiKeyEnv} to run model "${spec.label}" (${spec.provider}/${spec.modelId}).`);
+  const missing = missingKeyFor(spec);
+  if (missing) {
+    throw new Error(`Missing API key: set ${missing} to run model "${spec.label}" (${spec.provider}/${spec.modelId}).`);
   }
+  // Only ollama can reach here without a key (local server); the factory defaults it.
+  const apiKey = process.env[spec.apiKeyEnv] ?? "";
   const baseURL = spec.baseUrlEnv ? process.env[spec.baseUrlEnv] : undefined;
   const factory = await loadProvider(spec.provider);
   return factory(apiKey, baseURL, spec.legacyFunctions ? makeCompatRoleFetch() : undefined)(spec.modelId);

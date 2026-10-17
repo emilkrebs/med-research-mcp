@@ -14,6 +14,7 @@ import * as d3 from "d3";
 import type { ConditionId, ScoreRow } from "../types.js";
 import { mean, sd } from "../stats.js";
 import { speedScore, costScore } from "../scoring/composite.js";
+import { WEIGHTS } from "../config.js";
 
 type Sel<E extends Element = Element> = d3.Selection<E, unknown, null, undefined>;
 
@@ -26,6 +27,11 @@ const COLOR: Record<ConditionId, string> = {
 const FALLBACK_COLORS = ["#CC79A7", "#F0E442", "#0072B2", "#D55E00", "#999999"];
 
 const FONT = "ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif";
+
+/** Rows eligible for charts: only successful runs (failed ones would plot as fake zeros). */
+function okRows(rows: ScoreRow[]): ScoreRow[] {
+  return rows.filter((r) => r.status === "ok");
+}
 
 function conditions(rows: ScoreRow[]): ConditionId[] {
   return [...new Set(rows.map((r) => r.condition))];
@@ -380,7 +386,7 @@ function radar(rows: ScoreRow[]): string {
     (r) => r.evidence_quality / 5,
     (r) => r.bullshit_score,
     (r) => speedScore(r.speed_s),
-    (r) => costScore(r.input_tokens + r.output_tokens),
+    (r) => costScore(r.total_tokens),
   ];
 
   const angle = d3.scaleLinear().domain([0, axes.length]).range([-Math.PI / 2, 1.5 * Math.PI]);
@@ -437,7 +443,7 @@ function radar(rows: ScoreRow[]): string {
     .data(conds.map((condition) => ({ condition, subset: rows.filter((r) => r.condition === condition) })).filter((d) => d.subset.length > 0))
     .join("path")
     .attr("class", "condition")
-    .attr("d", (d) => line(dims.map((sel) => Math.max(0, Math.min(1, mean(d.subset.map(sel)))))))
+    .attr("d", (d) => line(dims.map((sel) => Math.max(0, Math.min(1, mean(d.subset.map(sel).filter(Number.isFinite)))))))
     .attr("fill", (d) => colorFor(d.condition))
     .attr("fill-opacity", 0.14)
     .attr("stroke", (d) => colorFor(d.condition))
@@ -466,7 +472,7 @@ function evidenceHistogram(rows: ScoreRow[]): string {
   const conds = conditions(rows);
   const counts = new Map<ConditionId, number[]>(conds.map((c) => [c, [0, 0, 0, 0, 0]]));
   for (const r of rows) {
-    if (r.pmids_valid === 0) continue; // only rows that actually cited real evidence
+    if (r.pmids_valid === 0 || !Number.isFinite(r.evidence_quality)) continue; // only rows that actually cited real evidence
     const b = bucketOf(r.evidence_quality);
     const rowCounts = counts.get(r.condition);
     if (!rowCounts) continue;
@@ -545,7 +551,8 @@ function scatter(rows: ScoreRow[]): string {
   const pad = { l: 56, r: 160, t: 44, b: 56 };
   const plotW = W - pad.l - pad.r;
   const plotH = H - pad.t - pad.b;
-  const maxSpeed = Math.max(1, ...rows.map((r) => r.speed_s));
+  const points = rows.filter((r) => Number.isFinite(r.speed_s) && Number.isFinite(r.accuracy));
+  const maxSpeed = Math.max(1, ...points.map((r) => r.speed_s));
   const x = d3.scaleLinear().domain([0, maxSpeed]).range([pad.l, pad.l + plotW]);
   const y = d3.scaleLinear().domain([0, 10]).range([pad.t + plotH, pad.t]);
   const conds = conditions(rows);
@@ -576,7 +583,7 @@ function scatter(rows: ScoreRow[]): string {
   svg
     .append("g")
     .selectAll("circle")
-    .data(rows)
+    .data(points)
     .join("circle")
     .attr("cx", (r) => x(r.speed_s))
     .attr("cy", (r) => y(r.accuracy))
@@ -585,14 +592,19 @@ function scatter(rows: ScoreRow[]): string {
     .attr("fill-opacity", 0.65);
 
   // ── Compensation curves: iso-composite contours ──
-  {
+  // Bullshit queries use a different composite formula (see compositeForCategory),
+  // so the contours are derived from non-bullshit rows only.
+  const regular = points.filter(
+    (r) => r.category !== "bullshit" && Number.isFinite(r.evidence_quality) && Number.isFinite(r.bullshit_score),
+  );
+  if (regular.length > 0) {
     const compLevels = [3, 5, 7, 9];
-    const avgEvidence = mean(rows.map((r) => r.evidence_quality)); // 0–5
-    const avgBullshit = mean(rows.map((r) => r.bullshit_score)); // 0–1
-    const fixedCostScore = 0.5;
+    const avgEvidence = mean(regular.map((r) => r.evidence_quality)); // 0–5
+    const avgBullshit = mean(regular.map((r) => r.bullshit_score)); // 0–1
+    const avgCostScore = mean(regular.map((r) => costScore(r.total_tokens)).filter(Number.isFinite));
     const N = 120;
-    // Derived from composite.ts: composite = 10*(0.4*(acc/10) + 0.25*(ev/5) + 0.25*bs + 0.05*ss + 0.05*cs)
-    // Solving for acc: acc = 25*(comp/10 - (ev/5)*0.25 - bs*0.25 - ss*0.05 - cs*0.05)
+    // Derived from composite.ts: composite = 10*(wa*(acc/10) + we*(ev/5) + wb*bs + ws*ss + wc*cs)
+    // Solving for acc: acc = (10/wa) * (comp/10 - we*(ev/5) - wb*bs - ws*ss - wc*cs)
     const lineGen = d3
       .line<[number, number]>()
       .x(([s]) => x(s))
@@ -602,14 +614,14 @@ function scatter(rows: ScoreRow[]): string {
     for (const comp of compLevels) {
       const pts: [number, number][] = Array.from({ length: N + 1 }, (_, i) => {
         const speed = (maxSpeed * i) / N;
-        const ss = Math.max(0, 1 - speed / 60);
+        const ss = speedScore(speed);
         const acc =
-          25 *
+          (10 / WEIGHTS.accuracy) *
           (comp / 10 -
-            (avgEvidence / 5) * 0.25 -
-            avgBullshit * 0.25 -
-            ss * 0.05 -
-            fixedCostScore * 0.05);
+            WEIGHTS.evidence * (avgEvidence / 5) -
+            WEIGHTS.bullshit * avgBullshit -
+            WEIGHTS.speed * ss -
+            WEIGHTS.cost * avgCostScore);
         return [speed, acc];
       });
 
@@ -679,7 +691,8 @@ function scatter(rows: ScoreRow[]): string {
 }
 
 /** Render every chart. Returns filename → SVG string. */
-export function renderCharts(rows: ScoreRow[]): Record<string, string> {
+export function renderCharts(allRows: ScoreRow[]): Record<string, string> {
+  const rows = okRows(allRows);
   return {
     "composite-bars.svg": groupedBars(rows, { title: "Composite score by condition × model", sel: (r) => r.composite, yMax: 10, errorBars: true }),
     "radar-conditions.svg": radar(rows),
