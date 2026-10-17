@@ -147,7 +147,7 @@ export async function fetchLiterature(
     };
   }
 
-  const articles = await resolved.fetch(input.ids, cache);
+  const articles = resolved.fetchFull ? await resolved.fetchFull(input.ids, cache) : await resolved.fetch(input.ids, cache);
   const found = new Set(articles.map((a) => a.pmid));
   const missing = input.ids.filter((id) => !found.has(id));
 
