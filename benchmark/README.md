@@ -60,7 +60,7 @@ bad answer.
 npx tsx benchmark/run.ts
 
 # Smoke test: one run, one model, a couple of queries
-npx tsx benchmark/run.ts --runs 1 --models deepseek-v3.2 --queries factual-01,bullshit-01
+npx tsx benchmark/run.ts --runs 1 --models deepseek-v4.1-flash --queries factual-01,bullshit-01
 
 # Include the optional baselines (closed-book + web-search)
 npx tsx benchmark/run.ts --with-baselines

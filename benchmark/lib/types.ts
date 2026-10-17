@@ -126,7 +126,7 @@ export interface RunRecord {
   queryId: string;
   category: Category;
   condition: ConditionId;
-  /** Model label from config (e.g. `deepseek-v3.2`), not the raw provider id. */
+  /** Model label from config (e.g. `deepseek-v4.1-flash`), not the raw provider id. */
   model: string;
   /** Provider backing the model (`openai`, `deepseek`, …). Absent on legacy records. */
   provider?: string;

@@ -16,7 +16,7 @@ import type { ModelSpec } from "./lib/config.js";
 
 export const MODELS: ModelSpec[] = [
   // ── Alibaba Cloud Model Studio, Singapore (international) endpoint ──
-  // Both use the DashScope OpenAI-compatible API; the key is separate from the
+  // All use the DashScope OpenAI-compatible API; the key is separate from the
   // generic OPENAI_* vars so it can't collide with another OpenAI-compatible provider.
   {
     label: "deepseek-v4.1-flash",
@@ -58,7 +58,7 @@ export const MODELS: ModelSpec[] = [
     baseUrlEnv: "DASHSCOPE_BASE_URL",
     legacyFunctions: true,
   },
-  // ── Fresh quota — different provider / untouched model IDs ────────
+  // ── Ollama (local) ───────────────────────────────────────────────
   {
     // WARNING: Ollama's default context window is 4096 tokens and its OpenAI-compatible API cannot
     // raise it per request. Long tool results then silently push the start of the conversation out
@@ -72,30 +72,6 @@ export const MODELS: ModelSpec[] = [
     apiKeyEnv: "OLLAMA_API_KEY",
     baseUrlEnv: "OLLAMA_BASE_URL",
     legacyFunctions: false,
-  },
-  {
-    label: "deepseek-v3.2",
-    provider: "openai",
-    modelId: "deepseek-v3.2",
-    apiKeyEnv: "OPENAI_API_KEY",
-    baseUrlEnv: "OPENAI_BASE_URL",
-    legacyFunctions: true,
-  },
-  {
-    label: "qwen3-max-2025-09-23",
-    provider: "openai",
-    modelId: "qwen3-max-2025-09-23",
-    apiKeyEnv: "OPENAI_API_KEY",
-    baseUrlEnv: "OPENAI_BASE_URL",
-    legacyFunctions: true,
-  },
-  {
-    label: "qwen-plus-2025-09-11",
-    provider: "openai",
-    modelId: "qwen-plus-2025-09-11",
-    apiKeyEnv: "OPENAI_API_KEY",
-    baseUrlEnv: "OPENAI_BASE_URL",
-    legacyFunctions: true,
   },
   // ── Anthropic ────────────────────────────────────────────────────
   // Needs ANTHROPIC_API_KEY. Disabled by default so runs without that key still pass
@@ -162,47 +138,15 @@ export const MODELS: ModelSpec[] = [
     legacyFunctions: true,
   },
   // ── Previously used (kept for reproducibility) ───────────────────
-  {
-    label: "qwen3-30b-a3b-thinking-2507",
-    provider: "openai",
-    modelId: "qwen3-30b-a3b-thinking-2507",
-    enabled: false,
-    apiKeyEnv: "OPENAI_API_KEY",
-    baseUrlEnv: "OPENAI_BASE_URL",
-    legacyFunctions: true, // thinking model → needs the developer→system role fixup
-  },
-  {
-    label: "deepseek-v4-flash",
-    provider: "deepseek",
-    modelId: "deepseek-v4-flash",
-    enabled: false,
-    apiKeyEnv: "DEEPSEEK_API_KEY",
-    baseUrlEnv: "DEEPSEEK_BASE_URL",
-    legacyFunctions: false,
-  },
-  {
-    label: "qwen3-235b-a22b-thinking-2507",
-    provider: "openai",
-    modelId: "qwen3-235b-a22b-thinking-2507",
-    enabled: false,
-    apiKeyEnv: "OPENAI_API_KEY",
-    baseUrlEnv: "OPENAI_BASE_URL",
-    legacyFunctions: true,
-  },
+  // Retired models are removed rather than kept here: DashScope retired
+  // deepseek-v3.2, qwen3-max-2025-09-23, qwen-plus-2025-09-11, qwen3-32b and the
+  // qwen3-*-2507 thinking models on 2026-10-10, and DeepSeek serves the legacy
+  // deepseek-v4-flash name with V4.1 Flash, so none of them can reproduce a run.
   {
     label: "qwen-max",
     provider: "openai",
     modelId: "qwen-max",
     unpinned: true,
-    enabled: false,
-    apiKeyEnv: "OPENAI_API_KEY",
-    baseUrlEnv: "OPENAI_BASE_URL",
-    legacyFunctions: true,
-  },
-  {
-    label: "qwen3-32b",
-    provider: "openai",
-    modelId: "qwen3-32b",
     enabled: false,
     apiKeyEnv: "OPENAI_API_KEY",
     baseUrlEnv: "OPENAI_BASE_URL",
