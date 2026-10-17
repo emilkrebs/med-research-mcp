@@ -28,6 +28,10 @@ export interface CliOptions {
   temperature: number;
   maxSteps: number;
   concurrency: number;
+  /** Stop starting new runs once this many tokens have been spent (undefined = no limit). */
+  tokenBudget?: number;
+  /** Soft per-run cap: past it, the model must answer without more tool calls. */
+  runTokenCap?: number;
   out?: string;
   resume?: string;
 }
@@ -41,6 +45,8 @@ const OPTION_SPEC = {
   temperature: { type: "string" },
   "max-steps": { type: "string" },
   concurrency: { type: "string" },
+  "token-budget": { type: "string" },
+  "run-token-cap": { type: "string" },
   out: { type: "string" },
   resume: { type: "string" },
   publish: { type: "boolean" },
@@ -146,6 +152,8 @@ export function parseCli(argv: string[]): CliOptions {
     temperature: parseTemperature(values.temperature, DEFAULTS.temperature),
     maxSteps: parsePositiveInt("max-steps", values["max-steps"], DEFAULTS.maxSteps),
     concurrency: parsePositiveInt("concurrency", values.concurrency, 1),
+    ...(values["token-budget"] !== undefined ? { tokenBudget: parsePositiveInt("token-budget", values["token-budget"], 0) } : {}),
+    ...(values["run-token-cap"] !== undefined ? { runTokenCap: parsePositiveInt("run-token-cap", values["run-token-cap"], 0) } : {}),
     ...(values.out !== undefined ? { out: values.out } : {}),
     ...(values.resume !== undefined ? { resume: values.resume } : {}),
     ...(values.rescore !== undefined ? { rescore: values.rescore } : {}),
@@ -169,6 +177,11 @@ Pass 1 - Run + score:
   --temperature <t>   sampling temperature, 0-2 (default ${DEFAULTS.temperature})
   --max-steps <n>     agent tool-call rounds, positive integer (default ${DEFAULTS.maxSteps})
   --concurrency <n>   parallel runs, positive integer (default 1; NCBI rate limits favor 1)
+  --token-budget <n>  stop starting new runs once n tokens have been spent in this
+                      invocation (reused records are free). Runs left over are skipped
+                      and listed; a run already in flight may overshoot by its own cost.
+  --run-token-cap <n> soft per-run cap: once a run has used n tokens its next step is
+                      text-only, so it must answer instead of searching further
   --out <dir>         output root (default benchmark/results)
   --resume <dir>      reuse raw records from an existing results dir and only run the rest.
                       A record is reused only if its model id, settings (temperature,

@@ -156,6 +156,12 @@ export interface RunOptions {
   retries?: number;
   /** Wall-clock budget for the whole agent loop; the run errors out when exceeded. */
   timeoutMs?: number;
+  /**
+   * Soft per-run token cap (input + output, summed over steps). Once the steps
+   * so far have used this many tokens, the next step is text-only so the model
+   * must answer. Soft because the step that crosses the line is already paid for.
+   */
+  tokenCap?: number;
   /** Test injection: use this model instead of resolving `model` via providers. */
   languageModel?: LanguageModel;
   /** Test injection: use these tools instead of the condition's toolset. */
@@ -214,10 +220,14 @@ export async function runOne(
             tools,
             stopWhen: stepCountIs(maxSteps),
             // `stepNumber` is 0-based, so the last allowed step is maxSteps - 1.
-            // Forbid tool calls there so the model must write its answer instead
-            // of burning the final step on a tool call and leaving `text` empty.
-            prepareStep: ({ stepNumber }: { stepNumber: number }) =>
-              stepNumber >= maxSteps - 1 ? { toolChoice: "none" as const } : undefined,
+            // Forbid tool calls there (or once the token cap is spent) so the model
+            // must write its answer instead of leaving `text` empty. Some providers
+            // ignore `toolChoice: "none"`, so the tools are also taken off the table.
+            prepareStep: ({ stepNumber, steps }: { stepNumber: number; steps: Array<{ usage?: { totalTokens?: number } }> }) => {
+              const spent = steps.reduce((sum, st) => sum + (st.usage?.totalTokens ?? 0), 0);
+              const mustAnswer = stepNumber >= maxSteps - 1 || (opts.tokenCap !== undefined && spent >= opts.tokenCap);
+              return mustAnswer ? { toolChoice: "none" as const, activeTools: [] } : undefined;
+            },
           }
         : {}),
     })) as unknown as Record<string, unknown>;

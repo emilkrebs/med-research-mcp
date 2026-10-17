@@ -14,6 +14,41 @@
 import type { ModelSpec } from "./lib/config.js";
 
 export const MODELS: ModelSpec[] = [
+  // ── Alibaba Cloud Model Studio, Singapore (international) endpoint ──
+  // Both use the DashScope OpenAI-compatible API; the key is separate from the
+  // generic OPENAI_* vars so it can't collide with another OpenAI-compatible provider.
+  {
+    label: "qwen3.8-flash",
+    provider: "openai",
+    modelId: "qwen3.8-flash",
+    apiKeyEnv: "DASHSCOPE_API_KEY",
+    baseUrlEnv: "DASHSCOPE_BASE_URL",
+    legacyFunctions: true,
+  },
+  {
+    label: "qwen3.8-27b",
+    provider: "openai",
+    modelId: "qwen3.8-27b",
+    apiKeyEnv: "DASHSCOPE_API_KEY",
+    baseUrlEnv: "DASHSCOPE_BASE_URL",
+    legacyFunctions: true,
+  },
+  {
+    label: "qwen3.7-flash-2026-07-15",
+    provider: "openai",
+    modelId: "qwen3.7-flash-2026-07-15",
+    apiKeyEnv: "DASHSCOPE_API_KEY",
+    baseUrlEnv: "DASHSCOPE_BASE_URL",
+    legacyFunctions: true,
+  },
+  {
+    label: "deepseek-v4-flash-0731",
+    provider: "openai",
+    modelId: "deepseek-v4-flash-0731",
+    apiKeyEnv: "DASHSCOPE_API_KEY",
+    baseUrlEnv: "DASHSCOPE_BASE_URL",
+    legacyFunctions: true,
+  },
   // ── Fresh quota — different provider / untouched model IDs ────────
   {
     // WARNING: Ollama's default context window is 4096 tokens and its OpenAI-compatible API cannot

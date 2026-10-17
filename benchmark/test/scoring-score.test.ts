@@ -74,6 +74,16 @@ describe("scoreRun", () => {
     expect(fetches).toEqual([]);
   });
 
+  it("runs that ended mid tool-calling are truncated even though they have text", async () => {
+    const { v, fetches } = verifier([]);
+    for (const finishReason of ["tool-calls", "length"]) {
+      const { row } = await scoreRun(record({ text: "Let me do a few more targeted searches.", finishReason }), query("bullshit-03"), v);
+      expect(row.status).toBe("truncated");
+      expect(row.composite).toBe(0);
+    }
+    expect(fetches).toEqual([]);
+  });
+
   it("contextTruncated runs are truncated even with non-empty text, skipping PubMed", async () => {
     const { v, fetches } = verifier(["28202713"]);
     const { row } = await scoreRun(record({ text: "Please provide the question. PMID 28202713", contextTruncated: true }), query("factual-04"), v);

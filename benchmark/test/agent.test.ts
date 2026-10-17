@@ -47,6 +47,26 @@ const stubTools = {
 };
 
 describe("runOne", () => {
+  it("removes the tools (not just toolChoice) on the forced last step, for providers that ignore toolChoice", async () => {
+    const llm = new MockLanguageModelV4({
+      doGenerate: async (options) => (options.tools?.length ? toolCallResult("c") : textResult("final answer")),
+    });
+    const rec = await runOne(query, "mcp", spec, 0, { maxSteps: 2, languageModel: llm, tools: stubTools });
+    expect(llm.doGenerateCalls.map((c) => c.tools?.length ?? 0)).toEqual([1, 0]);
+    expect(rec.text).toBe("final answer");
+  });
+
+  it("forces an answer once the soft token cap is spent", async () => {
+    // Each step reports 15 tokens; a cap of 20 is crossed after two steps.
+    const llm = new MockLanguageModelV4({
+      doGenerate: async (options) => (options.tools?.length ? toolCallResult("c") : textResult("capped answer")),
+    });
+    const rec = await runOne(query, "mcp", spec, 0, { maxSteps: 10, tokenCap: 20, languageModel: llm, tools: stubTools });
+    expect(llm.doGenerateCalls.length).toBe(3);
+    expect(rec.text).toBe("capped answer");
+    expect(rec.finishReason).toBe("stop");
+  });
+
   it("forces toolChoice none on the last step and records provenance, output, durations", async () => {
     let n = 0;
     const llm = new MockLanguageModelV4({

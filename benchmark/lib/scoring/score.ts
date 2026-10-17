@@ -36,7 +36,7 @@ import { compositeForCategory } from "./composite.js";
  * resolution, prompt-echo exclusion, study-specific rejection patterns; v3 =
  * passive-voice rejections, markdown-tolerant PMID anchors, `contextTruncated` runs score as `truncated`).
  */
-export const SCORER_VERSION = 3;
+export const SCORER_VERSION = 4;
 
 export interface ScoreResult {
   row: ScoreRow;
@@ -62,6 +62,9 @@ function sourceForKind(kind: string): AccuracySource {
 function preStatus(run: RunRecord): RunStatus | undefined {
   if (run.error) return "provider-error";
   if (run.contextTruncated || String(run.text ?? "").trim() === "") return "truncated";
+  // The loop ended mid-work (still calling tools, or cut off by a length limit): whatever text
+  // exists is a progress note ("let me search more"), not an answer.
+  if (run.finishReason === "tool-calls" || run.finishReason === "length") return "truncated";
   return undefined;
 }
 

@@ -383,6 +383,8 @@ async function runBenchmark(opts: CliOptions, argv: string[]): Promise<void> {
   const verifier = newVerifier();
   const entries: RawRowWithBreakdown[] = [];
   let done = 0;
+  let tokensSpent = 0;
+  const skippedForBudget: string[] = [];
 
   await mapPool(jobs, concurrency, async (job) => {
     const filename = rawFilename(job);
@@ -392,7 +394,20 @@ async function runBenchmark(opts: CliOptions, argv: string[]): Promise<void> {
       content = stored;
       console.log(`  ↩  Reusing existing: ${filename}`);
     } else {
-      content = { ...(await runOne(job.query, job.condition, job.model, job.run, { temperature, maxSteps })) };
+      if (opts.tokenBudget !== undefined && tokensSpent >= opts.tokenBudget) {
+        skippedForBudget.push(filename.replace(/\.json$/, ""));
+        done++;
+        console.log(`[${done}/${jobs.length}] ${job.query.id} ${job.condition} ${job.model.label} r${job.run} — SKIPPED: token budget (${opts.tokenBudget}) spent`);
+        return;
+      }
+      content = {
+        ...(await runOne(job.query, job.condition, job.model, job.run, {
+          temperature,
+          maxSteps,
+          ...(opts.runTokenCap !== undefined ? { tokenCap: opts.runTokenCap } : {}),
+        })),
+      };
+      tokensSpent += (content as unknown as RunRecord).usage.totalTokens;
     }
     const record = content as unknown as RunRecord;
 
@@ -418,6 +433,9 @@ async function runBenchmark(opts: CliOptions, argv: string[]): Promise<void> {
           }`;
     console.log(`[${done}/${jobs.length}] ${job.query.id} ${job.condition} ${job.model.label} r${job.run} — ${detail}`);
   });
+  if (skippedForBudget.length > 0) {
+    console.warn(`\n⚠️  ${skippedForBudget.length} run(s) skipped because the token budget was spent (${tokensSpent} tokens used): ${skippedForBudget.join(", ")}`);
+  }
 
   const overridesPath = await seedOverrides(outDir);
   const rows = await writeReports(outDir, entries, overridesPath, {
