@@ -328,6 +328,7 @@ async function runBenchmark(opts: CliOptions, argv: string[]): Promise<void> {
 
   const unverified = queries.filter((q) => !q.verified).map((q) => q.id);
   const unpinned = models.filter((m) => m.unpinned).map((m) => m.label);
+  const fixedSampling = models.filter((m) => m.fixedSampling).map((m) => m.label);
 
   console.log(
     `Plan: ${queries.length} queries × ${conditions.length} conditions × ${models.length} models × ${runs} runs = ${jobs.length} responses`,
@@ -341,6 +342,8 @@ async function runBenchmark(opts: CliOptions, argv: string[]): Promise<void> {
     console.warn(c.yellow(`⚠️  UNPINNED model id(s) (moving aliases, results may drift): ${unpinned.join(", ")}`));
     if (publish) console.warn("⚠️⚠️  --publish with UNPINNED models: these results are NOT reproducible. Pin the model ids in models.data.ts first.");
   }
+  if (fixedSampling.length > 0)
+    console.warn(c.yellow(`⚠️  Model(s) that reject sampling params run at provider-default sampling, not temperature ${temperature}: ${fixedSampling.join(", ")}`));
 
   const problems = preflight(models, conditions);
   if (problems.length > 0) {

@@ -68,7 +68,7 @@ export interface Manifest {
   benchmark_version: string;
   scorer_version: number;
   settings: ResolvedSettings;
-  models: { label: string; provider: string; modelId: string; unpinned: boolean }[];
+  models: { label: string; provider: string; modelId: string; unpinned: boolean; fixedSampling?: true }[];
   conditions: ConditionId[];
   queries: { id: string; answerKeyVersion: number }[];
   weights: Record<string, number>;
@@ -102,6 +102,7 @@ export function buildManifest(input: {
       provider: m.provider,
       modelId: m.modelId,
       unpinned: m.unpinned === true,
+      ...(m.fixedSampling ? { fixedSampling: true as const } : {}),
     })),
     conditions: input.conditions,
     queries: input.queries.map((q) => ({ id: q.id, answerKeyVersion: q.answerKeyVersion ?? 1 })),

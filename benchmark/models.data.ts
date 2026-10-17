@@ -8,7 +8,8 @@
  * `--models <label>`. Set `legacyFunctions: true` for OpenAI-compatible
  * endpoints (e.g. DashScope MaaS) that reject the `role:"developer"` system
  * message the SDK emits for reasoning models — it maps `developer` → `system`
- * (tool results stay `role:"tool"`). Set `unpinned: true` on moving aliases.
+ * (tool results stay `role:"tool"`). Set `unpinned: true` on moving aliases, and
+ * `fixedSampling: true` on models that reject `temperature` (it is then not sent).
  */
 
 import type { ModelSpec } from "./lib/config.js";
@@ -95,6 +96,21 @@ export const MODELS: ModelSpec[] = [
     apiKeyEnv: "OPENAI_API_KEY",
     baseUrlEnv: "OPENAI_BASE_URL",
     legacyFunctions: true,
+  },
+  // ── Anthropic ────────────────────────────────────────────────────
+  // Needs ANTHROPIC_API_KEY. Disabled by default so runs without that key still pass
+  // preflight; select with `--models claude-haiku-5-5` or drop `enabled: false`.
+  // Claude 5.5 models reject sampling parameters, hence `fixedSampling`: these runs
+  // use the API's default sampling and adaptive thinking at the default effort
+  // (`medium` for Haiku 5.5), not temperature 0.
+  {
+    label: "claude-haiku-5-5",
+    provider: "anthropic",
+    modelId: "claude-haiku-5-5",
+    enabled: false,
+    fixedSampling: true,
+    apiKeyEnv: "ANTHROPIC_API_KEY",
+    baseUrlEnv: "ANTHROPIC_BASE_URL",
   },
   // ── Free-tier flagships (quota likely exhausted) ──────────────────
   {

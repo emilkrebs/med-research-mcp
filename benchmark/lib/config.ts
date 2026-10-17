@@ -50,6 +50,12 @@ export interface ModelSpec {
    * pinned snapshot. The runner warns about these: results may drift over time.
    */
   unpinned?: boolean;
+  /**
+   * True when the model rejects sampling parameters (e.g. the Claude 5.5 family).
+   * The run's `temperature` is then not sent and the provider's default sampling
+   * applies; the runner warns and the manifest records it.
+   */
+  fixedSampling?: boolean;
 }
 
 /** Validate the model catalog defined in `benchmark/models.data.ts` (unique labels). */

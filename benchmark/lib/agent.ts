@@ -261,6 +261,10 @@ export async function runOne(
     };
     let currentStep = 0;
     const tools = handle.tools ? timeTools(handle.tools, timings, emit, () => currentStep) : undefined;
+    // Anthropic honors `toolChoice: "none"` and 400s ("Requests which include tool_use or
+    // tool_result blocks must define tools") once the history holds tool calls but the request
+    // defines no tools, so its forced step keeps the definitions and relies on toolChoice alone.
+    const keepToolsWhenForced = model.provider === "anthropic";
 
     // First step with the tools removed. Dropping the tool definitions shrinks the prompt, so
     // that step's input tokens legitimately fall; it must not be read as context truncation.
@@ -269,7 +273,7 @@ export async function runOne(
       model: llm,
       system: SYSTEM_PROMPT,
       prompt: query.prompt,
-      temperature,
+      ...(model.fixedSampling ? {} : { temperature }),
       maxRetries,
       abortSignal,
       ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
@@ -277,7 +281,7 @@ export async function runOne(
       // last allowed step is maxSteps - 1. With tools, forbid tool calls there (or
       // once the token cap is spent) so the model must write its answer instead of
       // leaving `text` empty. Some providers ignore `toolChoice: "none"`, so the
-      // tools are also taken off the table.
+      // tools are also taken off the table (except on Anthropic, see above).
       prepareStep: ({ stepNumber, steps }: { stepNumber: number; steps: Array<{ usage?: { totalTokens?: number } }> }) => {
         currentStep = stepNumber;
         const spent = steps.reduce((sum, st) => sum + (st.usage?.totalTokens ?? 0), 0);
@@ -290,7 +294,8 @@ export async function runOne(
               : undefined;
         if (forced && forcedAt === undefined) forcedAt = stepNumber;
         emit({ type: "step-start", step: stepNumber, ...(forced ? { forced } : {}), tokensSoFar: spent });
-        return forced ? { toolChoice: "none" as const, activeTools: [] } : undefined;
+        if (!forced) return undefined;
+        return keepToolsWhenForced ? { toolChoice: "none" as const } : { toolChoice: "none" as const, activeTools: [] };
       },
       onStepEnd: (step: {
         usage?: { inputTokens?: number; outputTokens?: number };

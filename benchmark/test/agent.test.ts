@@ -56,6 +56,26 @@ describe("runOne", () => {
     expect(rec.text).toBe("final answer");
   });
 
+  it("keeps the tool definitions on Anthropic's forced last step (it 400s on tool history without tools)", async () => {
+    const llm = new MockLanguageModelV4({
+      doGenerate: async (options) => (options.toolChoice?.type === "none" ? textResult("final answer") : toolCallResult("c")),
+    });
+    const anthropic: ModelSpec = { ...spec, provider: "anthropic", apiKeyEnv: "ANTHROPIC_API_KEY" };
+    const rec = await runOne(query, "mcp", anthropic, 0, { maxSteps: 2, languageModel: llm, tools: stubTools });
+    expect(llm.doGenerateCalls.map((c) => [c.tools?.length ?? 0, c.toolChoice?.type])).toEqual([
+      [1, "auto"],
+      [1, "none"],
+    ]);
+    expect(rec.text).toBe("final answer");
+  });
+
+  it("sends temperature normally, but not for fixedSampling models", async () => {
+    const llm = new MockLanguageModelV4({ doGenerate: async () => textResult("ok") });
+    await runOne(query, "closed-book", spec, 0, { languageModel: llm });
+    await runOne(query, "closed-book", { ...spec, fixedSampling: true }, 0, { languageModel: llm });
+    expect(llm.doGenerateCalls.map((c) => c.temperature)).toEqual([0, undefined]);
+  });
+
   it("does not flag the forced text-only step (smaller prompt: no tool definitions) as context truncation", async () => {
     const big = { ...usage, inputTokens: { total: 20000, noCache: 20000, cacheRead: 0, cacheWrite: 0 } };
     const small = { ...usage, inputTokens: { total: 19000, noCache: 19000, cacheRead: 0, cacheWrite: 0 } };
