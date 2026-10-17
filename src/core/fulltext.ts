@@ -312,7 +312,12 @@ async function defaultFetchUrl(url: string, timeoutMs: number): Promise<FetchedR
   }
 }
 
-async function defaultHtmlToMarkdown(html: string, url: string): Promise<string> {
+/**
+ * Reduce an HTML page to its main content as markdown (Readability → turndown).
+ * Exported for the benchmark's web baseline so both conditions extract pages
+ * the same way; not part of the package's public `core` API.
+ */
+export async function defaultHtmlToMarkdown(html: string, url: string): Promise<string> {
   const { JSDOM } = await import("jsdom");
   const { Readability } = await import("@mozilla/readability");
   const Turndown = (await import("turndown")).default;
@@ -330,7 +335,8 @@ async function defaultHtmlToMarkdown(html: string, url: string): Promise<string>
   return turndown.turndown(contentHtml).trim();
 }
 
-async function defaultPdfToText(bytes: Uint8Array): Promise<string> {
+/** Extract plain text from PDF bytes. Exported for the benchmark's web baseline, like `defaultHtmlToMarkdown`. */
+export async function defaultPdfToText(bytes: Uint8Array): Promise<string> {
   const { PDFParse } = await import("pdf-parse");
   const parser = new PDFParse({ data: bytes });
   const result = await parser.getText();

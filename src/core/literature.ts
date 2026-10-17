@@ -147,9 +147,10 @@ export async function fetchLiterature(
     };
   }
 
-  const articles = await resolved.fetch(input.ids, cache);
-  const found = new Set(articles.map((a) => a.pmid));
-  const missing = input.ids.filter((id) => !found.has(id));
+  const articles = resolved.fetchFull ? await resolved.fetchFull(input.ids, cache) : await resolved.fetch(input.ids, cache);
+  // Case-insensitive: adapters return canonical ids ("PPR123456") for any input case.
+  const found = new Set(articles.map((a) => a.pmid.toUpperCase()));
+  const missing = input.ids.filter((id) => !found.has(id.toUpperCase()));
 
   return {
     articles,

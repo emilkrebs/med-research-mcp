@@ -24,4 +24,11 @@ export interface DatabaseAdapter {
    * The cache is scoped per-database (see {@link RestAdapter}).
    */
   fetch(ids: string[], cache: Cache): Promise<Article[]>;
+  /**
+   * Complete records for an explicit fetch (`literature_fetch`), for databases
+   * whose search endpoint only returns previews (e.g. ChinaXiv cuts abstracts at
+   * 500 characters). `search` keeps using `fetch` and its cheap previews; when
+   * absent, `fetch` already returns complete records.
+   */
+  fetchFull?(ids: string[], cache: Cache): Promise<Article[]>;
 }

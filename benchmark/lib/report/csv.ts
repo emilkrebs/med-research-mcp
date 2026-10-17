@@ -8,21 +8,29 @@ const COLUMNS: (keyof ScoreRow)[] = [
   "condition",
   "model",
   "run",
+  "status",
   "accuracy",
+  "accuracy_source",
   "evidence_quality",
   "bullshit_score",
   "speed_s",
   "input_tokens",
   "output_tokens",
+  "total_tokens",
   "tool_calls",
   "tools_used",
   "pmids_cited",
   "pmids_valid",
   "pmids_fabricated",
+  "other_citations",
+  "citations_checked",
+  "citations_misattributed",
   "composite",
 ];
 
+/** NaN (an unscored value) is written as an empty cell so R/pandas read NA, not the string "NaN". */
 function cell(value: unknown): string {
+  if (typeof value === "number" && !Number.isFinite(value)) return "";
   const s = String(value ?? "");
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }

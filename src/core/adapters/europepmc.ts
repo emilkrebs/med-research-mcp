@@ -7,7 +7,13 @@
  * Europe PMC mirrors PubMed and adds preprints plus European grant metadata. The
  * `core` result type includes the abstract and full-text links in the search
  * response, so no second fetch is needed. Records carry a `source` (MED, PPR,
- * PMC, …) and an `id`; we key on `id` and reconstruct the article URL from both.
+ * PMC, CBA, …) and an `id`; we key on `id` and reconstruct the article URL from both.
+ *
+ * Ids are only unique within a source: non-PubMed sources such as CBA (Chinese
+ * Biological Abstracts) reuse plain numbers that collide with PMIDs, so those
+ * records are keyed `SRC:id` ("CBA:521529"). PubMed records keep the bare PMID;
+ * PPR/PMC ids are already prefixed, and other non-numeric ids (AGR "IND…",
+ * NBK…, patents) are unique across sources, so they stay as-is.
  */
 
 import { defaultHttp, type AdapterHttp } from "./http.js";
@@ -37,14 +43,31 @@ interface EpmcResponse {
   resultList?: { result?: EpmcResult[] };
 }
 
+/** The id we key a record on: `SRC:id` for numeric non-PubMed ids, the raw id otherwise. */
+export function toEpmcId(source: string, id: string): string {
+  return source !== "MED" && /^\d+$/.test(id) ? `${source}:${id}` : id;
+}
+
+/** Europe PMC query matching exactly the record behind an id produced by `toEpmcId` (any case). */
+export function exactIdQuery(id: string): string {
+  const prefixed = /^([A-Z]{3}):(\d+)$/i.exec(id);
+  if (prefixed) return `EXT_ID:${prefixed[2]} AND SRC:${prefixed[1]!.toUpperCase()}`;
+  if (/^PPR\d+$/i.test(id)) return `EXT_ID:${id.toUpperCase()} AND SRC:PPR`;
+  if (/^PMC\d+$/i.test(id)) return `PMCID:${id.toUpperCase()}`;
+  if (/^\d+$/.test(id)) return `EXT_ID:${id} AND SRC:MED`;
+  // Non-numeric ids from other sources can't collide with a PMID, so no SRC clause.
+  return `EXT_ID:"${id.replace(/"/g, "")}"`;
+}
+
 function toArticle(r: EpmcResult): Article | null {
-  const id = first(r.id) ?? first(r.pmid);
-  if (!id) return null;
+  const rawId = first(r.id) ?? first(r.pmid);
+  if (!rawId) return null;
   const source = first(r.source) ?? "MED";
+  const id = toEpmcId(source, rawId);
   const doi = cleanDoi(first(r.doi));
   const language = toIso1(first(r.language)) ?? "en";
   const url =
-    first(r.fullTextUrlList?.fullTextUrl?.[0]?.url) ?? `https://europepmc.org/article/${source}/${id}`;
+    first(r.fullTextUrlList?.fullTextUrl?.[0]?.url) ?? `https://europepmc.org/article/${source}/${rawId}`;
 
   const article: Article = {
     pmid: id,
@@ -109,8 +132,13 @@ export class EuropePmcAdapter extends RestAdapter {
   }
 
   protected async fetchOne(id: string): Promise<Article | null> {
-    const params = new URLSearchParams({ query: id, format: "json", resultType: "core", pageSize: "1" });
+    // A bare-id query is a full-text search for that number and returns unrelated
+    // papers, so look the record up by EXT_ID + SRC and only accept an exact match.
+    const params = new URLSearchParams({ query: exactIdQuery(id), format: "json", resultType: "core", pageSize: "1" });
     const data = await this.http.json<EpmcResponse>(`${BASE}?${params.toString()}`);
-    return parseEuropePmc(data).articles[0] ?? null;
+    const article = parseEuropePmc(data).articles[0];
+    if (!article) return null;
+    // A PMCID query returns the record under its PubMed id; anything else must match.
+    return article.pmid.toUpperCase() === id.toUpperCase() || /^PMC\d+$/i.test(id) ? article : null;
   }
 }

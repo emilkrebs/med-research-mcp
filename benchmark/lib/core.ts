@@ -2,10 +2,10 @@
  * Single seam between the benchmark and the med-research-mcp core library.
  *
  * The benchmark imports the core *directly from source* (`../../src/core`),
- * run through tsx — no stdio, no build step, no MCP round-trip. Condition C
- * exercises exactly the functions the MCP server wraps (`searchLiterature`,
- * `fetchLiterature`, `fetchFulltext`); the scorer uses `NcbiClient` +
- * `keywordGrade` to verify cited PMIDs against live PubMed.
+ * run through tsx — no build step. Condition C talks to the real MCP server
+ * (`createServer` from `../../src/mcp/server`, over an in-memory transport, so
+ * no stdio and no env warnings); the scorer uses `NcbiClient` + `keywordGrade`
+ * to verify cited PMIDs against live PubMed.
  *
  * Everything that touches the library goes through this one file so a change to
  * the library's layout (or a switch to the built `dist/`) is a one-line edit here.
@@ -18,9 +18,17 @@ export {
   keywordGrade,
   STUDY_TYPES,
   NcbiClient,
+  PubMedAdapter,
   LRUBackend,
+  NullCache,
   createCache,
 } from "../../src/core/index.js";
+
+export { createServer } from "../../src/mcp/server.js";
+
+// Page extraction shared with the web-search baseline's `web_fetch`, so both
+// conditions turn HTML/PDF into text identically. Module exports, not public API.
+export { defaultHtmlToMarkdown as htmlToMarkdown, defaultPdfToText as pdfToText } from "../../src/core/fulltext.js";
 
 export type {
   SearchInput,

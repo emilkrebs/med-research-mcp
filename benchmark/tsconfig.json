@@ -14,6 +14,6 @@
     "verbatimModuleSyntax": true,
     "noEmit": true
   },
-  "include": ["run.ts", "grade.ts", "lib/**/*.ts"],
+  "include": ["*.ts", "lib/**/*.ts", "scripts/**/*.ts", "test/**/*.ts"],
   "exclude": ["node_modules", "results"]
 }
