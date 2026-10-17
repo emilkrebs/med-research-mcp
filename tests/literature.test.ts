@@ -49,6 +49,18 @@ const chinaxivRct: NcbiArticle = {
   language: "zh",
 };
 
+const epmcRct: NcbiArticle = {
+  pmid: "E1",
+  title: "Creatine supplementation in older adults",
+  authors: ["Smith J"],
+  journal: "Eur J Nutr",
+  pubDate: "2022",
+  doi: "10.1234/epmc",
+  publicationTypes: ["Randomized Controlled Trial", "Journal Article"],
+  meshHeadings: ["Creatine", "Humans", "Aged"],
+  database: "europepmc",
+};
+
 const scieloPlain: NcbiArticle = {
   pmid: "S2",
   title: "Metabolic pathways of creatine",
@@ -61,55 +73,77 @@ const scieloPlain: NcbiArticle = {
 };
 
 describe("searchLiterature fan-out", () => {
-  it("merges, grades, de-duplicates by DOI, and sorts by evidence score", async () => {
+  it("merges, classifies, de-duplicates by DOI, and sorts by design tier", async () => {
     const adapters = [
       fakeAdapter("pubmed", [pubmedMeta], 100),
       fakeAdapter("scielo", [scieloReview, scieloPlain], 20),
       fakeAdapter("chinaxiv", [chinaxivRct], 5),
+      fakeAdapter("europepmc", [epmcRct], 7),
     ];
     const out = await searchLiterature({ query: "creatine", database: "all" }, new LRUBackend(), adapters);
 
-    // scieloReview shares a DOI with pubmedMeta (case-insensitive) and scores
-    // lower (review=1 vs meta-analysis=5), so it is dropped.
-    expect(out.articles.map((a) => a.pmid)).toEqual(["1", "C1", "S2"]);
-    expect(out.articles.map((a) => a.evidenceScore)).toEqual([5, 4, 0]);
+    // scieloReview shares a DOI with pubmedMeta (case-insensitive) and neither
+    // outranks the other, so the first-seen copy stays. The meta-analysis's pooled
+    // designs aren't indexed, so it is unrated and sorts with the unclassified
+    // records, which keep their per-adapter order after the rated RCT.
+    expect(out.articles.map((a) => a.pmid)).toEqual(["E1", "1", "S2", "C1"]);
+    expect(out.articles.map((a) => a.designTier)).toEqual([4, null, null, null]);
     // total sums each adapter's reported count.
-    expect(out.total).toBe(125);
+    expect(out.total).toBe(132);
   });
 
-  it("grades non-PubMed articles keyword-only (no NLM tags)", async () => {
-    const out = await searchLiterature({ query: "x", database: "chinaxiv" }, new LRUBackend(), [
+  it("classifies non-PubMed records from their own metadata and leaves untagged ones unknown", async () => {
+    const out = await searchLiterature({ query: "x", database: "all" }, new LRUBackend(), [
+      fakeAdapter("europepmc", [epmcRct]),
       fakeAdapter("chinaxiv", [chinaxivRct]),
     ]);
-    expect(out.articles).toHaveLength(1);
-    expect(out.articles[0]?.studyType).toBe("randomized-controlled-trial");
-    expect(out.articles[0]?.database).toBe("chinaxiv");
+    expect(out.articles.map((a) => [a.pmid, a.studyType])).toEqual([
+      ["E1", "randomized-controlled-trial"],
+      // "randomized controlled trial" in the title is not metadata.
+      ["C1", "unknown"],
+    ]);
   });
 
-  it("applies minEvidenceScore across all databases", async () => {
+  it("leaves MeSH headings out of search results", async () => {
+    const out = await searchLiterature({ query: "x", database: "europepmc" }, new LRUBackend(), [
+      fakeAdapter("europepmc", [epmcRct]),
+    ]);
+    expect(out.articles[0]).not.toHaveProperty("meshHeadings");
+  });
+
+  it("applies minDesignTier across all databases and reports dropped unrated records", async () => {
     const adapters = [
       fakeAdapter("pubmed", [pubmedMeta]),
       fakeAdapter("scielo", [scieloReview, scieloPlain]),
       fakeAdapter("chinaxiv", [chinaxivRct]),
+      fakeAdapter("europepmc", [epmcRct]),
     ];
     const out = await searchLiterature(
-      { query: "x", database: "all", minEvidenceScore: 4 },
+      { query: "x", database: "all", minDesignTier: 4 },
       new LRUBackend(),
       adapters,
     );
-    expect(out.articles.map((a) => a.pmid)).toEqual(["1", "C1"]);
-    // scieloPlain is unclassified, not weak — the drop must be surfaced.
-    expect(out.warnings?.some((w) => /1 result\(s\) with an undetermined study design/.test(w))).toBe(true);
+    expect(out.articles.map((a) => a.pmid)).toEqual(["E1"]);
+    // Unrated, not weak — the drop (including the unrated meta-analysis) must be surfaced.
+    expect(out.warnings?.some((w) => /4 result\(s\) with an unknown design tier/.test(w))).toBe(true);
+  });
+
+  it("keeps unclassified records at minDesignTier 0", async () => {
+    const out = await searchLiterature({ query: "x", database: "chinaxiv", minDesignTier: 0 }, new LRUBackend(), [
+      fakeAdapter("chinaxiv", [chinaxivRct]),
+    ]);
+    expect(out.articles.map((a) => a.pmid)).toEqual(["C1"]);
+    expect(out.warnings).toBeUndefined();
   });
 
   it("applies the studyTypes filter", async () => {
-    const adapters = [fakeAdapter("pubmed", [pubmedMeta]), fakeAdapter("chinaxiv", [chinaxivRct])];
+    const adapters = [fakeAdapter("pubmed", [pubmedMeta]), fakeAdapter("europepmc", [epmcRct])];
     const out = await searchLiterature(
       { query: "x", database: "all", studyTypes: ["randomized-controlled-trial"] },
       new LRUBackend(),
       adapters,
     );
-    expect(out.articles.map((a) => a.pmid)).toEqual(["C1"]);
+    expect(out.articles.map((a) => a.pmid)).toEqual(["E1"]);
   });
 
   it("degrades a failing adapter to a warning without sinking the others", async () => {

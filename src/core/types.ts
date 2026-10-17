@@ -4,16 +4,24 @@
  */
 
 /**
- * Study designs, roughly highest-evidence first. `review` is a narrative
- * (non-systematic) review; `unknown` means the design could not be determined —
- * it is unclassified, not weak.
+ * Study designs, ordered by design tier (see `DESIGN_TIER` in grader.ts).
+ *
+ * The classifier assigns a label only when NLM metadata establishes it; the
+ * generic `clinical-trial` and `observational` labels say as much as the
+ * metadata does and no more. `cohort`, `case-control`, `cross-sectional` and
+ * `in-vitro` are never assigned from metadata (MeSH design headings proved too
+ * imprecise); they exist for designs read from an abstract. `review` is a
+ * review article not indexed as systematic. `unknown`: no design metadata —
+ * unclassified, not weak.
  */
 export const STUDY_TYPES = [
   "meta-analysis",
   "systematic-review",
   "randomized-controlled-trial",
-  "non-randomized-trial",
   "cohort",
+  "non-randomized-trial",
+  "clinical-trial",
+  "observational",
   "case-control",
   "cross-sectional",
   "case-report",
@@ -25,11 +33,38 @@ export const STUDY_TYPES = [
 
 export type StudyType = (typeof STUDY_TYPES)[number];
 
-/** One rating-down step applied to the design's starting score. */
-export interface ScoreAdjustment {
-  /** Always ≤ 0 — scores are never rated up. */
-  delta: number;
-  reason: string;
+/**
+ * Facts about a record, read from its database metadata. `retracted`, `notice`,
+ * `protocol` and `editorial` mean the record is not usable as evidence, so its
+ * `designTier` is 0; the rest are warnings that leave the tier alone.
+ */
+export const RECORD_FLAGS = [
+  "retracted",
+  "notice",
+  "protocol",
+  "editorial",
+  "expression-of-concern",
+  "corrected",
+  "updated",
+  "animals-not-humans",
+  "preprint",
+  "letter",
+] as const;
+
+export type RecordFlag = (typeof RECORD_FLAGS)[number];
+
+/**
+ * Links from a record to notices about it, as PubMed's CommentsCorrections
+ * RefType names (Europe PMC's "Retraction in" etc. are mapped to these).
+ */
+export const CORRECTION_TYPES = ["RetractionIn", "ExpressionOfConcernIn", "ErratumIn", "UpdateIn"] as const;
+
+export type CorrectionType = (typeof CORRECTION_TYPES)[number];
+
+export interface Correction {
+  type: CorrectionType;
+  /** Id of the notice or newer version in the same database; absent for one-way links. */
+  id?: string;
 }
 
 /** Raw article metadata as returned by NCBI (esummary + efetch merged). */
@@ -42,10 +77,12 @@ export interface Article {
   /** Publication date as reported by the source database (e.g. "2021 Mar 15" or "2021"). */
   pubDate: string;
   doi?: string;
-  /** Source database's structured publication-type tags (NLM tags for PubMed, keyword-detected for others). */
+  /** NLM PublicationType tags (PubMed, Europe PMC). Empty for databases without them. */
   publicationTypes: string[];
-  /** MeSH headings assigned by NLM indexers (PubMed only). */
+  /** MeSH descriptor names assigned by NLM (PubMed, Europe PMC). Absent until a record is MEDLINE-indexed. */
   meshHeadings?: string[];
+  /** Retraction, expression of concern, erratum or newer version linked to this record (PubMed, Europe PMC). */
+  corrections?: Correction[];
   /** IDs cited by this article in the source database. */
   references?: string[];
 
@@ -62,49 +99,20 @@ export interface Article {
   language?: string;
 }
 
-/**
- * Who the intervention was actually tested on — the range of people behind a
- * result. Used to judge external validity (generalizability): a finding in 20
- * healthy young men doesn't automatically transfer to elderly women. Every
- * field is best-effort, extracted from the abstract, and absent when the study
- * didn't report it. This is NOT a quality score — a narrow but well-run trial
- * is still narrow.
- */
-export interface PopulationDiversity {
-  /** Total participants when a sample size is stated (e.g. "n = 240" → 240). */
-  sampleSize?: number;
-  /** Reported age span or central value (e.g. "18–65 years", "mean ~42 years"). */
-  age?: string;
-  /** Sex composition (e.g. "male only", "men and women (48% female)"). */
-  sex?: string;
-  /** Ancestry / geographic-origin cues when stated (e.g. "Japanese", "multi-ethnic"). */
-  ancestry?: string;
-  /** Health status of the group (e.g. "healthy", "patients with type 2 diabetes"). */
-  healthStatus?: string;
-  /**
-   * 0–1 rough breadth of the tested population — how many demographic axes were
-   * reported and how broad each is. A generalizability hint, not a quality
-   * score. Absent when no demographic signal could be extracted.
-   */
-  breadth?: number;
-  /** Why breadth is limited (single-sex, small n, one ancestry group, …). */
-  notes?: string[];
-}
-
-/** An article with keyword-based evidence classification. */
+/** An article with its study design classified from NLM metadata. */
 export interface GradedArticle extends Article {
+  /** From NLM PublicationType tags; `unknown` when the record has none that names a design. */
   studyType: StudyType;
-  /** 0–5. Higher is stronger evidence. The design's tier minus any {@link scoreAdjustments}. */
-  evidenceScore: number;
-  /** 0–1 confidence in the assigned study type. */
-  confidence: number;
-  /** Why the score is below the design's starting tier (retraction, protocol, pilot, …). */
-  scoreAdjustments?: ScoreAdjustment[];
-  dosage?: string;
-  population?: string;
-  /** Structured breakdown of the tested population — see {@link PopulationDiversity}. */
-  diversity?: PopulationDiversity;
-  limitations?: string[];
+  /**
+   * 0–5 rank of the design for "does this intervention help?" questions
+   * (OCEBM 2011 levels, see grader.ts) — not an appraisal of the study. 0 when a
+   * flag marks the record as not usable as evidence. `null` when the rank is
+   * unknown: no design metadata, or a systematic review / meta-analysis whose
+   * pooled study designs are not indexed.
+   */
+  designTier: number | null;
+  /** Retracted, notice, expression of concern, … — see {@link RECORD_FLAGS}. Absent when none apply. */
+  flags?: RecordFlag[];
 }
 
 export interface DateRange {
@@ -125,8 +133,8 @@ export interface SearchInput {
   database?: string | string[];
   /** Results to return. Default 10, hard cap 50. */
   maxResults?: number;
-  /** Drop results below this evidence score (0–5). Default 0. */
-  minEvidenceScore?: number;
+  /** Drop results below this design tier (0–5). Results with an unknown tier are dropped too. Default: keep all. */
+  minDesignTier?: number;
   /** Keep only these study types. Default: all. */
   studyTypes?: StudyType[];
   dateRange?: DateRange;

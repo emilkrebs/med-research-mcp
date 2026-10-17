@@ -210,9 +210,12 @@ export interface AccuracyDetail {
 }
 
 export interface EvidenceDetail {
-  score: number; // 0–5 mean
-  /** Every resolved citation; regional records (Europe PMC non-PubMed, ChinaXiv) carry `database`. */
-  pmids: { pmid: string; valid: boolean; evidenceScore?: number; studyType?: string; title?: string; database?: string }[];
+  score: number; // 0–5 mean design tier of the classified citations
+  /**
+   * Every resolved citation; regional records (Europe PMC non-PubMed, ChinaXiv) carry `database`.
+   * `designTier` is null for a record without design metadata (scorer v7+; older runs stored `evidenceScore`).
+   */
+  pmids: { pmid: string; valid: boolean; designTier?: number | null; studyType?: string; title?: string; database?: string }[];
   /** Non-PubMed identifiers found in the answer (counted, not graded). */
   other?: { id: string; kind: "doi" | "europepmc" | "arxiv-like" | "url" }[];
   /** PMIDs that appeared in the answer but were excluded because the prompt itself contains them. */

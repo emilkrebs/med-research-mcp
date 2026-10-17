@@ -81,7 +81,7 @@ describe("bullshitScore", () => {
   });
 
   it("non-bullshit queries penalize fabricated citations proportionally", () => {
-    const valid = [{ pmid: "1", exists: true, evidenceScore: 3, studyType: "cohort" as const, title: "", abstract: "" }];
+    const valid = [{ pmid: "1", exists: true, designTier: 3, studyType: "cohort" as const, title: "", abstract: "" }];
     expect(bullshitScore("x", cleanAudit, false)).toBe(1);
     expect(bullshitScore("x", { ...cleanAudit, cited: ["1", "2"], valid, fabricated: ["2"] }, false)).toBe(0.5);
   });

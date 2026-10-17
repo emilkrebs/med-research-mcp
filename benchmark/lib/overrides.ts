@@ -154,7 +154,8 @@ function resolveDim(wild: ScoreOverride[], exact: ScoreOverride[], dim: Dim): nu
  * Apply overrides to scored rows. After a component (accuracy / evidence /
  * bullshit) is overridden, the composite is recomputed via `compositeForCategory`
  * unless an override sets `composite` explicitly. A `null` component becomes NaN
- * ("unscored"), which makes a recomputed composite NaN too. Any numeric accuracy
+ * ("unscored"): a NaN accuracy or bullshit score makes a recomputed composite NaN
+ * too, while a NaN evidence score drops that term (see `composite`). Any numeric accuracy
  * override marks the row's `accuracy_source` as `human`.
  */
 export function applyOverrides(

@@ -96,7 +96,7 @@ mkdir -p ~/.claude/skills && cp -r <REPO>/skills/med-research <REPO>/skills/med-
 
 ## Step 5 — Verify
 
-Start a new session with the client and run a `literature_search` for `creatine AND cognition[tiab]` (maxResults 3). Expect a few graded articles with study types and 0–5 evidence scores.
+Start a new session with the client and run a `literature_search` for `creatine AND cognition[tiab]` (maxResults 3). Expect a few articles with a `studyType` and a 0–5 `designTier` (`null` when unknown — records without NLM design metadata, and most meta-analyses).
 
 ## Troubleshooting
 

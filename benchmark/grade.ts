@@ -249,7 +249,7 @@ export interface GradeView {
   prompt: string;
   rubric: string;
   answer: string;
-  pmids: { pmid: string; valid: boolean; studyType: string; evidenceScore?: number; title: string }[];
+  pmids: { pmid: string; valid: boolean; studyType: string; designTier?: number | null; title: string }[];
   /** Only present with --unblind. */
   unblinded?: { condition: string; model: string; run: number; proxy?: number };
 }
@@ -271,7 +271,7 @@ export function buildView(record: RawFile, query: BenchmarkQuery, unblind: boole
       pmid: p.pmid,
       valid: p.valid,
       studyType: p.studyType ?? "unknown",
-      evidenceScore: p.evidenceScore,
+      designTier: p.designTier,
       title: p.title ?? "(no title)",
     })),
   };
@@ -301,8 +301,8 @@ export function renderView(view: GradeView, index: number, total: number): strin
   out.push("\nCITED PMIDS (from this run's own citation audit — not re-fetched):");
   if (view.pmids.length === 0) out.push("  (no citations)");
   for (const p of view.pmids) {
-    const score = p.evidenceScore !== undefined ? `${p.evidenceScore}/5` : "n/a";
-    out.push(`  PMID ${p.pmid} — ${p.valid ? "VALID" : "FABRICATED"} | ${p.studyType} | evidence score ${score} | "${p.title}"`);
+    const tier = p.designTier != null ? `${p.designTier}/5` : "n/a";
+    out.push(`  PMID ${p.pmid} — ${p.valid ? "VALID" : "FABRICATED"} | ${p.studyType} | design tier ${tier} | "${p.title}"`);
   }
   if (u) {
     out.push(

@@ -9,24 +9,26 @@ import {
   type PmidFacts,
 } from "../lib/scoring/verify.js";
 
-const facts = (pmid: string, evidenceScore = 4): PmidFacts => ({
+const facts = (pmid: string, designTier: number | null = 4): PmidFacts => ({
   pmid,
   exists: true,
-  evidenceScore,
+  designTier,
   studyType: "randomized-controlled-trial",
   title: `T${pmid}`,
   abstract: "",
 });
 
 /** Offline verifier: `existing` PMIDs resolve; `dois`/`pmcids` map to PMIDs; everything else is absent. */
-function stub(opts: { existing?: string[]; map?: Record<string, string | null>; failFetch?: () => boolean } = {}) {
+function stub(
+  opts: { existing?: string[]; map?: Record<string, string | null>; failFetch?: () => boolean; tiers?: Record<string, number | null> } = {},
+) {
   const calls = { fetch: [] as string[][], resolve: [] as IdToResolve[] };
   const verifier = new Verifier({
     fetchArticles: async (pmids): Promise<FetchResult> => {
       calls.fetch.push(pmids);
       if (opts.failFetch?.()) throw new Error("ECONNRESET");
       return {
-        found: pmids.filter((p) => opts.existing?.includes(p)).map((p) => facts(p)),
+        found: pmids.filter((p) => opts.existing?.includes(p)).map((p) => facts(p, opts.tiers && p in opts.tiers ? opts.tiers[p] : 4)),
         missing: pmids.filter((p) => !opts.existing?.includes(p)),
       };
     },
@@ -122,6 +124,17 @@ describe("auditCitations", () => {
     expect(audit.valid).toHaveLength(2);
     expect(audit.fabricated).toEqual([]);
     expect(audit.evidenceQuality).toBe(4);
+  });
+
+  it("leaves citations with an unknown tier out of evidence quality", async () => {
+    const { verifier } = stub({ existing: ["111111", "222222", "333333"], tiers: { "111111": 5, "222222": 3, "333333": null } });
+    const audit = await auditCitations("PMID 111111, 222222 and 333333", "q", verifier);
+    expect(audit.valid).toHaveLength(3);
+    expect(audit.evidenceQuality).toBe(4);
+
+    // Only unrated citations: nothing to score (NaN), unlike citing nothing real (0).
+    const { verifier: onlyUnknown } = stub({ existing: ["333333"], tiers: { "333333": null } });
+    expect((await auditCitations("PMID 333333", "q", onlyUnknown)).evidenceQuality).toBeNaN();
   });
 
   it("puts unresolved DOIs and other ids in `other`, never in fabricated", async () => {

@@ -20,6 +20,15 @@ const RESPONSE = {
         abstractText: "A randomized controlled trial.",
         language: "eng",
         fullTextUrlList: { fullTextUrl: [{ url: "https://europepmc.org/article/MED/33000001" }] },
+        pubTypeList: { pubType: ["Randomized Controlled Trial", "Journal Article"] },
+        commentCorrectionList: {
+          commentCorrection: [
+            { id: "35000001", source: "MED", type: "Retraction in" },
+            { id: "35000002", source: "MED", type: "Comment in" },
+            { id: "123", source: "CBA", type: "Update in" },
+          ],
+        },
+        meshHeadingList: { meshHeading: [{ majorTopic_YN: "Y", descriptorName: "Creatine" }, { majorTopic_YN: "N", descriptorName: "Humans" }] },
       },
       {
         id: "PPR12345",
@@ -31,6 +40,7 @@ const RESPONSE = {
         pubYear: "2022",
         abstractText: "Preprint abstract.",
         language: "eng",
+        pubTypeList: { pubType: ["Preprint"] },
       },
     ],
   },
@@ -68,6 +78,23 @@ describe("parseEuropePmc", () => {
 
     // No full-text link → URL reconstructed from source + id.
     expect(articles[1]!.url).toBe("https://europepmc.org/article/PPR/PPR12345");
+  });
+
+  it("keeps NLM publication types and MeSH descriptor names", () => {
+    const [med, ppr] = parseEuropePmc(RESPONSE).articles;
+    expect(med!.publicationTypes).toEqual(["Randomized Controlled Trial", "Journal Article"]);
+    expect(med!.meshHeadings).toEqual(["Creatine", "Humans"]);
+    expect(ppr!.publicationTypes).toEqual(["Preprint"]);
+    expect(ppr).not.toHaveProperty("meshHeadings");
+  });
+
+  it("maps retraction/update links to PubMed RefType names and drops comment links", () => {
+    const [med, ppr] = parseEuropePmc(RESPONSE).articles;
+    expect(med!.corrections).toEqual([
+      { type: "RetractionIn", id: "35000001" },
+      { type: "UpdateIn", id: "CBA:123" },
+    ]);
+    expect(ppr).not.toHaveProperty("corrections");
   });
 });
 

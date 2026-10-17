@@ -8,8 +8,9 @@ import { XMLParser } from "fast-xml-parser";
 import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors } from "./errors.js";
-import { keywordGrade, unclassifiedDroppedWarning } from "./grader.js";
-import type { FetchInput, FetchOutput, GradedArticle, Article, SearchInput, SearchOutput, StudyType } from "./types.js";
+import { classifyArticle, unclassifiedDroppedWarning } from "./grader.js";
+import { CORRECTION_TYPES } from "./types.js";
+import type { Correction, CorrectionType, FetchInput, FetchOutput, GradedArticle, Article, SearchInput, SearchOutput, StudyType } from "./types.js";
 
 const EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
 const MAX_RESULTS_CAP = 50;
@@ -69,6 +70,14 @@ interface EsummaryDoc {
   pubtype?: string[];
   /** Present on NCBI's ERROR-DOC shape for uids it doesn't recognize, e.g. a nonexistent PMID. */
   error?: string;
+}
+
+/** What efetch adds to an esummary record. */
+interface EfetchData {
+  abstract?: string;
+  publicationTypes: string[];
+  meshHeadings: string[];
+  corrections: Correction[];
 }
 
 function toArray<T>(value: T | T[] | undefined | null): T[] {
@@ -213,9 +222,9 @@ export class NcbiClient {
     return article;
   }
 
-  /** Fetches abstract text and publication types via efetch XML. Keyed by PMID. */
-  async efetch(pmids: string[]): Promise<Map<string, { abstract?: string; publicationTypes: string[] }>> {
-    const out = new Map<string, { abstract?: string; publicationTypes: string[] }>();
+  /** Fetches abstract text, publication types, MeSH headings and correction links via efetch XML. Keyed by PMID. */
+  async efetch(pmids: string[]): Promise<Map<string, EfetchData>> {
+    const out = new Map<string, EfetchData>();
     if (pmids.length === 0) return out;
 
     const params = new URLSearchParams({
@@ -230,8 +239,8 @@ export class NcbiClient {
   }
 
   /** Exposed for testing: parse an efetch XML string. */
-  parseEfetch(xml: string): Map<string, { abstract?: string; publicationTypes: string[] }> {
-    const out = new Map<string, { abstract?: string; publicationTypes: string[] }>();
+  parseEfetch(xml: string): Map<string, EfetchData> {
+    const out = new Map<string, EfetchData>();
     let parsed: Record<string, unknown>;
     try {
       parsed = this.parser.parse(xml) as Record<string, unknown>;
@@ -252,6 +261,8 @@ export class NcbiClient {
           ? { abstract: extractAbstract(articleNode.Abstract) }
           : {}),
         publicationTypes: extractPubTypes(articleNode.PublicationTypeList),
+        meshHeadings: extractMesh(citation.MeshHeadingList),
+        corrections: extractCorrections(citation.CommentsCorrectionsList),
       });
     }
     return out;
@@ -284,21 +295,67 @@ function extractAbstract(abstractNode: unknown): string | undefined {
   return joined || undefined;
 }
 
+/** Text of an element that may carry attributes (`{ "#text": …, "@_UI": … }`) or be a bare value. */
+function nodeText(node: unknown): string {
+  if (typeof node === "string" || typeof node === "number") return String(node).trim();
+  if (!node || typeof node !== "object") return "";
+  return String((node as Record<string, unknown>)["#text"] ?? "").trim();
+}
+
 function extractPubTypes(ptl: unknown): string[] {
   if (!ptl || typeof ptl !== "object") return [];
-  const pt = (ptl as Record<string, unknown>).PublicationType;
-  return toArray(pt)
-    .map((node) => {
-      if (typeof node === "string" || typeof node === "number") return String(node);
-      if (!node || typeof node !== "object") return "";
-      return String((node as Record<string, unknown>)["#text"] ?? "");
-    })
-    .map((s) => s.trim())
+  return toArray((ptl as Record<string, unknown>).PublicationType).map(nodeText).filter(Boolean);
+}
+
+/** Descriptor names from a MeshHeadingList (qualifiers dropped). */
+function extractMesh(mhl: unknown): string[] {
+  if (!mhl || typeof mhl !== "object") return [];
+  return toArray((mhl as Record<string, unknown>).MeshHeading)
+    .map((h) => (h && typeof h === "object" ? nodeText((h as Record<string, unknown>).DescriptorName) : ""))
     .filter(Boolean);
 }
 
+const CORRECTION_SET: ReadonlySet<string> = new Set(CORRECTION_TYPES);
+
 /**
- * Search PubMed and return keyword-graded results.
+ * Retraction, expression-of-concern, erratum and update links from a
+ * CommentsCorrectionsList (RefType names per NLM's MEDLINE/PubMed XML element
+ * descriptions). Comment and citation links are dropped.
+ */
+function extractCorrections(ccl: unknown): Correction[] {
+  if (!ccl || typeof ccl !== "object") return [];
+  const out: Correction[] = [];
+  for (const node of toArray((ccl as Record<string, unknown>).CommentsCorrections)) {
+    if (!node || typeof node !== "object") continue;
+    const rec = node as Record<string, unknown>;
+    const type = String(rec["@_RefType"] ?? "");
+    if (!CORRECTION_SET.has(type)) continue;
+    const id = extractPmid(rec.PMID);
+    out.push({ type: type as CorrectionType, ...(id ? { id } : {}) });
+  }
+  return out;
+}
+
+/** Copy efetch's publication types, MeSH and correction links onto an esummary record that lacks them. Returns true if it changed. */
+function backfill(article: Article, data: EfetchData): boolean {
+  let changed = false;
+  if (article.publicationTypes.length === 0 && data.publicationTypes.length > 0) {
+    article.publicationTypes = data.publicationTypes;
+    changed = true;
+  }
+  if (!article.meshHeadings && data.meshHeadings.length > 0) {
+    article.meshHeadings = data.meshHeadings;
+    changed = true;
+  }
+  if (!article.corrections && data.corrections.length > 0) {
+    article.corrections = data.corrections;
+    changed = true;
+  }
+  return changed;
+}
+
+/**
+ * Search PubMed and return results classified from their NLM metadata.
  *
  * @param cache reused across calls to avoid re-fetching summaries/abstracts.
  * @param client injectable NCBI client; defaults to one configured from env.
@@ -325,7 +382,7 @@ export async function searchPubMed(
     );
   }
 
-  // Summaries (metadata) — cache-first.
+  // Summaries (metadata) — cache-first; expired entries come back as misses.
   const summaries = new Map<string, Article>();
   const missingSummaries = pmids.filter((pmid) => {
     const cached = cache.getSummary(pmid);
@@ -343,39 +400,34 @@ export async function searchPubMed(
     }
   }
 
-  // Abstracts + publication types — cache-first for abstracts.
+  // efetch for missing abstracts, and for every freshly fetched summary: only
+  // efetch carries MeSH and retraction/correction links.
   const abstracts = new Map<string, string>();
-  const missingAbstracts: string[] = [];
+  const needEfetch: string[] = [];
   for (const pmid of pmids) {
     const cached = cache.getAbstract(pmid);
-    if (cached != null) {
-      abstracts.set(pmid, cached);
-    } else {
-      missingAbstracts.push(pmid);
-    }
+    if (cached != null) abstracts.set(pmid, cached);
+    if (cached == null || missingSummaries.includes(pmid)) needEfetch.push(pmid);
   }
-  if (missingAbstracts.length > 0) {
+  if (needEfetch.length > 0) {
     try {
-      const fetched = await client.efetch(missingAbstracts);
+      const fetched = await client.efetch(needEfetch);
       for (const [pmid, data] of fetched) {
         if (data.abstract) {
           cache.setAbstract(pmid, data.abstract);
           abstracts.set(pmid, data.abstract);
         }
-        // Backfill publication types when esummary didn't provide them.
+        // esummary has no MeSH or correction links, and sometimes no publication types.
         const summary = summaries.get(pmid);
-        if (summary && summary.publicationTypes.length === 0 && data.publicationTypes.length > 0) {
-          summary.publicationTypes = data.publicationTypes;
-          cache.setSummary(pmid, summary);
-        }
+        if (summary && backfill(summary, data)) cache.setSummary(pmid, summary);
       }
     } catch (err) {
-      // Abstracts are best-effort: degrade to title-only grading with a warning.
-      warnings.push("Some abstracts could not be fetched; those articles were graded from title only.");
+      // Abstracts are best-effort: degrade with a warning.
+      warnings.push("Some abstracts could not be fetched; those articles lack abstracts, MeSH headings and retraction/correction links.");
     }
   }
 
-  const minScore = input.minEvidenceScore ?? 0;
+  const minTier = input.minDesignTier ?? 0;
   const typeFilter = input.studyTypes ? new Set<StudyType>(input.studyTypes) : null;
 
   const articles: GradedArticle[] = [];
@@ -385,9 +437,9 @@ export async function searchPubMed(
     if (!summary) continue;
     const abstract = abstracts.get(pmid);
     const article: Article = abstract ? { ...summary, abstract } : summary;
-    const graded = keywordGrade(article);
-    if (graded.evidenceScore < minScore) {
-      if (graded.studyType === "unknown") droppedUnclassified += 1;
+    const graded = classifyArticle(article);
+    if ((graded.designTier ?? 0) < minTier) {
+      if (graded.designTier == null) droppedUnclassified += 1;
       continue;
     }
     if (typeFilter && !typeFilter.has(graded.studyType)) continue;
@@ -440,32 +492,26 @@ export async function fetchPubMed(
     if (!allArticles.has(pmid)) missing.push(pmid);
   }
 
-  // Abstracts (best-effort, cache-aware).
+  // Abstracts (best-effort, cache-aware). efetch also runs for every freshly
+  // fetched summary: only efetch carries MeSH and retraction/correction links.
   const pmidsWithSummary = [...allArticles.keys()];
-  const needAbstract = pmidsWithSummary.filter((pmid) => cache.getAbstract(pmid) == null);
+  for (const pmid of pmidsWithSummary) {
+    const article = allArticles.get(pmid)!;
+    const cached = article.abstract ? null : cache.getAbstract(pmid);
+    if (cached != null) article.abstract = cached;
+  }
+  const needEfetch = pmidsWithSummary.filter((pmid) => needSummary.includes(pmid) || cache.getAbstract(pmid) == null);
 
-  if (needAbstract.length > 0) {
+  if (needEfetch.length > 0) {
     try {
-      const fetched = await client.efetch(needAbstract);
+      const fetched = await client.efetch(needEfetch);
       for (const [pmid, data] of fetched) {
-        if (data.abstract) {
-          cache.setAbstract(pmid, data.abstract);
-          const article = allArticles.get(pmid);
-          if (article) {
-            article.abstract = data.abstract;
-            if (article.publicationTypes.length === 0 && data.publicationTypes.length > 0) {
-              article.publicationTypes = data.publicationTypes;
-            }
-            cache.setSummary(pmid, article);
-          }
-        }
-        if (data.publicationTypes.length > 0) {
-          const article = allArticles.get(pmid);
-          if (article && article.publicationTypes.length === 0) {
-            article.publicationTypes = data.publicationTypes;
-            cache.setSummary(pmid, article);
-          }
-        }
+        if (data.abstract) cache.setAbstract(pmid, data.abstract);
+        const article = allArticles.get(pmid);
+        if (!article) continue;
+        const changed = backfill(article, data);
+        if (data.abstract) article.abstract = data.abstract;
+        if (changed || data.abstract) cache.setSummary(pmid, article);
       }
     } catch {
       warnings.push("Some abstracts could not be fetched.");

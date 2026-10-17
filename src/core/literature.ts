@@ -2,19 +2,18 @@
  * Multi-database dispatch layer.
  *
  * `searchLiterature` fans a query out to one or more {@link DatabaseAdapter}s,
- * grades every result with the same keyword grader, merges the
- * lists, de-duplicates by DOI (keeping the higher-scored copy), and sorts by
- * evidence score. `fetchLiterature` fetches specific ids from one database.
+ * classifies every result's design from its metadata, merges the lists,
+ * de-duplicates by DOI (keeping the better-classified copy), and sorts by design
+ * tier. `fetchLiterature` fetches specific ids from one database.
  *
- * Non-PubMed articles lack NLM PublicationType tags, so they are graded
- * keyword-only: their *confidence* is lower, but the score scale is the same —
- * source and language never lower a score by themselves.
+ * Databases without NLM publication types (ChinaXiv, RussiaRxiv) always come
+ * back `unknown`: the calling model reads the design from the abstract.
  */
 
 import { getAdapter, getAdapters, type DatabaseAdapter } from "./adapters/registry.js";
 import { doiKey } from "./adapters/util.js";
 import { LRUBackend, type Cache } from "./cache.js";
-import { keywordGrade, unclassifiedDroppedWarning } from "./grader.js";
+import { classifyArticle, rankKey, unclassifiedDroppedWarning } from "./grader.js";
 import type {
   FetchOutput,
   GradedArticle,
@@ -33,7 +32,7 @@ function toIdList(database: SearchInput["database"]): string[] {
   return list.length > 0 ? list : ["pubmed"];
 }
 
-/** Keep one article per DOI (higher evidence score wins); DOI-less articles all pass through. */
+/** Keep one article per DOI (higher rank wins); DOI-less articles all pass through. */
 function dedupeByDoi(articles: GradedArticle[]): GradedArticle[] {
   const byKey = new Map<string, GradedArticle>();
   // `slots` preserves first-seen order; a string entry is a DOI key placeholder.
@@ -48,7 +47,7 @@ function dedupeByDoi(articles: GradedArticle[]): GradedArticle[] {
     if (!existing) {
       byKey.set(key, article);
       slots.push(key);
-    } else if (article.evidenceScore > existing.evidenceScore) {
+    } else if (rankKey(article) > rankKey(existing)) {
       byKey.set(key, article);
     }
   }
@@ -56,7 +55,7 @@ function dedupeByDoi(articles: GradedArticle[]): GradedArticle[] {
 }
 
 /**
- * Search one or more databases and return graded, merged, de-duplicated results.
+ * Search one or more databases and return classified, merged, de-duplicated results.
  *
  * @param cache reused across calls; scoped per-database inside each adapter.
  * @param adapters explicit adapter list; defaults to those named in `input.database`.
@@ -94,7 +93,7 @@ export async function searchLiterature(
     }),
   );
 
-  const minScore = input.minEvidenceScore ?? 0;
+  const minTier = input.minDesignTier ?? 0;
   const typeFilter = input.studyTypes ? new Set(input.studyTypes) : null;
 
   let total = 0;
@@ -103,9 +102,10 @@ export async function searchLiterature(
   for (const { count, articles } of perAdapter) {
     total += count;
     for (const article of articles) {
-      const g = keywordGrade(article);
-      if (g.evidenceScore < minScore) {
-        if (g.studyType === "unknown") droppedUnclassified += 1;
+      // MeSH feeds the classification; search results leave it to literature_fetch to stay compact.
+      const { meshHeadings: _mesh, ...g } = classifyArticle(article);
+      if ((g.designTier ?? 0) < minTier) {
+        if (g.designTier == null) droppedUnclassified += 1;
         continue;
       }
       if (typeFilter && !typeFilter.has(g.studyType)) continue;
@@ -115,9 +115,8 @@ export async function searchLiterature(
   if (droppedUnclassified > 0) warnings.push(unclassifiedDroppedWarning(droppedUnclassified));
 
   const merged = dedupeByDoi(graded);
-  // Stable sort by evidence score (then confidence) — equal-score items keep
-  // their per-adapter relevance order.
-  merged.sort((a, b) => b.evidenceScore - a.evidenceScore || b.confidence - a.confidence);
+  // Stable sort — equal-rank items keep their per-adapter relevance order.
+  merged.sort((a, b) => rankKey(b) - rankKey(a));
 
   return {
     articles: merged,

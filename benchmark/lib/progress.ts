@@ -88,7 +88,7 @@ export function summarizeToolInput(toolName: string, input: unknown): string {
   if (db) extras.push(db);
   if (typeof a.maxResults === "number") extras.push(`max ${a.maxResults}`);
   if (Array.isArray(a.studyTypes) && a.studyTypes.length > 0) extras.push(a.studyTypes.join("/"));
-  if (typeof a.minEvidenceScore === "number") extras.push(`≥${a.minEvidenceScore}`);
+  if (typeof a.minDesignTier === "number") extras.push(`≥${a.minDesignTier}`);
   const tail = extras.length > 0 ? ` (${extras.join(", ")})` : "";
 
   if (typeof a.query === "string") return `${toolName} "${clip(a.query, 70)}"${tail}`;

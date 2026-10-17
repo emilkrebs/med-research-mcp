@@ -38,9 +38,11 @@ import { compositeForCategory } from "./composite.js";
  * resolution, prompt-echo exclusion, study-specific rejection patterns; v3 =
  * passive-voice rejections, markdown-tolerant PMID anchors, `contextTruncated` runs score as `truncated`;
  * v5 = attribution audit, Europe PMC / ChinaXiv citations looked up and graded;
- * v6 = a DOI, decimal or year after a PMID anchor is no longer read as a short PMID).
+ * v6 = a DOI, decimal or year after a PMID anchor is no longer read as a short PMID;
+ * v7 = evidence quality is the mean design tier from NLM metadata; unrated citations (no design metadata,
+ * syntheses of unindexed designs) are left out, citing only those leaves it NaN and the composite drops that term).
  */
-export const SCORER_VERSION = 6;
+export const SCORER_VERSION = 7;
 
 export interface ScoreResult {
   row: ScoreRow;
@@ -48,6 +50,9 @@ export interface ScoreResult {
 }
 
 const round2 = (x: number): number => Math.round(x * 100) / 100;
+
+/** A stored score: JSON turns NaN ("unscored") into null, so null reads back as NaN; a missing field (older breakdowns) as 0. */
+const scored = (x: number | null | undefined): number => (x === null ? Number.NaN : (x ?? 0));
 
 /** Map an answer-key kind to where its accuracy number comes from (overrides flip `proxy` → `human` later). */
 function sourceForKind(kind: string): AccuracySource {
@@ -139,7 +144,7 @@ async function scoreRunUnsafe(run: RunRecord, query: BenchmarkQuery, verifier: V
       pmids: audit.cited.map((pmid) => {
         const v = audit.valid.find((f) => f.pmid === pmid);
         return v
-          ? { pmid, valid: true, evidenceScore: v.evidenceScore, studyType: v.studyType, title: v.title, ...(v.database ? { database: v.database } : {}) }
+          ? { pmid, valid: true, designTier: v.designTier, studyType: v.studyType, title: v.title, ...(v.database ? { database: v.database } : {}) }
           : { pmid, valid: false };
       }),
       other: audit.other,
@@ -171,9 +176,9 @@ export function rowFromBreakdown(record: RunRecord, breakdown: ScoreBreakdown): 
     model: record.model,
     run: record.run,
     status,
-    accuracy: round2(breakdown.accuracy?.score ?? 0),
+    accuracy: round2(scored(breakdown.accuracy?.score)),
     accuracy_source: sourceForKind(String(breakdown.accuracy?.kind)),
-    evidence_quality: round2(breakdown.evidenceQuality?.score ?? 0),
+    evidence_quality: round2(scored(breakdown.evidenceQuality?.score)),
     bullshit_score: round2(breakdown.bullshit?.score ?? 0),
     speed_s: round2(record.speedS),
     input_tokens: record.usage?.inputTokens ?? 0,
@@ -188,6 +193,6 @@ export function rowFromBreakdown(record: RunRecord, breakdown: ScoreBreakdown): 
     ...(breakdown.attribution
       ? { citations_checked: breakdown.attribution.checked, citations_misattributed: breakdown.attribution.misattributed }
       : {}),
-    composite: round2(breakdown.composite ?? 0),
+    composite: round2(scored(breakdown.composite)),
   };
 }

@@ -20,6 +20,28 @@ const EFETCH_XML = `<?xml version="1.0" ?>
           <PublicationType UI="D016428">Journal Article</PublicationType>
         </PublicationTypeList>
       </Article>
+      <CommentsCorrectionsList>
+        <CommentsCorrections RefType="CommentIn">
+          <RefSource>J Test. 2022;1:2.</RefSource>
+          <PMID Version="1">33333333</PMID>
+        </CommentsCorrections>
+        <CommentsCorrections RefType="RetractionIn">
+          <RefSource>J Test. 2023;2:3.</RefSource>
+          <PMID Version="1">44444444</PMID>
+        </CommentsCorrections>
+        <CommentsCorrections RefType="ErratumIn">
+          <RefSource>J Test. 2023;2:4.</RefSource>
+        </CommentsCorrections>
+      </CommentsCorrectionsList>
+      <MeshHeadingList>
+        <MeshHeading>
+          <DescriptorName UI="D003401" MajorTopicYN="Y">Creatine</DescriptorName>
+          <QualifierName UI="Q000008" MajorTopicYN="N">administration &amp; dosage</QualifierName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D006801" MajorTopicYN="N">Humans</DescriptorName>
+        </MeshHeading>
+      </MeshHeadingList>
     </MedlineCitation>
   </PubmedArticle>
   <PubmedArticle>
@@ -61,6 +83,16 @@ describe("NcbiClient.parseEfetch", () => {
       "Journal Article",
     ]);
     expect(parsed.get("22222222")?.publicationTypes).toEqual(["Review"]);
+  });
+
+  it("extracts MeSH descriptor names and an empty list when there are none", () => {
+    expect(parsed.get("11111111")?.meshHeadings).toEqual(["Creatine", "Humans"]);
+    expect(parsed.get("22222222")?.meshHeadings).toEqual([]);
+  });
+
+  it("keeps retraction/erratum links (with their PMID when given) and drops comment links", () => {
+    expect(parsed.get("11111111")?.corrections).toEqual([{ type: "RetractionIn", id: "44444444" }, { type: "ErratumIn" }]);
+    expect(parsed.get("22222222")?.corrections).toEqual([]);
   });
 
   it("handles an unlabeled single abstract section", () => {
@@ -159,25 +191,26 @@ function fakeClient(): NcbiClient {
     esummary: async (pmids: string[]) => new Map(pmids.map((p) => [p, summaries.get(p)!])),
     efetch: async () =>
       new Map([
-        ["11111111", { abstract: "A double-blind randomized controlled trial in 40 adults.", publicationTypes: ["Randomized Controlled Trial"] }],
-        ["22222222", { abstract: "This narrative review summarizes evidence.", publicationTypes: ["Review"] }],
+        ["11111111", { abstract: "A double-blind randomized controlled trial in 40 adults.", publicationTypes: ["Randomized Controlled Trial"], meshHeadings: ["Humans"], corrections: [] }],
+        ["22222222", { abstract: "This narrative review summarizes evidence.", publicationTypes: ["Review"], meshHeadings: [], corrections: [{ type: "RetractionIn", id: "55555555" }] }],
       ]),
   } as unknown as NcbiClient;
 }
 
 describe("searchPubMed orchestration", () => {
-  it("grades results and preserves esearch order", async () => {
+  it("classifies results and preserves esearch order", async () => {
     const out = await searchPubMed({ query: "creatine" }, new LRUBackend(), fakeClient());
     expect(out.total).toBe(2);
     expect(out.articles.map((a) => a.pmid)).toEqual(["11111111", "22222222"]);
     expect(out.articles[0]?.studyType).toBe("randomized-controlled-trial");
-    expect(out.articles[0]?.evidenceScore).toBe(4);
+    expect(out.articles[0]?.designTier).toBe(4);
+    expect(out.articles[0]?.meshHeadings).toEqual(["Humans"]);
+    // 22222222's efetch record carries a retraction link (see the retraction test below).
     expect(out.articles[1]?.studyType).toBe("review");
-    expect(out.articles[1]?.evidenceScore).toBe(1);
   });
 
-  it("filters by minEvidenceScore", async () => {
-    const out = await searchPubMed({ query: "x", minEvidenceScore: 4 }, new LRUBackend(), fakeClient());
+  it("filters by minDesignTier", async () => {
+    const out = await searchPubMed({ query: "x", minDesignTier: 4 }, new LRUBackend(), fakeClient());
     expect(out.articles).toHaveLength(1);
     expect(out.articles[0]?.pmid).toBe("11111111");
   });
@@ -186,5 +219,34 @@ describe("searchPubMed orchestration", () => {
     const out = await searchPubMed({ query: "x", studyTypes: ["review"] }, new LRUBackend(), fakeClient());
     expect(out.articles).toHaveLength(1);
     expect(out.articles[0]?.studyType).toBe("review");
+  });
+
+  it("flags a retraction that only efetch's correction links carry", async () => {
+    const out = await searchPubMed({ query: "x" }, new LRUBackend(), fakeClient());
+    expect(out.articles[1]).toMatchObject({ studyType: "review", designTier: 0, flags: ["retracted"] });
+  });
+});
+
+describe("fetchPubMed metadata refresh", () => {
+  it("re-runs efetch for a refreshed summary even when its abstract is cached", async () => {
+    const cache = new LRUBackend();
+    cache.setAbstract("22222222", "Cached abstract.");
+    const client = fakeClient();
+    const efetch = vi.spyOn(client, "efetch");
+    const out = await fetchPubMed({ ids: ["22222222"] }, cache, client);
+    expect(efetch).toHaveBeenCalledWith(["22222222"]);
+    // The retraction link arrives with efetch; the cached abstract is not lost.
+    expect(out.articles[0]?.corrections).toEqual([{ type: "RetractionIn", id: "55555555" }]);
+    expect(out.articles[0]?.abstract).toBeDefined();
+  });
+
+  it("skips efetch when both summary and abstract are cached", async () => {
+    const cache = new LRUBackend();
+    const client = fakeClient();
+    await fetchPubMed({ ids: ["11111111"] }, cache, client);
+    const efetch = vi.spyOn(client, "efetch");
+    const out = await fetchPubMed({ ids: ["11111111"] }, cache, client);
+    expect(efetch).not.toHaveBeenCalled();
+    expect(out.articles[0]?.abstract).toBe("A double-blind randomized controlled trial in 40 adults.");
   });
 });
