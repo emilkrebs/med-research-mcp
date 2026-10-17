@@ -57,7 +57,7 @@ Fetch full metadata and abstracts for one or more ids from a specific database. 
 
 | Parameter | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `ids` | `string[]` | yes | Database-specific ids (PMIDs for pubmed, etc.). 1–50. |
+| `ids` | `string[]` | yes | Database-specific ids (PMIDs for pubmed, etc.). 1–50. Europe PMC records outside PubMed carry a source prefix, e.g. `CBA:521529` (Chinese Biological Abstracts). |
 | `database` | `string` | yes | Which database the ids belong to: `pubmed`, `europepmc`, `chinaxiv`, `russiarxiv`. |
 
 ### `literature_fulltext`

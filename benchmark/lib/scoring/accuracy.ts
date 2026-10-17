@@ -1,105 +1,97 @@
 /**
  * Accuracy scoring (0–10), dispatched on the query's answer-key kind:
- *   evidence-score → recompute ground truth with the library grader, compare to
- *                    the score/study-type the model stated (fully automated).
- *   values         → fraction of required strings present, fuzzy-matched.
- *   rubric         → citation-quality proxy: evidenceQuality (0–5) × 2, clamped
- *                    to 0 when citations were expected but none are valid.
- *   reject         → handled by the bullshit scorer; accuracy mirrors it in score.ts.
+ *   values  → parse the final `ANSWER — field: value | field: value` line and
+ *             compare each expected `field: value` pair against it (fully automated).
+ *   rubric  → citation-quality proxy: evidenceQuality (0–5) × 2, clamped to 0
+ *             when citations were expected but none are valid. A human grade in
+ *             overrides.json replaces it.
+ *   reject  → handled by the bullshit scorer; accuracy mirrors it in score.ts.
  */
 
-import type { AnswerKey, BenchmarkQuery, AccuracyDetail } from "../types.js";
-import type { StudyType } from "../core.js";
-import type { CitationAudit, Verifier } from "./verify.js";
+import type { BenchmarkQuery, AccuracyDetail } from "../types.js";
+import type { CitationAudit } from "./verify.js";
 
-/** First match wins, so negated/specific patterns precede the broader ones they overlap. */
-const TYPE_PATTERNS: Record<StudyType, RegExp> = {
-  "meta-analysis": /meta[-\s]?analys|pooled analysis/i,
-  "systematic-review": /systematic review/i,
-  "non-randomized-trial": /non[-\s]?randomi[sz]ed|single[-\s]arm/i,
-  "randomized-controlled-trial": /randomi[sz]ed|\brct\b|double[-\s]blind|placebo[-\s]control/i,
-  cohort: /\bcohort\b|longitudinal|prospective/i,
-  "case-control": /case[-\s]control/i,
-  "cross-sectional": /cross[-\s]sectional/i,
-  "case-report": /case report|case study|case presentation|case series/i,
-  review: /\breview\b/i,
-  "animal-study": /\banimal\b|murine|rodent|\bmice\b|\bmouse\b|\brats?\b/i,
-  "in-vitro": /in vitro|cell line/i,
-  unknown: /(?!)/, // never matches
-};
-
-/** Pull the score the model presents (e.g. "4/5", "score of 3.5", "4 out of 5"). */
-function extractStatedScore(text: string): number | undefined {
-  const outOf = text.match(/(\d(?:\.\d)?)\s*(?:\/|out\s+of)\s*5\b/i);
-  if (outOf) return Number(outOf[1]);
-  const labelled = text.match(/score[^\d]{0,25}(\d(?:\.\d)?)/i);
-  if (labelled) return Number(labelled[1]);
-  return undefined;
+/** Normalize a line: strip markdown, unify dashes, collapse whitespace, lowercase. */
+function normalizeLine(s: string): string {
+  return s
+    .replace(/[*_`]/g, "")
+    .replace(/[‐-―−]/g, "-")
+    .replace(/\s+/g, " ")
+    .replace(/(\d)\s*\/\s*(\d)/g, "$1/$2")
+    .trim()
+    .toLowerCase();
 }
 
-/** Extract stated study type from text by pattern matching. */
-function extractStatedType(text: string): string | undefined {
-  for (const [type, pattern] of Object.entries(TYPE_PATTERNS) as [StudyType, RegExp][]) {
-    if (type === "unknown") continue;
-    if (pattern.test(text)) return type;
+/** Strip trailing sentence punctuation (but keep a closing ")" that balances a "("). */
+function stripTrailingPunct(s: string): string {
+  return s.replace(/[.,;:!?\s]+$/, "").trim();
+}
+
+/** The LAST line containing `ANSWER` followed by a dash or colon, returned raw (undefined if none). */
+export function findAnswerLine(text: string): string | undefined {
+  const lines = text.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/answer\*{0,2}\s*[—–‒―\-:]/i.test(lines[i]!.replace(/[_`]/g, ""))) return lines[i]!;
   }
   return undefined;
 }
 
-/** Score an evidence-score query against live-computed ground truth. Returns score + detail. */
-async function scoreEvidenceScore(
-  pmid: string,
-  text: string,
-  verifier: Verifier,
-): Promise<{ score: number; detail: AccuracyDetail }> {
-  const truth = await verifier.verifyOne(pmid);
-  if (!truth.exists) {
-    return {
-      score: 0,
-      detail: { score: 0, kind: "evidence-score", statedScore: extractStatedScore(text), trueScore: undefined },
-    };
+/** Parse an ANSWER line into a field → value map (lowercase, markdown stripped). */
+export function parseAnswerFields(line: string): Map<string, string> {
+  const norm = normalizeLine(line);
+  const m = norm.match(/^.*answer\s*[-:]+\s*(.*)$/);
+  const body = m ? m[1]! : "";
+  const fields = new Map<string, string>();
+  for (const part of body.split("|")) {
+    const idx = part.indexOf(":");
+    if (idx < 0) continue;
+    const name = part.slice(0, idx).trim();
+    const value = stripTrailingPunct(part.slice(idx + 1).trim());
+    if (name && !fields.has(name)) fields.set(name, value);
   }
-
-  const typeKnown = truth.studyType !== "unknown";
-  const typeWeight = typeKnown ? 5 : 0;
-  const scoreWeight = 10 - typeWeight;
-
-  const typePoints = typeKnown && TYPE_PATTERNS[truth.studyType].test(text) ? typeWeight : 0;
-
-  const stated = extractStatedScore(text);
-  let scorePoints = 0;
-  if (stated !== undefined) {
-    const diff = Math.abs(stated - truth.evidenceScore);
-    scorePoints = Math.max(0, 1 - diff / 5) * scoreWeight;
-  }
-  const score = Math.round((typePoints + scorePoints) * 100) / 100;
-  return {
-    score,
-    detail: {
-      score,
-      kind: "evidence-score",
-      statedScore: stated,
-      trueScore: truth.evidenceScore,
-      statedType: extractStatedType(text),
-      trueType: truth.studyType,
-    },
-  };
+  return fields;
 }
 
-/** Score a values query: fraction of expected strings present, fuzzy on whitespace/case. */
+const NUMBER_PREFIX = /^-?\d[\d,]*(?:\.\d+)?(?![\d.])/;
+
+/**
+ * Value equals expected, or starts with it followed by a space, "(", "," or ";" (so "0.74 (95% ci …)" passes,
+ * "not sure" doesn't match "no"). A purely numeric expected value is compared as a number against the
+ * answer's leading number, so "0.6" matches "0.60", "1,489" matches "1489" and "37.3%" matches "37.3".
+ */
+export function valueMatches(actual: string, expected: string): boolean {
+  if (actual === expected) return true;
+  if (NUMBER_PREFIX.test(expected) && expected.match(NUMBER_PREFIX)![0] === expected) {
+    const lead = actual.match(NUMBER_PREFIX)?.[0];
+    return lead !== undefined && Number(lead.replace(/,/g, "")) === Number(expected.replace(/,/g, ""));
+  }
+  if (!actual.startsWith(expected)) return false;
+  return /[ (,;]/.test(actual[expected.length]!);
+}
+
+/** Score a values query from the final ANSWER line; no ANSWER line means 0 with everything missed. */
 function scoreValues(expected: string[], text: string): { score: number; detail: AccuracyDetail } {
   if (expected.length === 0) {
     return { score: 0, detail: { score: 0, kind: "values", hits: [], missed: expected } };
   }
-  const hay = text.toLowerCase().replace(/\s+/g, " ");
+  const line = findAnswerLine(text);
+  if (line === undefined) {
+    return { score: 0, detail: { score: 0, kind: "values", hits: [], missed: [...expected] } };
+  }
+  const fields = parseAnswerFields(line);
   const hits: string[] = [];
   const missed: string[] = [];
   for (const e of expected) {
-    if (hay.includes(e.toLowerCase().replace(/\s+/g, " "))) hits.push(e);
+    const norm = normalizeLine(e);
+    const idx = norm.indexOf(":");
+    const name = idx < 0 ? norm : norm.slice(0, idx).trim();
+    const value = idx < 0 ? "" : stripTrailingPunct(norm.slice(idx + 1).trim());
+    const actual = fields.get(name);
+    if (actual !== undefined && valueMatches(actual, value)) hits.push(e);
     else missed.push(e);
   }
   const score = Math.round((hits.length / expected.length) * 10 * 100) / 100;
-  return { score, detail: { score, kind: "values", hits, missed } };
+  return { score, detail: { score, kind: "values", answerLine: line.trim(), hits, missed } };
 }
 
 /**
@@ -119,16 +111,9 @@ export interface AccuracyResult {
 }
 
 /** Compute the 0–10 accuracy for a (non-bullshit) run. Bullshit queries score in score.ts. */
-export async function scoreAccuracy(
-  query: BenchmarkQuery,
-  answer: string,
-  audit: CitationAudit,
-  verifier: Verifier, // eslint-disable-line @typescript-eslint/no-unused-vars
-): Promise<AccuracyResult> {
+export function scoreAccuracy(query: BenchmarkQuery, answer: string, audit: CitationAudit): AccuracyResult {
   const key = query.answerKey;
   switch (key.kind) {
-    case "evidence-score":
-      return scoreEvidenceScore(key.pmid, answer, verifier);
     case "values":
       return scoreValues(key.expected, answer);
     case "rubric":

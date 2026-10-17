@@ -11,9 +11,11 @@
  * cost_score are "faster/cheaper is better" terms in [0,1], derived from the
  * wall-clock time and token count against the references in `config.NORMALIZATION`.
  * All five components are put on a common 0–1 footing, weighted, and rescaled to 0–10.
+ * Bullshit queries are the exception — see `compositeForCategory`.
  */
 
 import { WEIGHTS, NORMALIZATION } from "../config.js";
+import type { Category } from "../types.js";
 
 const clamp01 = (x: number): number => Math.max(0, Math.min(1, x));
 
@@ -43,4 +45,17 @@ export function composite({ accuracy, evidenceQuality, bullshitScore, speedS, to
     WEIGHTS.speed * speedScore(speedS) +
     WEIGHTS.cost * costScore(totalTokens);
   return Math.round(normalized * 10 * 100) / 100;
+}
+
+/**
+ * The composite for a row of a given category — the single place the
+ * bullshit-query rule lives. A bullshit query has one correct behavior
+ * (refuse to corroborate the fabricated study), so its composite is the
+ * rejection outcome on the 0–10 scale; evidence, speed, and cost don't apply.
+ * Every other category uses the weighted formula above. Used both at scoring
+ * time and when overrides change a component and the composite is recomputed.
+ */
+export function compositeForCategory(category: Category, inputs: CompositeInputs): number {
+  if (category === "bullshit") return Math.round(clamp01(inputs.bullshitScore) * 10 * 100) / 100;
+  return composite(inputs);
 }

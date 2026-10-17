@@ -1,7 +1,7 @@
 /**
  * Self-contained statistics for the paper tables: descriptive stats, paired
  * t-test (exact Student-t p via the regularized incomplete beta), Wilcoxon
- * signed-rank (normal approximation) as the non-normal fallback, Cohen's d, and
+ * signed-rank (exact for small untied samples, tie-corrected normal otherwise) as the non-normal fallback, Cohen's d, and
  * 95% confidence intervals. No numeric-library dependency.
  *
  * Test choice (spec §"Statistical tests: paired t-test or Wilcoxon depending on
@@ -82,7 +82,7 @@ function tCDF(t: number, df: number): number {
 }
 
 /** Two-tailed p-value for a t statistic. */
-function tTwoTailedP(t: number, df: number): number {
+export function tTwoTailedP(t: number, df: number): number {
   return betai(df / 2, 0.5, df / (df + t * t));
 }
 
@@ -134,17 +134,21 @@ export interface PairedResult {
   /** mean(A − B); positive means A scores higher. */
   meanDiff: number;
   test: "paired-t" | "wilcoxon";
+  /** How p_value was computed: Student-t, exact signed-rank distribution, or normal approximation. */
+  p_method: "t" | "exact" | "normal";
   /** t (paired-t) or z (wilcoxon). */
   statistic: number;
   p_value: number;
-  /** Cohen's dz for paired-t, matched-pairs rank-biserial r for wilcoxon. */
+  /** Signed Cohen's dz for paired-t; signed matched-pairs rank-biserial r (−1..1) for wilcoxon. */
   effect_size: number;
   ci_95: [number, number];
+  /** What ci_95 is: always the t-based CI of the mean difference (also for Wilcoxon). */
+  ci_method: "t-mean-diff";
   test_reason: string;
 }
 
 /** Paired t-test on aligned samples a[i], b[i]. */
-function pairedT(diffs: number[]): { statistic: number; p: number; dz: number; ci: [number, number] } {
+export function pairedT(diffs: number[]): { statistic: number; p: number; dz: number; ci: [number, number] } {
   const n = diffs.length;
   const md = mean(diffs);
   const s = sd(diffs);
@@ -158,34 +162,89 @@ function pairedT(diffs: number[]): { statistic: number; p: number; dz: number; c
   return { statistic: round(t), p: round(p, 6), dz: round(dz), ci };
 }
 
-/** Wilcoxon signed-rank (normal approximation with continuity correction). */
-function wilcoxon(diffs: number[]): { statistic: number; p: number; r: number } {
+/**
+ * Exact two-sided Wilcoxon p-value for n untied pairs: DP over the number of
+ * ways each rank sum 0..n(n+1)/2 can arise (each rank 1..n is in W+ or not).
+ */
+function wilcoxonExactP(n: number, wPlus: number): number {
+  const max = (n * (n + 1)) / 2;
+  const counts = new Array<number>(max + 1).fill(0);
+  counts[0] = 1;
+  for (let rank = 1; rank <= n; rank++) {
+    for (let s = max; s >= rank; s--) counts[s]! += counts[s - rank]!;
+  }
+  const total = 2 ** n;
+  let lower = 0; // P(W+ ≤ wPlus)
+  let upper = 0; // P(W+ ≥ wPlus)
+  for (let s = 0; s <= max; s++) {
+    if (s <= wPlus) lower += counts[s]!;
+    if (s >= wPlus) upper += counts[s]!;
+  }
+  return Math.min(1, (2 * Math.min(lower, upper)) / total);
+}
+
+/** Largest n for which the exact (untied) null distribution is used. */
+const WILCOXON_EXACT_MAX_N = 25;
+
+/**
+ * Wilcoxon signed-rank test. Zero differences are dropped. With no ties and
+ * n ≤ 25 the p-value is exact; otherwise a normal approximation with
+ * continuity correction and the tie correction Σ(t³−t)/48 in the variance.
+ * Effect size is the signed matched-pairs rank-biserial r = (W+ − W−)/(W+ + W−).
+ */
+export function wilcoxon(diffs: number[]): { statistic: number; p: number; r: number; method: "exact" | "normal" } {
   const nonzero = diffs.filter((d) => d !== 0);
   const n = nonzero.length;
-  if (n === 0) return { statistic: 0, p: 1, r: 0 };
+  if (n === 0) return { statistic: 0, p: 1, r: 0, method: "exact" };
 
   const ranked = nonzero
     .map((d) => ({ abs: Math.abs(d), sign: Math.sign(d) }))
     .sort((x, y) => x.abs - y.abs);
-  // Average ranks for ties.
+  // Average ranks for ties; collect tie-group sizes for the variance correction.
   const ranks = new Array<number>(n);
+  let tieTerm = 0;
   for (let i = 0; i < n; ) {
     let j = i;
     while (j < n && ranked[j]!.abs === ranked[i]!.abs) j++;
     const avg = (i + 1 + j) / 2; // ranks are 1-based: mean of i+1..j
     for (let k = i; k < j; k++) ranks[k] = avg;
+    tieTerm += (j - i) ** 3 - (j - i);
     i = j;
   }
+  const hasTies = tieTerm > 0;
   let wPlus = 0;
   for (let i = 0; i < n; i++) if (ranked[i]!.sign > 0) wPlus += ranks[i]!;
+  const total = (n * (n + 1)) / 2;
+  const wMinus = total - wPlus;
+  const r = (wPlus - wMinus) / total;
 
-  const meanW = (n * (n + 1)) / 4;
-  const sdW = Math.sqrt((n * (n + 1) * (2 * n + 1)) / 24);
+  const meanW = total / 2;
+  const varW = (n * (n + 1) * (2 * n + 1)) / 24 - tieTerm / 48;
+  const sdW = Math.sqrt(varW);
   const cc = Math.sign(wPlus - meanW) * 0.5; // continuity correction
   const z = sdW === 0 ? 0 : (wPlus - meanW - cc) / sdW;
-  const p = 2 * (1 - normalCDF(Math.abs(z)));
-  const r = Math.abs(z) / Math.sqrt(n); // rank-biserial-style effect size
-  return { statistic: round(z), p: round(Math.min(1, p), 6), r: round(r) };
+
+  if (!hasTies && n <= WILCOXON_EXACT_MAX_N) {
+    return { statistic: round(z), p: round(wilcoxonExactP(n, wPlus), 6), r: round(r), method: "exact" };
+  }
+  const p = sdW === 0 ? 1 : 2 * (1 - normalCDF(Math.abs(z)));
+  return { statistic: round(z), p: round(Math.min(1, p), 6), r: round(r), method: "normal" };
+}
+
+/**
+ * Holm–Bonferroni adjusted p-values (step-down, monotone, capped at 1), returned
+ * in the input order. NaN inputs stay NaN and don't count toward the family size.
+ */
+export function holm(pValues: number[]): number[] {
+  const idx = pValues.map((p, i) => ({ p, i })).filter((x) => Number.isFinite(x.p)).sort((a, b) => a.p - b.p);
+  const m = idx.length;
+  const out = pValues.map(() => Number.NaN);
+  let running = 0;
+  idx.forEach(({ p, i }, k) => {
+    running = Math.max(running, Math.min(1, (m - k) * p));
+    out[i] = running;
+  });
+  return out;
 }
 
 /**
@@ -207,15 +266,18 @@ export function comparePaired(a: number[], b: number[]): PairedResult | null {
       meanB: round(mean(b.slice(0, n))),
       meanDiff: round(mean(diffs)),
       test: "paired-t",
+      p_method: "t",
       statistic,
       p_value: p,
       effect_size: dz,
       ci_95: ci,
+      ci_method: "t-mean-diff",
       test_reason: `n=${n}, differences ~normal (|skew|<1)`,
     };
   }
-  const { statistic, p, r } = wilcoxon(diffs);
-  // CI on the mean difference is still reported (t-based) as a convenience.
+  const { statistic, p, r, method } = wilcoxon(diffs);
+  // CI on the mean difference is still reported (t-based) as a convenience;
+  // it is NOT a CI for the Wilcoxon pseudo-median (see ci_method).
   const { ci } = pairedT(diffs);
   return {
     n,
@@ -223,10 +285,12 @@ export function comparePaired(a: number[], b: number[]): PairedResult | null {
     meanB: round(mean(b.slice(0, n))),
     meanDiff: round(mean(diffs)),
     test: "wilcoxon",
+    p_method: method,
     statistic,
     p_value: p,
     effect_size: r,
     ci_95: ci,
+    ci_method: "t-mean-diff",
     test_reason: n < 8 ? `n=${n} < 8` : "differences non-normal (|skew|≥1)",
   };
 }

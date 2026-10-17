@@ -48,11 +48,15 @@ export abstract class RestAdapter implements DatabaseAdapter {
     for (const article of articles) this.memo.set(article.pmid, article);
   }
 
+  /** Memo or cache hit for an id, without touching the network. */
+  protected cached(id: string, cache: Cache): Article | undefined {
+    return this.memo.get(id) ?? cache.getSummary(this.cacheKey(id)) ?? undefined;
+  }
+
   async fetch(ids: string[], cache: Cache): Promise<Article[]> {
     const out: Article[] = [];
     for (const id of ids) {
-      let article: Article | undefined =
-        this.memo.get(id) ?? cache.getSummary(this.cacheKey(id)) ?? undefined;
+      let article = this.cached(id, cache);
       if (!article) {
         try {
           article = (await this.fetchOne(id)) ?? undefined;
