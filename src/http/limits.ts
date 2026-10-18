@@ -9,6 +9,7 @@
  */
 
 import type { IncomingMessage } from "node:http";
+import { isIPv4, isIPv6 } from "node:net";
 
 /**
  * The client IP for rate limiting: the socket address, or — only when the
@@ -24,6 +25,32 @@ export function clientIp(req: IncomingMessage, trustProxy: boolean): string {
     if (entry) return entry;
   }
   return req.socket.remoteAddress ?? "unknown";
+}
+
+/**
+ * The client IP as it may appear in logs: IPv4 truncated to /24, IPv6 to /48
+ * (IPv4-mapped IPv6 is treated as IPv4). Anything that isn't an IP — e.g. a
+ * junk X-Forwarded-For value — becomes "invalid", which also keeps it out of
+ * the log line. The full address is only ever held in memory for rate limiting.
+ */
+export function anonymizeIp(ip: string): string {
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
+  const addr = mapped ? mapped[1]! : ip;
+  if (isIPv4(addr)) return `${addr.split(".").slice(0, 3).join(".")}.0/24`;
+
+  const bare = addr.split("%")[0]!; // drop a zone id such as fe80::1%eth0
+  if (!isIPv6(bare)) return "invalid";
+  const [head = "", tail] = bare.split("::");
+  const left = head ? head.split(":") : [];
+  let groups = left;
+  if (tail !== undefined) {
+    const right = tail ? tail.split(":") : [];
+    // A trailing dotted IPv4 part (e.g. 64:ff9b::1.2.3.4) occupies two groups.
+    const rightWidth = right.reduce((n, g) => n + (g.includes(".") ? 2 : 1), 0);
+    groups = [...left, ...Array<string>(8 - left.length - rightWidth).fill("0"), ...right];
+  }
+  const prefix = groups.slice(0, 3).map((g) => Number.parseInt(g, 16).toString(16));
+  return `${prefix.join(":")}::/48`;
 }
 
 export interface RateLimitResult {
@@ -102,15 +129,20 @@ export class ConcurrencyLimiter {
   async acquire(): Promise<(() => void) | null> {
     if (this.active >= this.max) {
       if (this.queue.length >= this.maxQueue) return null;
+      // release() hands its permit straight to us, so `active` already counts this request.
       await new Promise<void>((resolve) => this.queue.push(resolve));
+    } else {
+      this.active += 1;
     }
-    this.active += 1;
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      this.active -= 1;
-      this.queue.shift()?.();
+      // Hand the permit over instead of decrementing first: a decrement would let
+      // an acquire() that runs before the waiter resumes slip past the cap.
+      const next = this.queue.shift();
+      if (next) next();
+      else this.active -= 1;
     };
   }
 

@@ -10,8 +10,8 @@
  * primitives and ./handler.ts the transport lifecycle.
  *
  * One line per request is logged to stderr — method, path, status, duration,
- * client IP. Never bodies, query text, tool arguments or results: queries are
- * medical data. stdout stays clean.
+ * client IP truncated to /24 (IPv4) or /48 (IPv6). Never bodies, query text,
+ * tool arguments or results: queries are medical data. stdout stays clean.
  */
 
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -19,7 +19,7 @@ import { createServer as createNodeHttpServer, type IncomingMessage, type Server
 import { NcbiClient, type Cache } from "../core/index.js";
 import { buildCache, createServer, packageVersion } from "../mcp/server.js";
 import { handleMcpPost } from "./handler.js";
-import { clientIp, ConcurrencyLimiter, TokenBucketLimiter } from "./limits.js";
+import { anonymizeIp, clientIp, ConcurrencyLimiter, TokenBucketLimiter } from "./limits.js";
 
 const MCP_PATH = "/mcp";
 const HEALTH_PATH = "/health";
@@ -142,7 +142,8 @@ export function createHttpServer(deps: HttpServerDeps): Server {
 
   const server = createNodeHttpServer((req, res) => {
     const startedAt = Date.now();
-    const ip = clientIp(req, config.trustProxy);
+    // Logs carry only a truncated prefix (/24, /48): a full IP is personal data.
+    const ip = anonymizeIp(clientIp(req, config.trustProxy));
     // Never log bodies, query text or tool arguments — queries are medical data.
     const path = req.url?.split("?")[0] ?? "/";
     res.on("finish", () => {

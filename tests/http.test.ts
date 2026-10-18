@@ -212,6 +212,9 @@ describe("http transport", () => {
       const lines = spy.mock.calls.map((call) => call.map(String).join(" "));
       expect(lines.some((l) => l.includes("POST /mcp 200"))).toBe(true);
       expect(lines.every((l) => !l.includes(marker))).toBe(true);
+      // The client IP is truncated to /24 — the full address never reaches the log.
+      expect(lines.some((l) => l.endsWith(" 127.0.0.0/24"))).toBe(true);
+      expect(lines.every((l) => !l.includes("127.0.0.1 ") && !l.endsWith("127.0.0.1"))).toBe(true);
     } finally {
       spy.mockRestore();
     }

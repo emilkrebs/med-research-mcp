@@ -17,8 +17,10 @@ limiter, so all requests together respect NCBI's limit.
 The hosted endpoint is designed to know as little as possible:
 
 - **No query logging.** Request logs contain only method, path, status,
-  duration and client IP. Bodies, query text, tool arguments and results are
-  never logged — queries are medical data.
+  duration and a truncated client IP (IPv4 /24, IPv6 /48). Bodies, query text,
+  tool arguments and results are never logged — queries are medical data.
+  The full IP is held only in memory, for per-IP rate limiting, and idle
+  entries are swept hourly.
 - **No accounts.** Access control is a single shared bearer token, or none.
 - **No storage.** The default cache backend is in-memory and dies with the
   process. (`MED_RESEARCH_CACHE_BACKEND=sqlite` is available if you run your
@@ -44,8 +46,9 @@ Requires Node.js 22.22.2 or later (on Node 24, 24.15.0 or later).
 ```bash
 git clone https://github.com/emilkrebs/med-research-mcp.git
 cd med-research-mcp
-npm ci --omit=optional   # skip the optional native better-sqlite3; the hosted cache is in-memory
+npm ci                   # full install: tsc (TS 7) and tsup need their optional platform binaries
 npm run build
+npm prune --omit=dev --omit=optional   # drop build tooling and better-sqlite3; the hosted cache is in-memory
 
 NCBI_EMAIL=you@example.com \
 MED_RESEARCH_HTTP_TOKEN=$(openssl rand -hex 32) \
@@ -137,7 +140,8 @@ through open access (Unpaywall / direct DOI) there.
 ## Operations
 
 - Logs go to **stderr** only, one line per request: method, path, status,
-  duration in ms, client IP. stdout stays clean.
+  duration in ms, client IP truncated to /24 (IPv4) or /48 (IPv6) — `invalid`
+  if it isn't an IP. stdout stays clean.
 - `SIGINT`/`SIGTERM` stop accepting connections, close the HTTP server and
   flush the cache backend before exiting 0.
 - `GET /health` is suitable for load-balancer and container health checks.

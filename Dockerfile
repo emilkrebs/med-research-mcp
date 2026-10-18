@@ -1,15 +1,17 @@
 # Hosted MCP server over Streamable HTTP (src/http/index.ts).
 # Multi-stage: build with dev dependencies, run with production ones only.
-# better-sqlite3 (an optional native dependency) is skipped — the hosted
-# instance uses the default in-memory cache.
+# The build stage needs a full install: tsc (TS 7 native) and tsup (esbuild)
+# ship their platform binaries as optional dependencies. Optional packages are
+# pruned afterwards, which also drops better-sqlite3 — the hosted instance
+# uses the default in-memory cache.
 
 FROM node:22-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=optional
+RUN npm ci
 COPY tsconfig.json tsup.config.ts ./
 COPY src ./src
-RUN npm run build && npm prune --omit=dev
+RUN npm run build && npm prune --omit=dev --omit=optional
 
 FROM node:22-slim
 ENV NODE_ENV=production
