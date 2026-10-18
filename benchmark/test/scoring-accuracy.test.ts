@@ -64,7 +64,7 @@ describe("other kinds", () => {
   it("rubric uses the citation proxy", () => {
     const query: BenchmarkQuery = { ...q([]), answerKey: { kind: "rubric", rubric: "r", expectPmids: true } };
     expect(scoreAccuracy(query, "x", audit).score).toBe(0);
-    const valid = [{ pmid: "1", exists: true, evidenceScore: 4, studyType: "cohort" as const, title: "", abstract: "" }];
+    const valid = [{ pmid: "1", exists: true, designTier: 4, studyType: "cohort" as const, title: "", abstract: "" }];
     expect(scoreAccuracy(query, "x", { ...audit, valid, evidenceQuality: 4 }).score).toBe(8);
   });
 });

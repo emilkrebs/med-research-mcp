@@ -96,8 +96,9 @@ function scoreValues(expected: string[], text: string): { score: number; detail:
 
 /**
  * Rubric auto-grade: citation-quality proxy.
- * Scales evidenceQuality (0–5 mean over valid PMIDs) to 0–10.
- * Returns 0 when citations were expected (`expectPmids`) but none resolved.
+ * Scales evidenceQuality (0–5 mean design tier of the rated, valid citations) to 0–10.
+ * Returns 0 when citations were expected (`expectPmids`) but none resolved, and
+ * NaN (unscored until a human grades it) when the valid citations are all unrated.
  */
 function scoreRubric(expectPmids: boolean | undefined, audit: CitationAudit): { score: number; detail: AccuracyDetail } {
   const score =

@@ -12,12 +12,19 @@ import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-// __dirname exists in the CJS build; import.meta.dirname in the ESM build —
-// esbuild leaves the other undefined per format (see src/core/cache.ts loadSqlite).
-const moduleDir = typeof __dirname !== "undefined" ? __dirname : import.meta.dirname;
-const { version: pkgVersion } = JSON.parse(
-  readFileSync(join(moduleDir, "../../package.json"), "utf-8"),
-) as { version: string };
+/**
+ * The package version, inlined by both builds (tsup.config.ts, scripts/build-mcpb.mjs):
+ * the .mcpb bundle ships without a package.json to read.
+ */
+declare const __MED_RESEARCH_VERSION__: string | undefined;
+
+/** The package version; package.json is read only when running from source (tsx, vitest). */
+function packageVersion(): string {
+  if (typeof __MED_RESEARCH_VERSION__ !== "undefined") return __MED_RESEARCH_VERSION__;
+  // __dirname exists in CJS; import.meta.dirname in ESM (see src/core/cache.ts loadSqlite).
+  const moduleDir = typeof __dirname !== "undefined" ? __dirname : import.meta.dirname;
+  return (JSON.parse(readFileSync(join(moduleDir, "../../package.json"), "utf-8")) as { version: string }).version;
+}
 import {
   createCache,
   fetchFulltext,
@@ -99,7 +106,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   }
 
 
-  const server = new McpServer({ name: "med-research-mcp", version: pkgVersion });
+  const server = new McpServer({ name: "med-research-mcp", version: packageVersion() });
 
 
   // ─── literature_search ──────────────────────────────────────────
@@ -118,15 +125,22 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
           "Options: pubmed, europepmc (Europe + preprints), chinaxiv (China preprints), russiarxiv (Soviet/Russian papers).",
       ),
     maxResults: z.number().int().min(1).max(50).optional().describe("Results per database. Default 10, max 50."),
-    minEvidenceScore: z
+    minDesignTier: z
       .number()
       .min(0)
       .max(5)
       .optional()
       .describe(
-        "Drop results below this evidence score (0-5). Unclassified results (studyType 'unknown') score 0 and are dropped too — a warning reports how many.",
+        "Drop results below this design tier (0-5; 4 = RCTs). Results with designTier null — unclassified records and most " +
+          "meta-analyses/systematic reviews — are dropped too, with a warning. To keep reviews and trials, use studyTypes instead.",
       ),
-    studyTypes: z.array(z.enum(STUDY_TYPES)).optional().describe("Keep only these study types."),
+    studyTypes: z
+      .array(z.enum(STUDY_TYPES))
+      .optional()
+      .describe(
+        "Keep only these study types. cohort, case-control, cross-sectional and in-vitro are never assigned from " +
+          "metadata (tagged observational studies come back as observational), so filtering on them returns nothing.",
+      ),
     dateRange: z
       .object({ from: z.string().optional(), to: z.string().optional() })
       .optional()
@@ -134,11 +148,14 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     sort: z
       .enum(["relevance", "date"])
       .optional()
-      .describe("Per-database sort order. Merged results are always re-ordered by evidence score."),
+      .describe("Per-database sort order. Merged results are always re-ordered by design tier."),
     language: z
       .string()
       .optional()
-      .describe("Preferred content language (ISO 639-1) hint for adapters that support it (e.g. SciELO)."),
+      .describe(
+        'Content language hint (ISO 639-1). pubmed and europepmc ignore it; on chinaxiv, "ru" searches the Russian ' +
+          'collection (same as database "russiarxiv").',
+      ),
   };
 
   server.registerTool(
@@ -146,13 +163,16 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     {
       title: "Search scientific literature (multi-database)",
       description:
-        "Search one or more scientific databases and return evidence-graded results. " +
+        "Search one or more scientific databases and return results with their study design. " +
         `Databases: ${DATABASES.join(", ")}, or "all" to fan out to every source. ` +
-        "PubMed results are graded from NLM PublicationType tags; other databases are graded keyword-only " +
-          "(lower confidence — the score itself is never lowered for source or language). The design sets a starting " +
-          "tier that is only rated down (retraction, protocol, pilot, synthesis of animal/observational studies), with " +
-          "each step listed in scoreAdjustments. Results are merged, de-duplicated by DOI, " +
-        "and sorted by evidence score. Always cheap — no LLM calls. " +
+        "studyType comes only from NLM PublicationType tags (PubMed, Europe PMC; assigned largely by NLM's automated " +
+        "indexing). Records without them are 'unknown' with designTier null: read the abstract to judge the design. " +
+        "designTier (0-5) ranks the design for 'does this intervention help?' by the OCEBM 2011 levels; it is not an " +
+        "appraisal. A meta-analysis or systematic review ranks with the studies it pooled, which metadata rarely shows, " +
+        "so its designTier is usually null: read the abstract to see what it pooled. flags marks retracted, notice, " +
+        "protocol and editorial records (designTier 0), and warns of an expression of concern, an erratum (corrected), " +
+        "a newer version (updated), animals-not-humans indexing, preprints and letters. Results are merged, " +
+        "de-duplicated by DOI, and sorted by design tier. Always cheap — no LLM calls. " +
         "Use literature_fetch to get full metadata for specific ids, and literature_fulltext for the article body.",
       inputSchema: literatureSearchShape,
       annotations: { readOnlyHint: true, openWorldHint: true },
@@ -182,7 +202,10 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .array(z.string())
       .min(1)
       .max(50)
-      .describe("Database-specific ids to fetch (PMIDs for pubmed, SciELO ids for scielo, etc.)."),
+      .describe(
+        "Database-specific ids to fetch: PMIDs for pubmed; PMIDs or prefixed ids (e.g. CBA:521529, PPR… preprints) " +
+          "for europepmc; the ids literature_search returned for chinaxiv and russiarxiv.",
+      ),
     database: z
       .string()
       .describe(`Which database the ids belong to: ${DATABASES.join(", ")}.`),
@@ -194,7 +217,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       title: "Fetch scientific articles (multi-database)",
       description:
         "Fetch full metadata and abstracts for one or more ids from a specific database. " +
-        "Returns raw article objects (with database, url, and language fields for non-PubMed sources) — no grading. " +
+        "Returns raw article objects with publication types, MeSH headings and retraction/correction links (plus " +
+        "database, url, and language fields for non-PubMed sources) — no classification. " +
         "Use after literature_search to drill into specific papers.",
       inputSchema: literatureFetchShape,
       annotations: { readOnlyHint: true, openWorldHint: true },
@@ -224,7 +248,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   // ─── literature_fulltext ────────────────────────────────────────
 
   const literatureFulltextShape = {
-    id: z.string().describe("Article id — a database-specific identifier (PMID, SciELO id, etc.). When the id is not a numeric PMID, a DOI is required below."),
+    id: z.string().describe("Article id — a PMID, or another database's id from literature_search. When the id is not a numeric PMID, a DOI is required below."),
     doi: z
       .string()
       .optional()

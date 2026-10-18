@@ -12,6 +12,12 @@
  * wall-clock time and token count against the references in `config.NORMALIZATION`.
  * All five components are put on a common 0–1 footing, weighted, and rescaled to 0–10.
  * Bullshit queries are the exception — see `compositeForCategory`.
+ *
+ * evidence_quality is NaN when every cited record's design tier is unknown
+ * (e.g. only meta-analyses whose pooled designs aren't indexed): there is
+ * nothing to score, so the evidence term is dropped and the other weights are
+ * rescaled to sum to 1. A NaN accuracy or bullshit score still makes the
+ * composite NaN (unscored).
  */
 
 import { WEIGHTS, NORMALIZATION } from "../config.js";
@@ -38,12 +44,15 @@ export interface CompositeInputs {
 }
 
 export function composite({ accuracy, evidenceQuality, bullshitScore, speedS, totalTokens }: CompositeInputs): number {
-  const normalized =
+  if (!Number.isFinite(accuracy) || !Number.isFinite(bullshitScore)) return Number.NaN;
+  const hasEvidence = Number.isFinite(evidenceQuality);
+  const weighted =
     WEIGHTS.accuracy * clamp01(accuracy / 10) +
-    WEIGHTS.evidence * clamp01(evidenceQuality / 5) +
+    (hasEvidence ? WEIGHTS.evidence * clamp01(evidenceQuality / 5) : 0) +
     WEIGHTS.bullshit * clamp01(bullshitScore) +
     WEIGHTS.speed * speedScore(speedS) +
     WEIGHTS.cost * costScore(totalTokens);
+  const normalized = hasEvidence ? weighted : weighted / (1 - WEIGHTS.evidence);
   return Math.round(normalized * 10 * 100) / 100;
 }
 
@@ -56,6 +65,9 @@ export function composite({ accuracy, evidenceQuality, bullshitScore, speedS, to
  * time and when overrides change a component and the composite is recomputed.
  */
 export function compositeForCategory(category: Category, inputs: CompositeInputs): number {
-  if (category === "bullshit") return Math.round(clamp01(inputs.bullshitScore) * 10 * 100) / 100;
+  if (category === "bullshit") {
+    if (!Number.isFinite(inputs.bullshitScore)) return Number.NaN;
+    return Math.round(clamp01(inputs.bullshitScore) * 10 * 100) / 100;
+  }
   return composite(inputs);
 }

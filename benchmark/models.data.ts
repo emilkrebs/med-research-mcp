@@ -58,6 +58,17 @@ export const MODELS: ModelSpec[] = [
     baseUrlEnv: "DASHSCOPE_BASE_URL",
     legacyFunctions: true,
   },
+  {
+    // LLM judge for rubric answers (judge.ts), not a benchmark participant.
+    // Pinned to the dated snapshot so grades stay reproducible if the alias moves.
+    label: "qwen3.8-max",
+    provider: "openai",
+    modelId: "qwen3.8-max-0902",
+    enabled: false,
+    apiKeyEnv: "DASHSCOPE_API_KEY",
+    baseUrlEnv: "DASHSCOPE_BASE_URL",
+    legacyFunctions: true,
+  },
   // ── Ollama (local) ───────────────────────────────────────────────
   {
     // WARNING: Ollama's default context window is 4096 tokens and its OpenAI-compatible API cannot

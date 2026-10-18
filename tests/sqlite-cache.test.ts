@@ -1,10 +1,10 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { SQLiteBackend } from "../src/core/cache";
-import { FULLTEXT_TTL_MS } from "../src/core/cache";
+import { FULLTEXT_TTL_MS, SUMMARY_TTL_MS } from "../src/core/cache";
 import type { FulltextData, NcbiArticle } from "../src/core/types";
 
 const ARTICLE: NcbiArticle = {
@@ -104,13 +104,35 @@ describe("SQLiteBackend full-text TTL", () => {
     c.close();
   });
 
-  it("never expires summaries or abstracts", () => {
+});
+
+describe("SQLiteBackend summary TTL", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("expires summaries after SUMMARY_TTL_MS so a later retraction can't stay hidden, but keeps abstracts", () => {
+    vi.useFakeTimers();
     const c = new SQLiteBackend(":memory:");
-    // Even with an ancient write, immutable stores stay readable.
     c.setSummary("12345678", ARTICLE);
     c.setAbstract("12345678", "old but valid");
+    vi.advanceTimersByTime(SUMMARY_TTL_MS - 1000);
     expect(c.getSummary("12345678")).toEqual(ARTICLE);
+    vi.advanceTimersByTime(2000);
+    expect(c.getSummary("12345678")).toBeNull();
     expect(c.getAbstract("12345678")).toBe("old but valid");
+    c.close();
+  });
+
+  it("vacuums expired summaries", () => {
+    vi.useFakeTimers();
+    const c = new SQLiteBackend(":memory:");
+    c.setSummary("stale", ARTICLE);
+    vi.advanceTimersByTime(SUMMARY_TTL_MS + 1000);
+    c.setSummary("fresh", ARTICLE);
+    c.vacuum();
+    expect(c.size).toBe(1);
+    expect(c.getSummary("fresh")).toEqual(ARTICLE);
     c.close();
   });
 });

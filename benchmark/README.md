@@ -11,6 +11,7 @@ performance.
 | **MCP** (default) | `literature_search`, `literature_fetch`, `literature_fulltext` | the real MCP server (`createServer()` from `../src/mcp/server.ts`), driven in-process over an MCP in-memory transport |
 | **closed-book** | none | the model from training data alone (optional baseline) |
 | **web-search** | `web_search` (Brave), `web_fetch` | a standalone web baseline: search plus opening result pages (optional baseline) |
+| **mcp-skill** (`--conditions D`) | same as MCP | MCP plus the shipped [`med-research` skill](../skills/med-research/SKILL.md) appended to the system prompt: a Claude Code session with the skill loaded. MCP vs mcp-skill measures the skill. Always-on injection is the skill-loaded best case; in Claude Code the model loads a skill only when its description matches |
 
 32 queries across 7 categories (factual, drill-down, synthesis, edge-case,
 compound, recent, bullshit) × MCP-only by default × N models × R runs. Every
@@ -83,7 +84,7 @@ Run from the repo root (paths in the output are written relative to it). Flags
 |---|---|
 | `--runs <n>` | runs per query per model (default 3) |
 | `--models <list>` | model labels (default: every enabled model) |
-| `--conditions <list>` | `A\|B\|C` or `closed-book\|web-search\|mcp` (default `mcp`) |
+| `--conditions <list>` | `A\|B\|C\|D` or `closed-book\|web-search\|mcp\|mcp-skill` (default `mcp`) |
 | `--with-baselines` | add closed-book and web-search |
 | `--queries <list>` | query ids and/or category names |
 | `--temperature <t>` | default 0 |
@@ -160,12 +161,19 @@ query), `human` (graded via `grade.ts`), or `proxy` (provisional, see below).
 - **Citations are never trusted.** Recognized citation forms are PMIDs, PubMed
   URLs, and DOIs / PMCIDs (resolved to PMIDs through NCBI). Every PMID is
   fetched from live PubMed. One that doesn't resolve is a **fabrication**; one
-  that does is graded with the library's own grader (`keywordGrade`), so
-  *evidence quality* is measured on the exact 0–5 scale the MCP reports.
+  that does has its design classified from NLM metadata (PublicationType tags,
+  retraction links) by the library's `classifyArticle`, so *evidence quality*
+  is the mean 0–5 design tier the MCP reports. Citations with an unknown tier
+  (`designTier: null`: no design metadata, or a meta-analysis/systematic review
+  whose pooled designs aren't indexed) are left out of that mean. It is 0 when
+  no citation is valid, and NaN (unscored) when valid citations exist but none
+  is rated; the composite then drops the evidence term and rescales the other
+  weights, and a rubric row's proxy accuracy stays unscored until a human
+  grades it.
   Regional records are looked up in their own database: Europe PMC ids outside
   PubMed (`CBA:521529` for Chinese Biological Abstracts, `PPR…` preprints,
   `europepmc.org/article/SRC/ID` links) and ChinaXiv ids (`chinaxiv-…`). Found
-  ones are graded and counted like a valid PMID; ones that don't resolve stay
+  ones are classified and counted like a valid PMID; ones that don't resolve stay
   in `other_citations`, never fabricated. Other identifier types are counted in
   `other_citations` but neither graded nor penalized. PMIDs that already appear
   in the prompt are excluded (echoing the question is not citing). A transient
@@ -177,7 +185,7 @@ query), `human` (graded via `grade.ts`), or `proxy` (provisional, see below).
   next to each resolved citation with the record, deterministically (no LLM):
   the paper must mention one of the query's `topics`; a stated year must be
   within ±1; "Surname et al." must name one of its authors; a claimed design
-  (meta-analysis, RCT, cohort) must fit its graded type or NLM tags; and of two
+  (meta-analysis, RCT, cohort) must fit its classified type or NLM tags; and of two
   or more stated figures, at least one must appear in the abstract. Each check
   fires only on a clear contradiction and abstains when unsure (several
   citations sharing a clause, two years, no abstract, …), so the rate counts
@@ -196,10 +204,12 @@ query), `human` (graded via `grade.ts`), or `proxy` (provisional, see below).
   - `reject` keys (4 bullshit queries): see below.
   - `rubric` keys (15 open-ended queries) have no ground-truth string, so they
     are graded by a **human** with [`grade.ts`](grade.ts) (next section), which
-    writes into `overrides.json` for `--rescore` to apply. There is no LLM
-    judge. **Until a human grades a rubric response, its accuracy is a
-    provisional citation-quality proxy** (mean evidence grade of the cited,
-    valid PMIDs × 2; 0 if citations were expected but none resolved;
+    writes into `overrides.json` for `--rescore` to apply. The optional LLM
+    judge ([`judge.ts`](judge.ts)) gives a second opinion but never writes
+    there. **Until a human grades a rubric response, its accuracy is a
+    provisional citation-quality proxy** (mean design tier of the cited,
+    valid, rated PMIDs × 2; 0 if citations were expected but none resolved;
+    unscored if every valid citation is unrated;
     `lib/scoring/accuracy.ts`). That reflects the *tier* of the sources cited,
     not whether the answer is correct, and must not be quoted as accuracy on
     its own. The summary's "Accuracy (verified)" column excludes proxy rows.
@@ -252,7 +262,7 @@ npx tsx benchmark/grade.ts benchmark/results/2026-07-14-141739 --grader alice
 
 By default grading is **blind and randomized**: the grader sees an opaque item
 id, the prompt, the rubric, the full answer, and the cited PMIDs' validity,
-study type and evidence grade (read offline from the run's data), but not the
+study type and design tier (read offline from the run's data), but not the
 condition, model, run, or proxy score; items come in a seeded shuffled order.
 Enter a 0–10 score (optionally followed by a one-line reason), `s`/Enter to
 skip, `q` to save and quit. Each grade is saved immediately, and re-running
@@ -277,6 +287,24 @@ list of items where graders differ by more than 3 points, for adjudication.
 dimension to `null` drops that dimension (and the recomputed composite) from
 aggregation. Rows graded by humans get `accuracy_source = human`. Use
 `--overrides <path>` to apply one shared file across runs.
+
+**LLM judge (second opinion, not human grading).**
+[`judge.ts`](judge.ts) grades the rubric answers with an LLM, blind to
+condition, model and run. The judge sees the same view as `grade.ts` plus the
+abstracts of the cited PubMed records:
+
+```bash
+npx tsx benchmark/judge.ts <results-dir> [--judge qwen3.8-max] [--conditions mcp,mcp-skill] [--limit n]
+```
+
+Grades go to `judge-<model>.json` (resumable) and a report to
+`judge-<model>.md`, with judge score, proxy score and a composite recomputed
+with the judge's accuracy per condition, plus a paired mcp-skill vs mcp test.
+They are never written to `overrides.json`, so they never count as human
+grades. An LLM judge can be wrong about medicine and may not know recent
+papers: treat its scores as indicative and spot-check a sample by hand. The
+default judge, `qwen3.8-max`, runs on Alibaba Cloud Model Studio's Singapore
+endpoint and needs `DASHSCOPE_API_KEY`.
 
 ## Reproducibility
 
@@ -323,8 +351,11 @@ npm --prefix benchmark run verify-keys    # = npx tsx benchmark/scripts/verify-k
 ```
 
 before every publish run. For `values` keys it checks that every pinned PMID
-resolves and that the live `keywordGrade` still produces the expected study
-type and score; for bullshit (`reject`) keys it runs the optional `probe`
+resolves, that the design classified from the record's live NLM metadata
+matches the expected study type, and that the expected score matches
+`DESIGN_TIER` for that type (and the live tier, when the record is classified).
+A subject PMID without design metadata can't be confirmed this way: that is
+a warning, and the key rests on the abstract quoted in its `note`; for bullshit (`reject`) keys it runs the optional `probe`
 PubMed search, which must return no hits (hits are warnings with titles for a
 human to judge), and checks that any fabricated PMID in the prompt does not
 resolve. It exits 1 on any mismatch or error.
@@ -338,11 +369,14 @@ paper.**
 
 ## Validity and limitations
 
-- **Evidence quality is measured with the MCP's own grader.** The 0–5 score is
-  `keywordGrade` from the MCP, and the MCP condition sees that same grade in
-  its tool results. This is a structural advantage for the MCP condition on
-  the evidence term (25% of the composite); it is not an independent
-  measurement.
+- **Evidence quality uses the labels the MCP shows.** The 0–5 design tier
+  comes from NLM's own metadata (no heuristics of ours), but the MCP condition
+  sees those same labels in its tool results, while the baselines would have
+  to find them on PubMed. That is a structural advantage for the MCP condition
+  on the evidence term (25% of the composite). It also measures only the
+  *design* of what was cited, not how good those studies are, and most
+  meta-analyses are unrated (their pooled designs aren't indexed), so the term
+  mostly reflects cited primary studies.
 - **Rubric accuracy is a provisional proxy** (citation tier) until humans
   grade it. Only the `values` queries and bullshit rejection have automated
   ground truth.

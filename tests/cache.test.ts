@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { LRUBackend, NullCache, SQLiteBackend, createCache } from "../src/core/cache";
+import { LRUBackend, NullCache, SQLiteBackend, SUMMARY_TTL_MS, createCache } from "../src/core/cache";
 import type { NcbiArticle } from "../src/core/types";
 
 const article: NcbiArticle = {
@@ -34,6 +34,16 @@ describe("LRUBackend", () => {
     expect(c.getSummary("a")).toBeNull();
     expect(c.getSummary("b")?.pmid).toBe("b");
     expect(c.getSummary("c")?.pmid).toBe("c");
+  });
+});
+
+describe("LRUBackend summary TTL", () => {
+  // lru-cache reads its clock from a `performance` reference taken at import,
+  // which fake timers can't reach, so check the configuration instead.
+  it("expires summaries after SUMMARY_TTL_MS and never expires abstracts", () => {
+    const stores = new LRUBackend() as unknown as { summaries: { ttl: number }; abstracts: { ttl: number } };
+    expect(stores.summaries.ttl).toBe(SUMMARY_TTL_MS);
+    expect(stores.abstracts.ttl).toBe(0);
   });
 });
 

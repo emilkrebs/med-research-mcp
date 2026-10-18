@@ -1,0 +1,273 @@
+# How med-research-mcp works
+
+This document explains what happens inside the server: how a search travels through the databases, how each result gets its study-design label, how full texts are found, and how the benchmark grades answers. For installation and the tool reference, see the [README](../README.md).
+
+Three different things in this repo grade something:
+
+| | Where | What it grades |
+| --- | --- | --- |
+| **The grader** (design labeler) | [`src/core/grader.ts`](../src/core/grader.ts) | Every search result: its study design, design tier and integrity flags, from NLM metadata |
+| **Human grading** | [`benchmark/grade.ts`](../benchmark/grade.ts) | Open-ended benchmark answers, blind, on a 0–10 scale |
+| **LLM judge** | [`benchmark/judge.ts`](../benchmark/judge.ts) | The same answers, as a second opinion that never replaces a human grade |
+
+## Contents
+
+- [Architecture](#architecture)
+- [Life of a search](#life-of-a-search)
+- [The grader: study-design labels](#the-grader-study-design-labels)
+- [Fetch and full text](#fetch-and-full-text)
+- [Rate limits, errors and caching](#rate-limits-errors-and-caching)
+- [The benchmark: grading answers](#the-benchmark-grading-answers)
+
+## Architecture
+
+```text
+MCP client (Claude Code, Claude Desktop, Cursor, …)
+   │  stdio
+   ▼
+src/mcp/index.ts     CLI: env warnings, stdio transport, closes the cache on exit
+src/mcp/server.ts    createServer(): tool schemas (zod), one shared cache and NCBI client
+   │
+   ▼
+src/core/            plain TypeScript, no MCP dependency (published as med-research-mcp/core)
+├─ literature.ts     searchLiterature / fetchLiterature: fan out, classify, de-duplicate, filter, sort
+├─ adapters/         one file per database, plus registry.ts
+├─ pubmed.ts         NcbiClient: esearch → esummary → efetch, with a rate limiter
+├─ grader.ts         study-design labels, tiers and flags
+├─ fulltext.ts       DOI → Unpaywall → proxy → doi.org → abstract
+├─ cache.ts          in-memory LRU or SQLite
+└─ errors.ts         typed errors
+```
+
+Three principles shape the code:
+
+- **The core does the work.** The MCP layer validates input, calls the core and returns the result as JSON. An app that embeds `med-research-mcp/core` gets the same behavior as an MCP client.
+- **Search makes no LLM calls.** Labels come from database metadata. Reading abstracts, appraising studies and classifying unlabeled papers is the calling model's job, guided by the [skills](../skills/).
+- **A label claims only what the metadata establishes.** When the metadata is silent, the answer is `unknown` and `null`, never a guess.
+
+## Life of a search
+
+What `literature_search` (core: `searchLiterature` in [`literature.ts`](../src/core/literature.ts)) does with a request:
+
+1. **Validate.** zod checks the arguments. `maxResults` is clamped to 1–50 per database.
+2. **Pick the adapters.** `database` defaults to `pubmed`, and `"all"` selects every adapter. Unknown ids are dropped; if none are left, the result is empty with a warning. The server substitutes a PubMed adapter bound to its shared `NcbiClient`, so all tool calls go through one rate limiter.
+3. **Fan out.** The adapters run in parallel. `search` returns ids and a hit count, then `fetch` turns the first `maxResults` ids into records. When a database fails (a network error, a rate limit, a query too broad for PubMed), its failure becomes a warning (`"<database> search failed: …"`) and the other databases still return results.
+4. **Classify.** Each record goes through `classifyArticle` ([next section](#the-grader-study-design-labels)), which adds `studyType`, `designTier` and `flags`. MeSH headings feed the classification and are then removed from search results to keep them compact.
+5. **De-duplicate by DOI.** DOIs are normalized (URL and `doi:` prefixes removed, compared case-insensitively). One record per DOI survives: the higher-ranked copy, placed where the DOI first appeared. It also takes the other copies' `retracted`, `expression-of-concern`, `corrected` and `updated` flags, since those describe the paper, not one database's record; a merged `retracted` sets its tier to 0. Records without a DOI are all kept.
+6. **Filter.** `minDesignTier` drops records below the given tier. A `null` tier counts as below any minimum; how many records were dropped that way is reported in a warning. `studyTypes` keeps only the listed types. Filtering runs after de-duplication, so a retracted copy the filter would drop still passes its flag to the copy that is kept.
+7. **Sort.** A stable sort by [rank](#ranking): tiers 5 to 2, then unknown tiers, then tiers 1 and 0. Records of equal rank keep their database's order (relevance or date), with databases in the order they were requested.
+8. **Return** `{ articles, total, query, warnings? }`, where `total` sums the hit counts each database reported before truncation.
+
+### The databases
+
+| | `pubmed` | `europepmc` | `chinaxiv` | `russiarxiv` |
+| --- | --- | --- | --- | --- |
+| API | NCBI E-utilities | Europe PMC REST | ChinaRxiv API | ChinaRxiv API, `source=russiarxiv` |
+| Query | PubMed syntax, including field tags | plain text | plain text | plain text |
+| `dateRange` | publication date | `FIRST_PDATE` | ignored | ignored |
+| `sort: "date"` | ✓ | ✓ | ignored | ignored |
+| Design metadata | publication types, MeSH, correction links | the same, for MEDLINE records | none | none |
+
+`language` is read only by the `chinaxiv` adapter, where `"ru"` switches the search to the RussiaRxiv corpus.
+
+- **PubMed** makes three E-utilities calls: `esearch` for the PMIDs, `esummary` for the bibliographic record, and `efetch` (XML) for the abstract, MeSH headings and CommentsCorrections links that `esummary` lacks. `efetch`'s publication types replace `esummary`'s when it has any. A fresh summary is cached only after `efetch` succeeds for it, so a failed `efetch` can't leave a record cached without its retraction links. A query matching more than 100,000 records is refused with `QUERY_TOO_BROAD`.
+- **Europe PMC** returns complete records (abstract, publication types, MeSH, correction links) from a single `resultType=core` search request. MEDLINE records keep their PMID as id. Numeric ids from other sources would collide with PMIDs, so they get a source prefix, e.g. `CBA:521529` (Chinese Biological Abstracts); `PPR…` preprint and `PMC…` ids stay as they are. Europe PMC's correction link names are mapped to PubMed's (`RetractionIn`, …), so these records classify exactly like PubMed's.
+- **ChinaXiv and RussiaRxiv** come from the same ChinaRxiv API. Records use the English title and abstract when available. Search results carry abstracts cut at 500 characters; `literature_fetch` loads the complete record. These records have no publication types, so they are always `unknown`.
+
+The REST adapters (all but PubMed) keep the records they parse during `search` in a per-process memo of up to 1,000 entries, so the `fetch` that follows doesn't make a second request. They also write records through to the cache under `<database>:<id>`.
+
+**Adding a database** takes one file in [`src/core/adapters/`](../src/core/adapters/) that implements `DatabaseAdapter` (or extends `RestAdapter`), one line in [`registry.ts`](../src/core/adapters/registry.ts), and its id in the `DATABASES` list in [`src/mcp/server.ts`](../src/mcp/server.ts), which feeds the tool descriptions. An adapter never classifies, merges or knows about other databases; `literature.ts` does that.
+
+## The grader: study-design labels
+
+[`src/core/grader.ts`](../src/core/grader.ts) gives every search result a `studyType`, a `designTier` and, when any apply, `flags`. Its only inputs are database metadata:
+
+- **NLM PublicationType tags** (PubMed, and Europe PMC, which mirrors them), for the design and most flags.
+- **CommentsCorrections links** (retraction, expression of concern, erratum, newer version), for flags.
+- **The MeSH check tags `Animals` and `Humans`**, for one warning.
+- **The title**, only to catch a publisher's `RETRACTED` prefix.
+
+No keyword or regex rule reads the title or abstract to guess a design. A record without publication types is `unknown`. That's common for recent papers, journals outside MEDLINE, and ChinaXiv / RussiaRxiv. Unknown means unlabeled, not weak: the model reads the design from the abstract, as the [`med-research`](../skills/med-research/SKILL.md) skill instructs.
+
+Every mapping in `grader.ts` cites its source; the list is at the [end of this section](#sources).
+
+### Step 1: the design
+
+`studyType` comes from NLM's publication types, following NLM's own definitions in [MeSH](https://id.nlm.nih.gov/mesh/). The tags are checked in this order, and the first match decides:
+
+1. Veterinary tags (`Clinical Trial, Veterinary`, `Randomized Controlled Trial, Veterinary`, `Observational Study, Veterinary`) → `animal-study`.
+2. `Network Meta-Analysis` → `meta-analysis`, tier 5.
+3. `Meta-Analysis` → `meta-analysis`, tier `null`.
+4. `Systematic Review` → `systematic-review`, tier `null`.
+5. Primary designs. Each matching tag adds a candidate, and when there are several, the one with the lowest tier wins:
+   - `Case Reports` → `case-report`
+   - `Observational Study` → `observational`
+   - `Randomized Controlled Trial` or `Equivalence Trial` → `randomized-controlled-trial`; otherwise `Controlled Clinical Trial` → `non-randomized-trial`; otherwise any other trial type → `clinical-trial`
+6. `Review` or `Scoping Review` → `review`.
+7. None of these → `unknown`.
+
+A synthesis is labeled as a synthesis even when it also carries the tags of the designs it pooled. Why each label is assigned the way it is:
+
+- `Randomized Controlled Trial` and `Equivalence Trial` (a child of RCT in the MeSH tree) → `randomized-controlled-trial`.
+- `Controlled Clinical Trial` → `non-randomized-trial`. NLM defines it as controlled and tags randomized trials as RCT instead; its controls may be historical.
+- `Clinical Trial`, phases I–IV, `Adaptive`, `Pragmatic` (moved under Clinical Trial in MeSH 2026) and `Human Challenge Trials` → `clinical-trial`: randomization and control aren't indexed.
+- `Observational Study` → `observational`. MeSH design headings ("Cohort Studies", "Prospective Studies"…) are **not** used to narrow it or to classify untagged records: sampled 2023 records showed them applied to diagnostic, intervention and ecological studies too.
+- `Meta-Analysis`, `Network Meta-Analysis` → `meta-analysis`; `Systematic Review` → `systematic-review`; `Case Reports` → `case-report`; `Review`, `Scoping Review` → `review`; veterinary tags → `animal-study`.
+- Conflicting primary tags (e.g. RCT plus Observational Study, mostly observational analyses of trial cohorts) take the lower design.
+
+### Step 2: the flags
+
+**`flags`** come from publication types, the CommentsCorrections links in PubMed and Europe PMC records, and MeSH check tags.
+
+| Flag | Source | Effect |
+| --- | --- | --- |
+| `retracted` | `Retracted Publication` tag, a `RetractionIn` link, or a publisher title prefix (`RETRACTED:`, `RETRACTED ARTICLE:`, `[Retracted]`; not on notices) | tier 0 |
+| `notice` | `Retraction Notice` (named "Retraction of Publication" before 2025), `Expression of Concern`, `Published Erratum`: a notice, not a study | tier 0 |
+| `protocol` | `Clinical Trial Protocol` | tier 0 |
+| `editorial` | `Editorial`, `Comment` | tier 0 |
+| `expression-of-concern` | an `ExpressionOfConcernIn` link (the article itself is never tagged) | warning |
+| `corrected` | an `ErratumIn` link | warning |
+| `updated` | an `UpdateIn` link: a newer version exists, e.g. an updated Cochrane review | warning |
+| `animals-not-humans` | MeSH `Animals` without `Humans`. Only a warning: automated indexing drops `Humans` from human trials often enough that this filter wrongly excluded human RCTs 7× as often as under manual indexing ([Askin 2025](https://pubmed.ncbi.nlm.nih.gov/39975499/)) | warning |
+| `preprint`, `letter` | `Preprint`, `Letter` (letters include research letters) | warning |
+
+### Step 3: the tier
+
+1. A record flagged `retracted`, `notice`, `protocol` or `editorial` is not usable as evidence: its tier is 0, whatever its design.
+2. Otherwise the tier comes from the table below, except for syntheses, which got their tier in step 1.
+3. `unknown` has tier `null`.
+
+**`designTier`** ranks the design for "Does this intervention help?" by the [OCEBM 2011 Levels of Evidence](https://www.cebm.ox.ac.uk/resources/levels-of-evidence/ocebm-levels-of-evidence): level 1 → 5, level 2 → 4, level 3 → 3, level 4 → 2, below level 4 → 1, non-human → 0.
+
+| `studyType` | `designTier` | Basis (OCEBM 2011, treatment benefits) |
+| --- | --- | --- |
+| `meta-analysis`, `systematic-review` | 5 **only if it pooled randomized trials**; otherwise `null` | Level 1 is a systematic review *of randomized trials*. A review ranks with what it pooled, and MeSH rarely shows that: in 2022, 77% of reviews/meta-analyses carried no heading for it. Only `Network Meta-Analysis`, defined as pooling randomized trials, gets 5 |
+| `randomized-controlled-trial` | 4 | Level 2. NLM also applies the tag to secondary analyses of trial data |
+| `cohort` | 3 | Level 3 (non-randomized controlled cohort) |
+| `non-randomized-trial`, `clinical-trial`, `observational`, `case-control`, `cross-sectional` | 2 | Level 4 or a label spanning levels 3–4 (historical controls, single-arm trials, unspecified observational design) |
+| `case-report`, `review` | 1 | Below level 4: a single case, or a review not indexed as systematic (16% of 2023 papers titled "systematic review" carry only `Review`) |
+| `animal-study`, `in-vitro` | 0 | Non-human: at most mechanism-based reasoning (level 5) for human questions |
+| `unknown` | `null` | **Unrated, not weak.** When `minDesignTier` drops these, a warning reports how many |
+
+Two rules keep the tiers conservative:
+
+- **When a label's NLM definition admits designs at different levels, the lower level is used.** `Controlled Clinical Trial` allows historical controls (level 4), so it ranks 2 rather than 3.
+- **A systematic review has no level of its own; it ranks with the studies it pooled.** Metadata rarely shows what was pooled, so a synthesis ranks 5 only when its publication type is defined as pooling randomized trials, and `null` otherwise.
+
+`cohort`, `case-control`, `cross-sectional` and `in-vitro` are never assigned from metadata; they exist for designs the model reads from an abstract.
+
+### Ranking
+
+Search results are sorted by `designTier`, with `null` ranked as 1.5 ([`rankKey`](../src/core/grader.ts)). Known tiers 2–5 come first. Unknown tiers come next, because an unlabeled record or an unrated meta-analysis may well be strong and needs reading. Case reports, narrative reviews, non-human and non-evidence records come last. The same rank decides which copy survives DOI de-duplication (it keeps the other copies' retraction and correction flags).
+
+### Examples
+
+What `classifyDesign` returns for some typical metadata:
+
+| Metadata | `studyType` | `designTier` | `flags` |
+| --- | --- | --- | --- |
+| `Journal Article`, `Randomized Controlled Trial` | `randomized-controlled-trial` | 4 | |
+| `Meta-Analysis`, `Systematic Review` | `meta-analysis` | `null` | |
+| `Network Meta-Analysis`, `Systematic Review` | `meta-analysis` | 5 | |
+| `Randomized Controlled Trial`, `Observational Study` | `observational` | 2 | |
+| `Case Reports`, `Review` | `case-report` | 1 | |
+| `Randomized Controlled Trial`, `Retracted Publication` | `randomized-controlled-trial` | 0 | `retracted` |
+| `Randomized Controlled Trial` plus an `ErratumIn` link | `randomized-controlled-trial` | 4 | `corrected` |
+| `Clinical Trial Protocol` | `unknown` | 0 | `protocol` |
+| `Journal Article`, MeSH `Animals`, `Mice` | `unknown` | `null` | `animals-not-humans` |
+| A ChinaXiv record (no publication types) | `unknown` | `null` | |
+
+### What the labels are not
+
+- **Not hand-curated.** These are NLM's labels, but since 2022 NLM indexes MEDLINE automatically (MTIA, then the neural MTIX), curating selected records by hand, and has been bringing publication types into that automation ([NLM 2021](https://www.nlm.nih.gov/pubs/techbull/nd21/nd21_medline_2022.html), [NLM 2024](https://www.nlm.nih.gov/pubs/techbull/ma24/ma24_mtix.html)). Treat a label as a strong prior to confirm when it matters.
+- **Not an appraisal.** `designTier` ranks the design; it doesn't appraise the study. Risk of bias, imprecision, inconsistency, indirectness and publication bias need the paper ([GRADE](https://pubmed.ncbi.nlm.nih.gov/21208779/)), and the [`med-research-ebm`](../skills/med-research-ebm/SKILL.md) skill covers them.
+- **Only for treatment questions.** Prognosis, diagnosis and harms questions rank designs differently (OCEBM).
+
+### Changing the grader
+
+- Cite a source for every mapping, in the code comment. Check NLM definitions against the current MeSH JSON record (`https://id.nlm.nih.gov/mesh/<UI>.json`), and measure any rule on real PubMed records before relying on it.
+- Prefer the conservative choice: the lower tier, or `null` when unsure.
+- Add a case to [`tests/grader.test.ts`](../tests/grader.test.ts).
+- If tiers change, bump `SCORER_VERSION` in [`benchmark/lib/scoring/score.ts`](../benchmark/lib/scoring/score.ts) so `--rescore` re-grades stored benchmark runs instead of reusing their embedded scores.
+
+### Sources
+
+As listed in `grader.ts`, all checked 2026-10-17:
+
+- **[OCEBM]** OCEBM Levels of Evidence Working Group. "The Oxford 2011 Levels of Evidence". Oxford Centre for Evidence-Based Medicine. <https://www.cebm.ox.ac.uk/resources/levels-of-evidence/ocebm-levels-of-evidence>
+- **[OCEBM-intro]** Howick J, et al. "The 2011 Oxford CEBM Levels of Evidence (Introductory Document)". Same URL. The levels are "NOT intended to provide you with a definitive judgment about the quality of evidence".
+- **[GRADE-3]** Balshem H, et al. GRADE guidelines: 3. Rating the quality of evidence. *J Clin Epidemiol* 2011;64:401-6. [PMID 21208779](https://pubmed.ncbi.nlm.nih.gov/21208779/).
+- **[GRADE-8]** Guyatt GH, et al. GRADE guidelines: 8. Rating the quality of evidence — indirectness. *J Clin Epidemiol* 2011;64:1303-10. [PMID 21802903](https://pubmed.ncbi.nlm.nih.gov/21802903/).
+- **[MeSH]** NLM MeSH publication-type records (definition, tree position, history), `https://id.nlm.nih.gov/mesh/<UI>.json`. The UIs are cited inline in `grader.ts`.
+- **[NLM-XML]** NLM, MEDLINE/PubMed XML element descriptions, CommentsCorrections. [Archived copy](https://wayback.archive-it.org/org-350/20240220194809/https://www.nlm.nih.gov/bsd/licensee/elements_descriptions.html).
+- **[NLM-2021]** NLM Technical Bulletin 2021 Nov–Dec, "MEDLINE 2022 Initiative: Transition to Automated Indexing". <https://www.nlm.nih.gov/pubs/techbull/nd21/nd21_medline_2022.html>
+- **[NLM-2024]** NLM Technical Bulletin 2024 Mar–Apr, "MTIX: the Next-Generation Algorithm for Automated Indexing of MEDLINE". <https://www.nlm.nih.gov/pubs/techbull/ma24/ma24_mtix.html>
+- **[Askin-2025]** Askin N, et al. Filtering failure: the impact of automated indexing in Medline on retrieval of human studies for knowledge synthesis. *J Med Libr Assoc* 2025. doi:10.5195/jmla.2025.1972. [PMID 39975499](https://pubmed.ncbi.nlm.nih.gov/39975499/).
+
+The PubMed counts quoted above (77%, 16%) were measured on PubMed by the project and are documented next to the rules they support in `grader.ts`.
+
+## Fetch and full text
+
+### `literature_fetch`
+
+Pure data: it returns the stored records, with publication types, MeSH headings and correction links, and doesn't classify them. Records come back in the order requested, and ids that couldn't be fetched are listed in `missing`.
+
+- **PubMed** runs `esummary` and `efetch`, as in search.
+- **Europe PMC** looks an id up by `EXT_ID` and `SRC` and accepts only an exact match. A bare number would run a full-text search and return unrelated papers.
+- **ChinaXiv** loads the complete record, since search results carry abstracts cut at 500 characters. If that request fails, it returns the preview from an earlier search.
+
+### `literature_fulltext`
+
+[`fulltext.ts`](../src/core/fulltext.ts) needs a numeric PMID or a DOI; DOI-based resolution works for any database.
+
+1. **Cache.** A full text resolved in the last 30 days is returned immediately.
+2. **Find the DOI**: from the argument, a cached record, or a fresh `esummary` call.
+3. **Try each source in order**, stopping at the first that yields text:
+   1. **Unpaywall**: every open-access location it knows for the DOI, the direct PDF link first, then the landing page. Needs a contact email (`MED_RESEARCH_UNPAYWALL_EMAIL`, or `NCBI_EMAIL`).
+   2. **Institutional proxy**: `MED_RESEARCH_PROXY_PREFIX` followed by the DOI, if configured.
+   3. **Direct**: `https://doi.org/<DOI>`, which works for open-access articles and on networks with IP-based access.
+4. **Fall back** to the abstract, with `source: "none"` and a warning that says what to do (for example, configure a proxy).
+
+Each URL is fetched with a 20-second timeout. The `Content-Type` header decides how a response is read, because publishers often serve an HTML paywall page from a `…/pdf` URL. HTML is reduced to the article body with [Readability](https://github.com/mozilla/readability) and converted to markdown with [turndown](https://github.com/mixmark-io/turndown); PDFs are converted to plain text with pdf-parse (`format: "pdf"`). A result shorter than 500 characters is treated as a paywall stub, and the next URL is tried.
+
+The cache stores the full, untruncated text. The returned text is capped at `MED_RESEARCH_FULLTEXT_MAX_CHARS` (default 50,000), with `truncated: true` when it was cut.
+
+## Rate limits, errors and caching
+
+**Rate limits.** Each `NcbiClient` queues its requests and spaces them to 3 per second, or 10 with `NCBI_API_KEY`. The MCP server shares one client between all tools, so concurrent tool calls stay within NCBI's limit. Requests carry `NCBI_EMAIL`, as NCBI's usage policy asks. Every upstream request times out after 15 seconds (20 for full-text pages).
+
+**Errors.** Library functions throw `ResearchApiException` with a code (`RATE_LIMIT`, `QUERY_TOO_BROAD`, `PARSE_FAILURE`, `NETWORK_ERROR`, `NOT_FOUND`), a message for logs, a `userMessage` for the agent, and whether it is `recoverable`. An HTTP 429 becomes `RATE_LIMIT` with the server's `Retry-After`. The MCP tools return these as `isError` results. A multi-database search is the exception: one database failing becomes a warning, not an error.
+
+**Caching.** The cache holds three stores, each with its own lifetime:
+
+| Store | Expires after | Why |
+| --- | --- | --- |
+| Summaries (metadata) | 7 days | Metadata changes after publication: indexing adds publication types and MeSH, and retractions, expressions of concern and errata arrive at any time. A cached record must not hide a retraction for long |
+| Abstracts | never | Abstracts don't change |
+| Full texts | 30 days | The paper is stable, but resolved open-access URLs and proxy sessions rot |
+
+The `memory` backend is an LRU of 200 entries per store that dies with the process. The `sqlite` backend persists to a WAL-mode database and loads its native binding (`better-sqlite3`, an optional dependency) lazily; if the binding is missing or fails to load, the server logs a warning and uses memory instead.
+
+## The benchmark: grading answers
+
+The [benchmark](../benchmark/) measures whether the MCP helps a model give accurate, well-cited answers to biomedical questions. It runs 32 queries across 7 categories against one or more conditions: `mcp` (the real server, in-process), `mcp-skill` (the same plus the `med-research` skill in the system prompt), and optional `closed-book` and `web-search` baselines. [`benchmark/README.md`](../benchmark/README.md) has the full details; this is how an answer gets its score.
+
+**1. Citations are checked, never trusted.** Every cited PMID is fetched from live PubMed; DOIs and PMCIDs are resolved to PMIDs first, and Europe PMC and ChinaXiv ids are looked up in their own database. A PMID that doesn't resolve is a **fabrication**. One that does is classified by the same `classifyArticle` the MCP uses, so **evidence quality** is the mean `designTier` of the valid citations, leaving out unrated ones. A transient NCBI failure becomes a `scoring-error`, never a fabrication.
+
+**2. Misattribution is audited.** A real paper cited for something it doesn't say passes the fabrication check, so [`attribution.ts`](../benchmark/lib/scoring/attribution.ts) compares the text around each citation with the record: topic, year, author, claimed design, and figures against the abstract. It flags only clear contradictions and is reported next to the composite, not in it.
+
+**3. Accuracy depends on the query's answer key:**
+
+| Key | Queries | How it is graded |
+| --- | --- | --- |
+| `values` | 13 | The model ends with an `ANSWER — field: value \| …` line, and each field is compared with the key. Fully automated |
+| `reject` | 4 | The query asks about a study that doesn't exist. Full marks only for saying so about that study, while citing no non-existent PMID |
+| `rubric` | 15 | Open-ended. Until a human grades it, accuracy is a provisional proxy (citation tier × 2) that must not be quoted as accuracy |
+
+**4. Rubric answers are graded by people.** [`grade.ts`](../benchmark/grade.ts) shows each answer blind (prompt, rubric, answer and the cited records, but not the condition, model, run or proxy score) in a seeded random order. Grades go to `overrides.json`, and `run.ts --rescore` applies them. Several graders can grade the same run; their grades are averaged, and `--agreement` reports Krippendorff's α and ICC.
+
+**5. The LLM judge gives a second opinion.** [`judge.ts`](../benchmark/judge.ts) grades the same blind view plus the abstracts of the cited PubMed records, against the rubric. Its grades go to `judge-<model>.json` and a report, `judge-<model>.md`, which compares conditions (including mcp-skill vs mcp). They are never written to `overrides.json`, so they never count as human grades. A judge can be wrong about medicine and may not know recent papers, so spot-check it by hand.
+
+**6. The composite** (0–10) weighs accuracy 40%, evidence quality 25%, citation integrity 25%, speed 5% and token cost 5%. A bullshit query scores only on whether the model rejected the fabricated study.
+
+One caveat matters when reading the results: the MCP condition sees the same design labels the scorer uses, which gives it a structural advantage on the evidence term. See [Validity and limitations](../benchmark/README.md#validity-and-limitations) before citing any number.

@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { SCORER_VERSION, rowFromBreakdown, scoreRun } from "../lib/scoring/score.js";
+import { composite, compositeForCategory } from "../lib/scoring/composite.js";
 import { Verifier, type PmidFacts } from "../lib/scoring/verify.js";
 import { QUERIES } from "../lib/queries.js";
+import { DESIGN_TIER, STUDY_TYPES } from "../lib/core.js";
 import type { BenchmarkQuery, RunRecord, ScoreBreakdown } from "../lib/types.js";
 
 const fact = (pmid: string): PmidFacts => ({
   pmid,
   exists: true,
-  evidenceScore: 5,
+  designTier: 5,
   studyType: "meta-analysis",
   title: "T",
   abstract: "",
@@ -129,6 +131,41 @@ describe("scoreRun", () => {
   });
 });
 
+describe("unrated citations", () => {
+  const inputs = { accuracy: 8, evidenceQuality: 4, bullshitScore: 1, speedS: 0, totalTokens: 0 };
+
+  it("drop the evidence term and rescale the other weights", () => {
+    // Without evidence: (0.4·0.8 + 0.25·1 + 0.05 + 0.05) / 0.75 · 10 = 8.93.
+    expect(composite({ ...inputs, evidenceQuality: Number.NaN })).toBe(8.93);
+    expect(composite(inputs)).toBe(8.7);
+  });
+
+  it("still leave the composite unscored when accuracy or bullshit is unscored", () => {
+    expect(composite({ ...inputs, accuracy: Number.NaN })).toBeNaN();
+    expect(compositeForCategory("bullshit", { ...inputs, bullshitScore: Number.NaN })).toBeNaN();
+  });
+
+  it("leave a rubric proxy unscored and survive the JSON round-trip as NaN", async () => {
+    const v = new Verifier({
+      fetchArticles: async (pmids) => ({ found: pmids.map((p) => ({ ...fact(p), designTier: null })), missing: [] }),
+      resolveId: async () => null,
+    });
+    const { row, breakdown } = await scoreRun(
+      record({ queryId: "synthesis-01", category: "synthesis", text: "See PMID 28202713." }),
+      query("synthesis-01"),
+      v,
+    );
+    expect(row.evidence_quality).toBeNaN();
+    expect(row.accuracy).toBeNaN();
+    expect(row.composite).toBeNaN();
+    const stored = JSON.parse(JSON.stringify(breakdown)) as ScoreBreakdown;
+    expect(stored.evidenceQuality.score).toBeNull();
+    const reread = rowFromBreakdown(record({ queryId: "synthesis-01", category: "synthesis" }), stored);
+    expect(reread.evidence_quality).toBeNaN();
+    expect(reread.composite).toBeNaN();
+  });
+});
+
 describe("rowFromBreakdown", () => {
   it("round-trips a v2 breakdown without network", async () => {
     const { v } = verifier(["28202713"]);
@@ -157,14 +194,25 @@ describe("rowFromBreakdown", () => {
 });
 
 describe("queries", () => {
-  it("factual-01..03 prompts use the current taxonomy and are at answerKeyVersion 3", () => {
+  it("factual-01..03 prompts list STUDY_TYPES (minus unknown) in tier order and are at answerKeyVersion 4", () => {
+    const list = STUDY_TYPES.filter((t) => t !== "unknown").join(", ");
     for (const id of ["factual-01", "factual-02", "factual-03"]) {
       const q = query(id);
-      expect(q.prompt).toContain("non-randomized-trial");
-      expect(q.prompt).toContain("in-vitro");
-      expect(q.prompt).not.toContain("unknown");
-      expect(q.answerKeyVersion).toBe(3);
+      expect(q.prompt).toContain(`exactly one of: ${list} (listed from highest to lowest evidence`);
+      expect(q.answerKeyVersion).toBe(4);
     }
-    expect(query("factual-01").prompt).toContain("case-report or review (narrative) = 1");
+  });
+
+  it("factual-01/02 scales mirror DESIGN_TIER", () => {
+    const scale = query("factual-01").prompt.match(/for that design \((.*)\)\.$/)![1]!;
+    expect(query("factual-02").prompt).toContain(scale);
+    // Each "a, b or c = n" clause must give every named type its DESIGN_TIER.
+    for (const clause of scale.split(";")) {
+      const [names, n] = clause.split(/ = (\d)/);
+      for (const type of STUDY_TYPES) {
+        if (type !== "unknown" && new RegExp(`(^|[ ,])${type}( |,|$)`).test(names!)) expect(DESIGN_TIER[type]).toBe(Number(n));
+      }
+    }
+    expect(scale).toContain("systematic-review of randomized trials = 5");
   });
 });

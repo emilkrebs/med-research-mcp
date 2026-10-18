@@ -19,8 +19,8 @@ export { SovietRxivAdapter } from "./adapters/russiarxiv.js";
 export { defaultHttp } from "./adapters/http.js";
 export type { AdapterHttp, HttpOptions } from "./adapters/http.js";
 
-export { keywordGrade, gradeText, SCORE_BY_TYPE } from "./grader.js";
-export type { GradeResult } from "./grader.js";
+export { classifyArticle, classifyDesign, DESIGN_TIER } from "./grader.js";
+export type { Classification } from "./grader.js";
 
 export { fetchFulltext } from "./fulltext.js";
 export type { FulltextDeps, FetchedResource } from "./fulltext.js";
@@ -28,19 +28,20 @@ export type { FulltextDeps, FetchedResource } from "./fulltext.js";
 export { UnpaywallClient } from "./unpaywall.js";
 export type { UnpaywallConfig, UnpaywallResult } from "./unpaywall.js";
 
-export { createCache, LRUBackend, NullCache, SQLiteBackend, FULLTEXT_TTL_MS } from "./cache.js";
+export { createCache, LRUBackend, NullCache, SQLiteBackend, FULLTEXT_TTL_MS, SUMMARY_TTL_MS } from "./cache.js";
 export type { Cache, CacheBackend, CacheOptions } from "./cache.js";
 
 export { ResearchApiException, isMedResearchError, errors } from "./errors.js";
 export type { ResearchError, ResearchErrorCode } from "./errors.js";
 
-export { STUDY_TYPES } from "./types.js";
+export { STUDY_TYPES, RECORD_FLAGS, CORRECTION_TYPES } from "./types.js";
 export type {
   StudyType,
-  ScoreAdjustment,
+  RecordFlag,
+  Correction,
+  CorrectionType,
   Article as NcbiArticle,
   GradedArticle,
-  PopulationDiversity,
   DateRange,
   SearchInput,
   SearchOutput,

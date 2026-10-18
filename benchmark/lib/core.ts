@@ -4,7 +4,7 @@
  * The benchmark imports the core *directly from source* (`../../src/core`),
  * run through tsx — no build step. Condition C talks to the real MCP server
  * (`createServer` from `../../src/mcp/server`, over an in-memory transport, so
- * no stdio and no env warnings); the scorer uses `NcbiClient` + `keywordGrade`
+ * no stdio and no env warnings); the scorer uses `NcbiClient` + `classifyArticle`
  * to verify cited PMIDs against live PubMed.
  *
  * Everything that touches the library goes through this one file so a change to
@@ -15,7 +15,9 @@ export {
   searchLiterature,
   fetchLiterature,
   fetchFulltext,
-  keywordGrade,
+  classifyArticle,
+  DESIGN_TIER,
+  parseEuropePmc,
   STUDY_TYPES,
   NcbiClient,
   PubMedAdapter,
@@ -40,5 +42,6 @@ export type {
   GradedArticle,
   NcbiArticle,
   StudyType,
+  Correction,
   Cache,
 } from "../../src/core/index.js";

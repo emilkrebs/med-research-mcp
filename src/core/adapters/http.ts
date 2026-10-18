@@ -12,7 +12,7 @@
 import { errors } from "../errors.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
-const DEFAULT_USER_AGENT = "med-research-mcp/0.3.0 (https://github.com/emilkrebs/med-research-mcp)";
+const DEFAULT_USER_AGENT = "med-research-mcp/0.4.0 (https://github.com/emilkrebs/med-research-mcp)";
 
 /** Fetches a URL and returns either parsed JSON or raw text. */
 export interface AdapterHttp {

@@ -232,7 +232,7 @@ export function claimedDesign(seg: string): DesignClaim | undefined {
 }
 
 const SYNTHESIS_TYPES = new Set(["meta-analysis", "systematic-review"]);
-const OBSERVATIONAL_TYPES = new Set(["cohort", "case-control", "cross-sectional"]);
+const OBSERVATIONAL_TYPES = new Set(["cohort", "observational", "case-control", "cross-sectional"]);
 
 function checkDesign(f: PmidFacts, seg: string): Verdict {
   const claim = claimedDesign(seg);
@@ -250,6 +250,8 @@ function checkDesign(f: PmidFacts, seg: string): Verdict {
       contradicted = clearlyOther(isSynthesis, [
         "randomized-controlled-trial",
         "non-randomized-trial",
+        "clinical-trial",
+        "observational",
         "cohort",
         "case-control",
         "cross-sectional",
@@ -260,7 +262,19 @@ function checkDesign(f: PmidFacts, seg: string): Verdict {
       break;
     case "rct":
       // "RCTs show … (meta-analysis of RCTs)" is a fair summary, so syntheses pass.
-      contradicted = clearlyOther(isRct || isSynthesis, ["cohort", "case-control", "cross-sectional", "case-report", "review", "animal-study", "in-vitro"]);
+      // "non-randomized-trial" is NLM's Controlled Clinical Trial, which is by definition not randomized;
+      // "clinical-trial" may be randomized, so it never contradicts.
+      contradicted = clearlyOther(isRct || isSynthesis, [
+        "non-randomized-trial",
+        "cohort",
+        "observational",
+        "case-control",
+        "cross-sectional",
+        "case-report",
+        "review",
+        "animal-study",
+        "in-vitro",
+      ]);
       break;
     case "observational":
       contradicted = clearlyOther(isObservational || isSynthesis, ["randomized-controlled-trial", "case-report", "animal-study", "in-vitro"]);

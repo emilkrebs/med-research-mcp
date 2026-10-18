@@ -10,7 +10,7 @@
  */
 
 import { build } from "esbuild";
-import { mkdirSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -24,7 +24,16 @@ const entryPoint = path.join(root, "src", "mcp", "index.ts");
 const outfile = path.join(serverOutDir, "index.js");
 const mcpbOutfile = path.join(distDir, "med-research-mcp.mcpb");
 
+const readJson = (file) => JSON.parse(readFileSync(path.join(root, file), "utf-8"));
+const { version } = readJson("package.json");
+
 async function main() {
+  const manifestVersion = readJson("mcpb/manifest.json").version;
+  if (manifestVersion !== version) {
+    console.error(`mcpb/manifest.json version ${manifestVersion} doesn't match package.json version ${version}.`);
+    process.exit(1);
+  }
+
   console.log("Preparing output directories…");
   mkdirSync(serverOutDir, { recursive: true });
   mkdirSync(distDir, { recursive: true });
@@ -49,7 +58,9 @@ async function bundleServer() {
       bundle: true,
       platform: "node",
       format: "cjs",
-      target: "node18",
+      target: "node22",
+      // The bundle ships without package.json; src/mcp/server.ts reads this instead.
+      define: { __MED_RESEARCH_VERSION__: JSON.stringify(version) },
       minify: false,
       sourcemap: false,
     });

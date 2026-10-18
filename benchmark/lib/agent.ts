@@ -2,15 +2,16 @@
  * The agent loop: run one (model × condition × query) and capture everything
  * needed to score and audit it — text, tool calls, tokens, wall-clock.
  *
- * Conditions differ only in the toolset handed to `generateText`:
+ * Conditions A–C differ only in the toolset handed to `generateText`:
  *   A closed-book → no tools
  *   B web-search  → Brave `web_search` / `web_fetch`
  *   C mcp         → literature_* tools served by the real MCP server (in-memory transport)
- * The system prompt is identical across all three (spec §"System Prompt").
+ * The system prompt is identical across those three (spec §"System Prompt").
+ *   D mcp-skill   → C's tools plus the shipped `med-research` skill in the system prompt
  */
 
 import { generateText, stepCountIs, type LanguageModel, type ToolSet } from "ai";
-import { DEFAULTS, SYSTEM_PROMPT, type ModelSpec } from "./config.js";
+import { DEFAULTS, systemPromptFor, type ModelSpec } from "./config.js";
 import { resolveModel } from "./providers.js";
 import { mcpTools } from "./tools/literature.js";
 import { webSearchTools } from "./tools/websearch.js";
@@ -38,6 +39,7 @@ async function toolsFor(condition: ConditionId): Promise<ToolHandle> {
     case "web-search":
       return { tools: webSearchTools(), close: noClose };
     case "mcp":
+    case "mcp-skill":
       return mcpTools();
   }
 }
@@ -231,6 +233,7 @@ export async function runOne(
   const startedAt = new Date().toISOString();
   const t0 = Date.now();
   const abortSignal = AbortSignal.timeout(timeoutMs);
+  const systemPrompt = systemPromptFor(condition);
 
   const base: Omit<RunRecord, "text" | "toolCalls" | "toolCallCount" | "toolsUsed" | "usage" | "speedS" | "finishedAt"> = {
     queryId: query.id,
@@ -241,7 +244,7 @@ export async function runOne(
     modelId: model.modelId,
     settings: { temperature, maxSteps, timeoutMs },
     run: runIndex,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt,
     prompt: query.prompt,
     startedAt,
   };
@@ -271,7 +274,7 @@ export async function runOne(
     let forcedAt: number | undefined;
     const result = (await generateText({
       model: llm,
-      system: SYSTEM_PROMPT,
+      system: systemPrompt,
       prompt: query.prompt,
       ...(model.fixedSampling ? {} : { temperature }),
       maxRetries,
