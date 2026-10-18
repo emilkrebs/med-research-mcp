@@ -88,7 +88,7 @@ Set these in your MCP client's `env` block. The server reads them from its envir
 | `NCBI_EMAIL` | Recommended | Contact email sent with every NCBI request, as NCBI's usage policy asks. Without it, you're more likely to be throttled. |
 | `NCBI_API_KEY` | No | Raises the NCBI rate limit from 3 to 10 requests per second. Get one in your [NCBI account settings](https://www.ncbi.nlm.nih.gov/account/settings/). |
 | `MED_RESEARCH_UNPAYWALL_EMAIL` | No | Contact email for Unpaywall open-access lookups in `literature_fulltext`. Falls back to `NCBI_EMAIL`. |
-| `MED_RESEARCH_PROXY_PREFIX` | No | Institutional EZproxy prefix that `literature_fulltext` puts in front of the DOI, e.g. `https://login.ezproxy.your-university.edu/login?url=`. Needs an active proxy session on the machine. |
+| `MED_RESEARCH_PROXY_PREFIX` | No | Your institution's EZproxy host for doi.org, e.g. `https://doi-org.ezproxy.your-university.edu`. `literature_fulltext` requests `<prefix>/<DOI>`, so `…/login?url=` prefixes don't work. Needs an active proxy session on the machine. See the [terms note](#literature_fulltext). |
 | `MED_RESEARCH_FULLTEXT_MAX_CHARS` | No | Cap on the length of returned full texts. Default `50000`. |
 | `MED_RESEARCH_CACHE_BACKEND` | No | `memory` (default, in-process) or `sqlite` (persistent, survives restarts). |
 | `MED_RESEARCH_CACHE_PATH` | No | SQLite file for the `sqlite` backend. Default `./pubmed-cache.db`; `:memory:` for a throwaway database. |
@@ -132,6 +132,8 @@ Returns `{ articles, missing, warnings? }`: the raw records with publication typ
 ### `literature_fulltext`
 
 Tries Unpaywall (open access), then the institutional proxy (if configured), then the DOI directly, and falls back to the abstract if the article is paywalled. Returns `{ id, doi?, source, fulltext?, format, truncated, warning? }`, where `source` says which route worked (`unpaywall`, `proxy`, `direct`, or `none` for the abstract fallback).
+
+The proxy route uses your own institutional access. Use it only as your institution's and the publishers' terms allow: typically personal research use, no systematic or automated downloading, and some licenses forbid passing full texts to AI tools.
 
 | Parameter | Type | Required | Notes |
 | --- | --- | --- | --- |

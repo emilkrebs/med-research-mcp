@@ -84,14 +84,14 @@ describe("fetchFulltext resolution strategy", () => {
     const fetchUrl = vi.fn(async (url: string) => (url.includes("ezproxy") ? htmlResource("<html/>", url) : paywalled()));
     const deps: FulltextDeps = {
       unpaywall: fakeUnpaywall(null),
-      proxyPrefix: "https://doi-org.ezproxy.uni-kiel.de",
+      proxyPrefix: "https://doi-org.ezproxy.example.edu",
       fetchUrl,
       htmlToMarkdown: async () => LONG_MARKDOWN,
     };
 
     const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), deps);
     expect(out.source).toBe("proxy");
-    expect(fetchUrl).toHaveBeenCalledWith("https://doi-org.ezproxy.uni-kiel.de/10.1000/xyz123", expect.any(Number));
+    expect(fetchUrl).toHaveBeenCalledWith("https://doi-org.ezproxy.example.edu/10.1000/xyz123", expect.any(Number));
   });
 
   it("uses direct DOI access when there is no OA copy and no proxy", async () => {
@@ -137,7 +137,7 @@ describe("fetchFulltext resolution strategy", () => {
   it("adjusts the fallback warning when a proxy is already configured", async () => {
     const deps: FulltextDeps = {
       unpaywall: fakeUnpaywall(null),
-      proxyPrefix: "https://doi-org.ezproxy.uni-kiel.de",
+      proxyPrefix: "https://doi-org.ezproxy.example.edu",
       fetchUrl: async () => paywalled(),
     };
     const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ abstract: "abs" }), deps);

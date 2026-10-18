@@ -81,7 +81,7 @@ Add as a git submodule (or dependency), then `import { searchLiterature, fetchLi
 | `NCBI_EMAIL` | recommended | Contact email; avoids anonymous throttling |
 | `NCBI_API_KEY` | optional | Raises rate limit 3 → 10 req/s |
 | `MED_RESEARCH_UNPAYWALL_EMAIL` | optional | Contact email for Unpaywall lookups (`literature_fulltext`). Falls back to `NCBI_EMAIL`. |
-| `MED_RESEARCH_PROXY_PREFIX` | optional | EZproxy-style DOI prefix for off-campus full-text — `literature_fulltext` prepends it to the DOI, e.g. `https://doi-org.ezproxy.uni-kiel.de`. Needs an existing proxy session on the machine. |
+| `MED_RESEARCH_PROXY_PREFIX` | optional | EZproxy-style DOI prefix for off-campus full-text — `literature_fulltext` prepends it to the DOI, e.g. `https://doi-org.ezproxy.your-university.edu`. Needs an existing proxy session on the machine; use only as the institution's and publishers' terms allow. |
 | `MED_RESEARCH_CACHE_BACKEND` | optional | `memory` (default) or `sqlite` (persistent, survives restarts — used by the Biohacking-IDE integration). `better-sqlite3` is bundled. |
 | `MED_RESEARCH_CACHE_PATH` | optional | SQLite file path when the backend is `sqlite` (default `./pubmed-cache.db`; `:memory:` for ephemeral). |
 | `MED_RESEARCH_FULLTEXT_MAX_CHARS` | optional | Cap on returned full-text length. Default 50000; longer bodies are truncated (`truncated: true`). |

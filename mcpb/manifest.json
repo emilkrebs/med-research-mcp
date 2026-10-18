@@ -49,7 +49,7 @@
     "proxyPrefix": {
       "type": "string",
       "title": "Institutional proxy prefix (optional)",
-      "description": "EZproxy-style DOI prefix for off-campus access, e.g. https://doi-org.ezproxy.uni-kiel.de — literature_fulltext prepends it to the DOI. Requires an existing proxy session on the machine.",
+      "description": "EZproxy-style DOI prefix for off-campus access, e.g. https://doi-org.ezproxy.your-university.edu — literature_fulltext prepends it to the DOI. Requires an existing proxy session on the machine. Use only as your institution's and the publishers' terms allow.",
       "required": false
     }
   },
