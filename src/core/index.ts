@@ -1,7 +1,7 @@
 /**
  * med-research-mcp core — pure TypeScript library, no MCP dependency.
  *
- * Consumed directly (e.g. by Biohacking-IDE) via `import { ... } from "med-research-mcp/core"`,
+ * Consumed directly via `import { ... } from "med-research-mcp/core"`,
  * and re-exported through the thin MCP adapter in ../mcp.
  */
 

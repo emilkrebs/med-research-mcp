@@ -1,7 +1,7 @@
 {
   "name": "med-research-mcp",
   "version": "0.4.0",
-  "description": "Evidence-graded scientific literature search for AI agents — multi-database (PubMed, Europe PMC, ChinaXiv, RussiaRxiv), built for biohacking, supplementation and medical research.",
+  "description": "Evidence-graded scientific literature search for AI agents — multi-database (PubMed, Europe PMC, ChinaXiv, RussiaRxiv), built for medical, clinical and supplementation research.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -17,7 +17,7 @@
     "mcp",
     "model-context-protocol",
     "evidence-grading",
-    "biohacking",
+    "supplements",
     "evidence-based-medicine"
   ],
   "type": "module",
