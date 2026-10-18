@@ -253,7 +253,7 @@ The build uses tsup rather than plain `tsc` because it emits **both ESM and Comm
 - **[docs/how-it-works.md](docs/how-it-works.md)** explains the internals: the search pipeline, the design grader, full-text resolution, rate limits and caching.
 - **[benchmark/](benchmark/README.md)** measures how well models answer biomedical questions with the MCP, optionally against closed-book and web-search baselines. It verifies every citation against live PubMed and grades open-ended answers blind, by hand or with an LLM judge as a second opinion.
 
-## Scope (v0.3.0)
+## Scope (v0.4.0)
 
 **In scope:**
 

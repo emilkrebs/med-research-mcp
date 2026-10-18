@@ -1,6 +1,6 @@
 {
   "name": "med-research-mcp",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Evidence-graded scientific literature search for AI agents — multi-database (PubMed, SciELO, Europe PMC, ChinaXiv, russiarxiv), built for biohacking, supplementation, and clinical decision support.",
   "license": "MIT",
   "repository": {
