@@ -246,7 +246,7 @@ The cache stores the full, untruncated text. The returned text is capped at `MED
 | Abstracts | never | Abstracts don't change |
 | Full texts | 30 days | The paper is stable, but resolved open-access URLs and proxy sessions rot |
 
-The `memory` backend is an LRU of 200 entries per store that dies with the process. The `sqlite` backend persists to a WAL-mode database and loads its native binding lazily; if the binding fails to load, the server logs a warning and uses memory instead.
+The `memory` backend is an LRU of 200 entries per store that dies with the process. The `sqlite` backend persists to a WAL-mode database and loads its native binding (`better-sqlite3`, an optional dependency) lazily; if the binding is missing or fails to load, the server logs a warning and uses memory instead.
 
 ## The benchmark: grading answers
 

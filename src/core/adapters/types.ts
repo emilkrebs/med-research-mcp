@@ -12,7 +12,7 @@ import type { Cache } from "../cache.js";
 import type { Article, SearchInput } from "../types.js";
 
 export interface DatabaseAdapter {
-  /** Unique identifier — "pubmed", "scielo", "cyberleninka", "europepmc", "chinaxiv", "jstage". */
+  /** Unique identifier — "pubmed", "europepmc", "chinaxiv", "russiarxiv". */
   id: string;
   /** Human-readable name for logs and tool descriptions. */
   name: string;

@@ -12,12 +12,19 @@ import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-// __dirname exists in the CJS build; import.meta.dirname in the ESM build —
-// esbuild leaves the other undefined per format (see src/core/cache.ts loadSqlite).
-const moduleDir = typeof __dirname !== "undefined" ? __dirname : import.meta.dirname;
-const { version: pkgVersion } = JSON.parse(
-  readFileSync(join(moduleDir, "../../package.json"), "utf-8"),
-) as { version: string };
+/**
+ * The package version, inlined by both builds (tsup.config.ts, scripts/build-mcpb.mjs):
+ * the .mcpb bundle ships without a package.json to read.
+ */
+declare const __MED_RESEARCH_VERSION__: string | undefined;
+
+/** The package version; package.json is read only when running from source (tsx, vitest). */
+function packageVersion(): string {
+  if (typeof __MED_RESEARCH_VERSION__ !== "undefined") return __MED_RESEARCH_VERSION__;
+  // __dirname exists in CJS; import.meta.dirname in ESM (see src/core/cache.ts loadSqlite).
+  const moduleDir = typeof __dirname !== "undefined" ? __dirname : import.meta.dirname;
+  return (JSON.parse(readFileSync(join(moduleDir, "../../package.json"), "utf-8")) as { version: string }).version;
+}
 import {
   createCache,
   fetchFulltext,
@@ -99,7 +106,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   }
 
 
-  const server = new McpServer({ name: "med-research-mcp", version: pkgVersion });
+  const server = new McpServer({ name: "med-research-mcp", version: packageVersion() });
 
 
   // ─── literature_search ──────────────────────────────────────────
@@ -127,7 +134,13 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         "Drop results below this design tier (0-5; 4 = RCTs). Results with designTier null — unclassified records and most " +
           "meta-analyses/systematic reviews — are dropped too, with a warning. To keep reviews and trials, use studyTypes instead.",
       ),
-    studyTypes: z.array(z.enum(STUDY_TYPES)).optional().describe("Keep only these study types."),
+    studyTypes: z
+      .array(z.enum(STUDY_TYPES))
+      .optional()
+      .describe(
+        "Keep only these study types. cohort, case-control, cross-sectional and in-vitro are never assigned from " +
+          "metadata (tagged observational studies come back as observational), so filtering on them returns nothing.",
+      ),
     dateRange: z
       .object({ from: z.string().optional(), to: z.string().optional() })
       .optional()
@@ -139,7 +152,10 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     language: z
       .string()
       .optional()
-      .describe("Preferred content language (ISO 639-1) hint for adapters that support it (e.g. SciELO)."),
+      .describe(
+        'Content language hint (ISO 639-1). pubmed and europepmc ignore it; on chinaxiv, "ru" searches the Russian ' +
+          'collection (same as database "russiarxiv").',
+      ),
   };
 
   server.registerTool(
@@ -186,7 +202,10 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .array(z.string())
       .min(1)
       .max(50)
-      .describe("Database-specific ids to fetch (PMIDs for pubmed, SciELO ids for scielo, etc.)."),
+      .describe(
+        "Database-specific ids to fetch: PMIDs for pubmed; PMIDs or prefixed ids (e.g. CBA:521529, PPR… preprints) " +
+          "for europepmc; the ids literature_search returned for chinaxiv and russiarxiv.",
+      ),
     database: z
       .string()
       .describe(`Which database the ids belong to: ${DATABASES.join(", ")}.`),
@@ -229,7 +248,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   // ─── literature_fulltext ────────────────────────────────────────
 
   const literatureFulltextShape = {
-    id: z.string().describe("Article id — a database-specific identifier (PMID, SciELO id, etc.). When the id is not a numeric PMID, a DOI is required below."),
+    id: z.string().describe("Article id — a PMID, or another database's id from literature_search. When the id is not a numeric PMID, a DOI is required below."),
     doi: z
       .string()
       .optional()

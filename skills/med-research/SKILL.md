@@ -26,11 +26,11 @@ Bare keywords match tens of thousands of papers and bury the signal. Use field t
 - Restrict to strong designs: `AND (randomized controlled trial[pt] OR meta-analysis[pt])` — `[pt]` is publication type.
 - Narrow first. On `QUERY_TOO_BROAD`, add a `[tiab]` term or an `AND` clause.
 
-Params: `database`, `maxResults` (default 10, max 50 — per-database, so two DBs return ~20), `studyTypes` (e.g. `["meta-analysis","systematic-review","randomized-controlled-trial"]` — **use this to keep reviews and trials**), `minDesignTier` (4 = RCTs; it drops every `null` tier, including most meta-analyses — read the warning), `dateRange {from,to}`, `sort` ("relevance"|"date"), `language` (ISO 639-1; PubMed ignores it).
+Params: `database`, `maxResults` (default 10, max 50 — per-database, so two DBs return ~20), `studyTypes` (e.g. `["meta-analysis","systematic-review","randomized-controlled-trial"]` — **use this to keep reviews and trials**; `cohort`, `case-control`, `cross-sectional` and `in-vitro` never match, see below), `minDesignTier` (4 = RCTs; it drops every `null` tier, including most meta-analyses — read the warning), `dateRange {from,to}`, `sort` ("relevance"|"date"), `language` (PubMed and Europe PMC ignore it; for Russian papers use `database: "russiarxiv"`).
 
 ## Reading the design labels (`GradedArticle`)
 
-`studyType` comes **only** from NLM PublicationType tags — no text guessing. NLM now assigns them largely by automated indexing, so treat them as a strong prior: confirm in the abstract when it matters. `designTier` ranks the design for "does this intervention help?" by the OCEBM 2011 levels [1] — a prior, **not an appraisal**.
+`studyType` comes **only** from NLM PublicationType tags — no text guessing. NLM now assigns them largely by automated indexing, so treat them as a strong prior: confirm in the abstract when it matters. The tags never name `cohort`, `case-control`, `cross-sectional` or `in-vitro`: those labels are for your own reading of an abstract (tagged observational studies come back as `observational`), so filtering on them returns nothing. `designTier` ranks the design for "does this intervention help?" by the OCEBM 2011 levels [1] — a prior, **not an appraisal**.
 
 | designTier | studyType | Reading |
 |-----------|-----------|---------|
@@ -39,7 +39,7 @@ Params: `database`, `maxResults` (default 10, max 50 — per-database, so two DB
 | 3 | cohort | observational with a comparison group; confounding likely |
 | 2 | non-randomized-trial · clinical-trial · observational · case-control · cross-sectional | controlled but not randomized (historical controls possible) · a trial whose randomization and control aren't indexed (may be single-arm) · an observational study of unindexed design · hypothesis-generating designs |
 | 1 | case-report · review | anecdote · review article not indexed as systematic (16% of 2023 papers titled "systematic review" carry only this tag — check) |
-| 0 | animal-study, or any record flagged `retracted` / `notice` / `protocol` / `editorial` | not usable as evidence for human benefit |
+| 0 | animal-study · in-vitro, or any record flagged `retracted` / `notice` / `protocol` / `editorial` | not usable as evidence for human benefit |
 | `null` | meta-analysis / systematic-review | **what it pooled isn't in the metadata** — read the abstract: of RCTs → tier 5; of observational studies → the tier of those studies |
 | `null` | unknown | **no design metadata, not weak** — recent, non-MEDLINE or regional record; classify it yourself |
 

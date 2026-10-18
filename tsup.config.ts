@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
 import { defineConfig } from "tsup";
+
+const { version } = JSON.parse(readFileSync("package.json", "utf-8")) as { version: string };
 
 // Dual ESM + CJS build. Explicit entry names preserve the core/ vs mcp/ split
 // so the two `index` entries don't collide in the output directory.
@@ -13,7 +16,9 @@ export default defineConfig({
   // build script). tsup's bundled rollup-plugin-dts can't drive the TypeScript 7
   // native compiler, so we let tsc handle .d.ts directly.
   dts: false,
-  target: "node18",
+  target: "node22",
+  // Read by src/mcp/server.ts, so the server never reads package.json at runtime.
+  define: { __MED_RESEARCH_VERSION__: JSON.stringify(version) },
   outDir: "dist",
   sourcemap: true,
   clean: true,

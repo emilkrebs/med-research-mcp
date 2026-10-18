@@ -87,8 +87,8 @@ export interface Article {
   references?: string[];
 
   /**
-   * Source database — one of the adapter ids ("pubmed", "scielo", "cyberleninka",
-   * "europepmc", "chinaxiv", "jstage"). Treated as "pubmed" when absent, so all
+   * Source database — one of the adapter ids ("pubmed", "europepmc", "chinaxiv",
+   * "russiarxiv"). Treated as "pubmed" when absent, so all
    * existing code keeps working without setting it. Non-PubMed adapters
    * always set it. When set, `pmid` holds the database-specific id.
    */
@@ -127,8 +127,8 @@ export interface SearchInput {
   query: string;
   /**
    * Source database(s) for {@link searchLiterature}. A single id ("pubmed",
-   * "scielo", "cyberleninka", "europepmc", "chinaxiv", "jstage"), an array of
-   * ids, or "all" to fan out to every adapter. Defaults to "pubmed" when omitted.
+   * "europepmc", "chinaxiv", "russiarxiv"), an array of ids, or "all" to fan
+   * out to every adapter. Defaults to "pubmed" when omitted.
    */
   database?: string | string[];
   /** Results to return. Default 10, hard cap 50. */
@@ -141,8 +141,8 @@ export interface SearchInput {
   /** "relevance" (default) or "date". */
   sort?: "relevance" | "date";
   /**
-   * Preferred content language (ISO 639-1) — a hint for adapters that can filter
-   * by language (e.g. SciELO). Ignored by adapters that don't support it.
+   * Preferred content language (ISO 639-1). Only the ChinaXiv adapter reads it:
+   * "ru" searches the Russian collection. Ignored by the others.
    */
   language?: string;
 }
@@ -163,7 +163,7 @@ export interface FetchInput {
 export interface LiteratureFetchInput {
   /** One or more database-specific ids to fetch. */
   ids: string[];
-  /** Which database the ids belong to ("pubmed", "scielo", "europepmc", …). */
+  /** Which database the ids belong to ("pubmed", "europepmc", "chinaxiv", "russiarxiv"). */
   database: string;
 }
 

@@ -11,7 +11,7 @@
  * back `unknown`: the calling model reads the design from the abstract.
  */
 
-import { getAdapter, getAdapters, type DatabaseAdapter } from "./adapters/registry.js";
+import { ADAPTERS, getAdapter, getAdapters, type DatabaseAdapter } from "./adapters/registry.js";
 import { doiKey } from "./adapters/util.js";
 import { LRUBackend, type Cache } from "./cache.js";
 import { classifyArticle, mergeDuplicate, rankKey, unclassifiedDroppedWarning } from "./grader.js";
@@ -145,7 +145,7 @@ export async function fetchLiterature(
     return {
       articles: [],
       missing: input.ids,
-      warnings: [`Unknown database: ${input.database}. Known: pubmed, scielo, europepmc, chinaxiv, russiarxiv.`],
+      warnings: [`Unknown database: ${input.database}. Known: ${Object.keys(ADAPTERS).join(", ")}.`],
     };
   }
 

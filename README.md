@@ -2,7 +2,7 @@
 
 **Evidence-graded scientific literature search for AI agents.**
 
-`med-research-mcp` searches PubMed, Europe PMC, ChinaXiv and RussiaRxiv and labels every result with its study design, so an AI agent (or a human) can tell a meta-analysis from a case report at a glance. Labels come from NLM metadata, are ranked in the evidence hierarchy, and flag retractions and other integrity notices. Appraising the paper itself (reading the abstract, rating down, judging applicability) is left to the model, guided by the bundled [skills](#agent-skills). It's built for biohacking, supplementation research and clinical decision support, where "what does the evidence actually say" matters more than a raw list of abstracts.
+`med-research-mcp` searches PubMed, Europe PMC, ChinaXiv and RussiaRxiv and labels every result with its study design, so an AI agent (or a human) can tell a meta-analysis from a case report at a glance. Labels come from NLM metadata, are ranked in the evidence hierarchy, and flag retractions and other integrity notices. Appraising the paper itself (reading the abstract, rating down, judging applicability) is left to the model, guided by the bundled [skills](#agent-skills). It's built for biohacking, supplementation and medical research, where "what does the evidence actually say" matters more than a raw list of abstracts.
 
 - **Four databases in one call**, merged and de-duplicated by DOI.
 - **Study-design labels from NLM metadata**: a `studyType`, a 0–5 `designTier` based on the OCEBM 2011 levels, and `flags` for retractions, expressions of concern, errata and more. No keyword guessing: a record without metadata says `unknown`.
@@ -17,7 +17,7 @@ It's a personal, open-source tool: a TypeScript library (`core/`) with a thin [M
 
 ## Install
 
-Requires Node.js 18 or later.
+Requires Node.js 22.22.2 or later; on Node 24, 24.15.0 or later.
 
 ```bash
 git clone https://github.com/emilkrebs/med-research-mcp.git
@@ -223,7 +223,7 @@ The build ships both ESM and CommonJS, so this works with `import` and `require`
 
 ## Caching and errors
 
-**Caching.** The `memory` backend (default) is an LRU of about 200 entries per store that dies with the process. The `sqlite` backend persists to a WAL-mode SQLite file and survives restarts; if its native `better-sqlite3` binding fails to load, the server logs a warning and uses memory instead. Summaries expire after 7 days, because their metadata changes after publication (indexing adds publication types, and retractions, expressions of concern and errata arrive at any time). Full texts expire after 30 days, as resolved URLs rot. Abstracts never expire.
+**Caching.** The `memory` backend (default) is an LRU of about 200 entries per store that dies with the process. The `sqlite` backend persists to a WAL-mode SQLite file and survives restarts. It needs `better-sqlite3`, an optional native dependency; if that isn't installed or fails to load, the server logs a warning and uses memory instead. Summaries expire after 7 days, because their metadata changes after publication (indexing adds publication types, and retractions, expressions of concern and errata arrive at any time). Full texts expire after 30 days, as resolved URLs rot. Abstracts never expire.
 
 **Errors.** Library functions throw a `ResearchApiException`, whose `toJSON()` gives:
 

@@ -49,9 +49,9 @@ low, then rates down or up [2]. Hierarchy is where you start, not where you fini
 Match the appraisal tool to the design rather than applying one checklist to everything:
 
 - **RCTs** — Cochrane **RoB 2** [3], five domains: bias arising from the randomization process, from deviations from intended interventions, from missing outcome data, in measurement of the outcome, and in selection of the reported result [4]. Check **CONSORT 2025** reporting [5].
-- **Non-randomized studies of interventions** — **ROBINS-I** [6], seven domains (confounding, selection of participants, classification of interventions, deviations from intended interventions, missing data, measurement of outcomes, selection of the reported result). **Non-randomized follow-up studies of exposures** (e.g. diet, pollutants) — **ROBINS-E** [7].
+- **Non-randomized studies of interventions** — **ROBINS-I** [6], seven domains (confounding, selection of participants, classification of interventions, deviations from intended interventions, missing data, measurement of outcomes, selection of the reported result); its draft Version 2 (November 2025 revision) drops the deviations domain and adds questions on immortal-time bias [6]. **Non-randomized follow-up studies of exposures** (e.g. diet, pollutants) — **ROBINS-E** [7].
 - **Systematic reviews / meta-analyses** — **AMSTAR 2** [8] or **ROBIS** [9]; **PRISMA 2020** for reporting completeness and the flow diagram [10].
-- **Diagnostic accuracy** — **QUADAS-2** [11].
+- **Diagnostic accuracy** — **QUADAS-3** [11].
 - **Prognostic factors** — **QUIPS** [12].
 - **Case reports** — the **CARE** reporting guideline [13].
 
@@ -141,12 +141,12 @@ actual patients.
 3. Sterne JAC, et al. RoB 2: a revised tool for assessing risk of bias in randomised trials. BMJ 2019;366:l4898. PMID 31462531
 4. Higgins JPT, et al., eds. Cochrane Handbook for Systematic Reviews of Interventions, version 6.5, 2024, chapter 8. https://www.cochrane.org/authors/handbooks-and-manuals/handbook/current/chapter-08
 5. Hopewell S, et al. CONSORT 2025 statement: updated guideline for reporting randomised trials. BMJ 2025;389:e081123. PMID 40228833
-6. Sterne JA, et al. ROBINS-I: a tool for assessing risk of bias in non-randomised studies of interventions. BMJ 2016;355:i4919. PMID 27733354
+6. Sterne JA, et al. ROBINS-I: a tool for assessing risk of bias in non-randomised studies of interventions. BMJ 2016;355:i4919. PMID 27733354. Version 2 (draft, November 2025 revision): https://www.riskofbias.info/welcome/robins-i-v2
 7. Higgins JPT, et al. A tool to assess risk of bias in non-randomized follow-up studies of exposure effects (ROBINS-E). Environ Int 2024;186:108602. PMID 38555664
 8. Shea BJ, et al. AMSTAR 2. BMJ 2017;358:j4008. PMID 28935701
 9. Whiting P, et al. ROBIS: a new tool to assess risk of bias in systematic reviews was developed. J Clin Epidemiol 2016;69:225-34. PMID 26092286
 10. Page MJ, et al. The PRISMA 2020 statement. BMJ 2021;372:n71. PMID 33782057
-11. Whiting PF, et al. QUADAS-2. Ann Intern Med 2011;155:529-36. PMID 22007046
+11. Whiting PF, et al. QUADAS-3: a revised tool for the quality assessment of diagnostic test accuracy studies. Ann Intern Med 2026;179:548-55. PMID 41698208
 12. Hayden JA, et al. Assessing bias in studies of prognostic factors. Ann Intern Med 2013;158:280-6. PMID 23420236
 13. Gagnier JJ, et al. The CARE guidelines: consensus-based clinical case report guideline development. J Clin Epidemiol 2014;67:46-51. PMID 24035173
 14. Hróbjartsson A, Gøtzsche PC. Placebo interventions for all clinical conditions. Cochrane Database Syst Rev 2010;CD003974. PMID 20091554

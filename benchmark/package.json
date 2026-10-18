@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Benchmark harness for med-research-mcp. Default run tests the MCP; optional closed-book and web-search baselines are available for comparison.",
   "engines": {
-    "node": ">=18"
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
   },
   "scripts": {
     "bench": "tsx run.ts",

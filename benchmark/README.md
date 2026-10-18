@@ -84,7 +84,7 @@ Run from the repo root (paths in the output are written relative to it). Flags
 |---|---|
 | `--runs <n>` | runs per query per model (default 3) |
 | `--models <list>` | model labels (default: every enabled model) |
-| `--conditions <list>` | `A\|B\|C` or `closed-book\|web-search\|mcp` (default `mcp`) |
+| `--conditions <list>` | `A\|B\|C\|D` or `closed-book\|web-search\|mcp\|mcp-skill` (default `mcp`) |
 | `--with-baselines` | add closed-book and web-search |
 | `--queries <list>` | query ids and/or category names |
 | `--temperature <t>` | default 0 |
@@ -204,8 +204,9 @@ query), `human` (graded via `grade.ts`), or `proxy` (provisional, see below).
   - `reject` keys (4 bullshit queries): see below.
   - `rubric` keys (15 open-ended queries) have no ground-truth string, so they
     are graded by a **human** with [`grade.ts`](grade.ts) (next section), which
-    writes into `overrides.json` for `--rescore` to apply. There is no LLM
-    judge. **Until a human grades a rubric response, its accuracy is a
+    writes into `overrides.json` for `--rescore` to apply. The optional LLM
+    judge ([`judge.ts`](judge.ts)) gives a second opinion but never writes
+    there. **Until a human grades a rubric response, its accuracy is a
     provisional citation-quality proxy** (mean design tier of the cited,
     valid, rated PMIDs × 2; 0 if citations were expected but none resolved;
     unscored if every valid citation is unrated;
