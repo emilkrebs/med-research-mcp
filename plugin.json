@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "med-research",
+  "version": "0.4.0",
+  "description": "Evidence-graded scientific literature search across PubMed, Europe PMC, ChinaRXiv and RussiaRXiv, plus full-text resolution — three MCP tools with EBM appraisal and setup skills.",
+  "author": {
+    "name": "Emil Krebs",
+    "email": "emil.krebs@outlook.de"
+  },
+  "homepage": "https://github.com/emilkrebs/med-research-mcp",
+  "repository": "https://github.com/emilkrebs/med-research-mcp",
+  "license": "MIT",
+  "keywords": [
+    "pubmed",
+    "ncbi",
+    "mcp",
+    "model-context-protocol",
+    "evidence-grading",
+    "supplements",
+    "evidence-based-medicine"
+  ]
+}
