@@ -127,6 +127,7 @@ Set these in your MCP client's `env` block. The server reads them from its envir
 | --- | --- | --- |
 | `NCBI_EMAIL` | Recommended | Contact email sent with every NCBI request, as NCBI's usage policy asks. Without it, you're more likely to be throttled. |
 | `NCBI_API_KEY` | No | Raises the NCBI rate limit from 3 to 10 requests per second. Get one in your [NCBI account settings](https://www.ncbi.nlm.nih.gov/account/settings/). |
+| `MED_RESEARCH_CHINAXIV_EMAIL` | No | Contact email sent as `X-API-Email` on ChinaXiv and RussiaRxiv requests, raising the ChinaRxiv rate limit from 30 to 300 requests/minute. Falls back to `NCBI_EMAIL`. |
 | `MED_RESEARCH_UNPAYWALL_EMAIL` | No | Contact email for Unpaywall open-access lookups in `literature_fulltext`. Falls back to `NCBI_EMAIL`. |
 | `MED_RESEARCH_PROXY_PREFIX` | No | Your institution's EZproxy host for doi.org, e.g. `https://doi-org.ezproxy.your-university.edu`. `literature_fulltext` requests `<prefix>/<DOI>`, so `…/login?url=` prefixes don't work. Needs an active proxy session on the machine. See the [terms note](#literature_fulltext). |
 | `MED_RESEARCH_FULLTEXT_MAX_CHARS` | No | Cap on the length of returned full texts. Default `50000`. |

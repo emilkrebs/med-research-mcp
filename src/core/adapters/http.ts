@@ -25,6 +25,8 @@ export interface HttpOptions {
   timeoutMs?: number;
   /** Sent as the User-Agent header. */
   userAgent?: string;
+  /** Extra headers merged into every request (after User-Agent/Accept, so they can override). */
+  headers?: Record<string, string>;
 }
 
 export function defaultHttp(options: HttpOptions = {}): AdapterHttp {
@@ -36,7 +38,10 @@ export function defaultHttp(options: HttpOptions = {}): AdapterHttp {
     const timer = setTimeout(() => ac.abort(), timeoutMs);
     let res: Response;
     try {
-      res = await fetch(url, { signal: ac.signal, headers: { "User-Agent": userAgent, Accept: accept } });
+      res = await fetch(url, {
+        signal: ac.signal,
+        headers: { "User-Agent": userAgent, Accept: accept, ...options.headers },
+      });
     } catch (err) {
       throw errors.network(err instanceof Error ? err.message : String(err));
     } finally {

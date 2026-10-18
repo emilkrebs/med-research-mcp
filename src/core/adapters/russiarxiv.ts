@@ -9,7 +9,7 @@
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
 import { cleanDoi, first, strArray } from "./util.js";
-import { parsePapers } from "./chinarxiv.js";
+import { chinaxivHeaders, parsePapers } from "./chinarxiv.js";
 import type { PaperResponse } from "./chinarxiv.js";
 import type { Article, SearchInput } from "../types.js";
 
@@ -20,7 +20,7 @@ export class SovietRxivAdapter extends RestAdapter {
   readonly id = "russiarxiv";
   readonly name = "SovietRxiv";
 
-  constructor(http: AdapterHttp = defaultHttp()) {
+  constructor(http: AdapterHttp = defaultHttp({ headers: chinaxivHeaders() })) {
     super(http);
   }
 
