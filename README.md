@@ -9,9 +9,10 @@
 </p>
 
 <p align="center">
-  <a href="#tool-overview">Tools</a> ·
-  <a href="#install--build">Install</a> ·
-  <a href="#tools-reference">Reference</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#tools">Tools</a> ·
+  <a href="#agent-skills">Skills</a> ·
   <a href="#medical-disclaimer">Disclaimer</a>
 </p>
 
@@ -23,7 +24,7 @@
 - **Cheap**: search makes no LLM calls, and results are cached.
 - **Agent skills** that teach the model to write precise queries, read the labels and appraise evidence.
 
-It's a personal, open-source tool: a TypeScript library (`core/`) with a thin [MCP](https://modelcontextprotocol.io) stdio server on top, plus a `.mcpb` bundle for one-click install in Claude Desktop. The library has no MCP dependency and can be embedded directly in other projects.
+It's an open-source tool, used in professional research work: a TypeScript library (`core/`) with a thin [MCP](https://modelcontextprotocol.io) stdio server on top, plus a `.mcpb` bundle for one-click install in Claude Desktop. The library has no MCP dependency and can be embedded directly in other projects.
 
 > [!IMPORTANT]
 > This is a research aid, not a diagnostic tool. See [Medical disclaimer](#medical-disclaimer).
@@ -126,7 +127,7 @@ Returns `{ articles, total, query, warnings? }`. Each article carries `studyType
 | `database` | `string \| string[]` | no | `"pubmed"` (default), `"europepmc"`, `"chinaxiv"`, `"russiarxiv"`, an array of these, or `"all"`. See [Databases](#databases). |
 | `maxResults` | `number` | no | Results per database. Default `10`, max `50`. |
 | `minDesignTier` | `number` | no | Drop results below this design tier (`0`–`5`; `4` = RCTs). Also drops every result with a `null` tier (unlabeled records and most meta-analyses and systematic reviews) and reports how many in a warning. |
-| `studyTypes` | `string[]` | no | Keep only these study types. To keep reviews and trials, use this instead of `minDesignTier`. |
+| `studyTypes` | `string[]` | no | Keep only these study types. To keep reviews and trials, use this instead of `minDesignTier`. `cohort`, `case-control`, `cross-sectional` and `in-vitro` are never assigned from metadata, so filtering on them returns nothing. |
 | `dateRange` | `{ from?, to? }` | no | Publication date filter, `YYYY-MM-DD`. Applies to `pubmed` and `europepmc`. |
 | `sort` | `"relevance" \| "date"` | no | Order within each database. The merged list is always re-sorted by design tier. |
 | `language` | `string` | no | ISO 639-1 hint for databases that support it. |
@@ -179,6 +180,8 @@ Every `literature_search` result carries three fields, computed by [`src/core/gr
 | 1 | `case-report`, `review` (not indexed as systematic) |
 | 0 | `animal-study`, `in-vitro`, and any record flagged `retracted`, `notice`, `protocol` or `editorial` |
 | `null` | `unknown`, and meta-analyses and systematic reviews whose pooled designs aren't indexed. **Unrated, not weak** |
+
+`cohort`, `case-control`, `cross-sectional` and `in-vitro` are never assigned from metadata; they're labels for designs the model reads from an abstract.
 
 `retracted`, `notice` (retraction notices, expressions of concern, errata), `protocol` and `editorial` mark records that aren't usable as evidence. `expression-of-concern`, `corrected`, `updated` (a newer version exists), `animals-not-humans`, `preprint` and `letter` are warnings that leave the tier alone. Results are sorted with tiers 2–5 first, then `null`, then tiers 1 and 0.
 
