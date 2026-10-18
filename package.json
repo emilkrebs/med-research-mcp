@@ -1,6 +1,6 @@
 {
   "name": "med-research-mcp",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Evidence-graded scientific literature search for AI agents — multi-database (PubMed, Europe PMC, ChinaXiv, RussiaRxiv), built for medical, clinical and supplementation research.",
   "license": "MIT",
   "repository": {
@@ -48,9 +48,11 @@
   ],
   "scripts": {
     "dev": "tsx watch src/mcp/index.ts",
+    "dev:http": "tsx watch src/http/index.ts",
     "build": "tsup && tsc --emitDeclarationOnly",
     "typecheck": "tsc --noEmit",
     "start": "node dist/mcp/index.js",
+    "start:http": "node dist/http/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "build:mcpb": "node scripts/build-mcpb.mjs",

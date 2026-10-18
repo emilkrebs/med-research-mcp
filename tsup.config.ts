@@ -10,6 +10,7 @@ export default defineConfig({
     "core/index": "src/core/index.ts",
     "core/cache": "src/core/cache.ts",
     "mcp/index": "src/mcp/index.ts",
+    "http/index": "src/http/index.ts",
   },
   format: ["esm", "cjs"],
   // Declarations are emitted separately by `tsc --emitDeclarationOnly` (see the

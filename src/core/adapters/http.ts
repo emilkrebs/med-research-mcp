@@ -12,7 +12,7 @@
 import { errors } from "../errors.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
-const DEFAULT_USER_AGENT = "med-research-mcp/0.4.0 (https://github.com/emilkrebs/med-research-mcp)";
+const DEFAULT_USER_AGENT = "med-research-mcp/0.5.0 (https://github.com/emilkrebs/med-research-mcp)";
 
 /** Fetches a URL and returns either parsed JSON or raw text. */
 export interface AdapterHttp {
@@ -25,6 +25,8 @@ export interface HttpOptions {
   timeoutMs?: number;
   /** Sent as the User-Agent header. */
   userAgent?: string;
+  /** Extra headers merged into every request (after User-Agent/Accept, so they can override). */
+  headers?: Record<string, string>;
 }
 
 export function defaultHttp(options: HttpOptions = {}): AdapterHttp {
@@ -36,7 +38,10 @@ export function defaultHttp(options: HttpOptions = {}): AdapterHttp {
     const timer = setTimeout(() => ac.abort(), timeoutMs);
     let res: Response;
     try {
-      res = await fetch(url, { signal: ac.signal, headers: { "User-Agent": userAgent, Accept: accept } });
+      res = await fetch(url, {
+        signal: ac.signal,
+        headers: { "User-Agent": userAgent, Accept: accept, ...options.headers },
+      });
     } catch (err) {
       throw errors.network(err instanceof Error ? err.message : String(err));
     } finally {

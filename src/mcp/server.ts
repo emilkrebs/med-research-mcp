@@ -19,7 +19,7 @@ import { z } from "zod";
 declare const __MED_RESEARCH_VERSION__: string | undefined;
 
 /** The package version; package.json is read only when running from source (tsx, vitest). */
-function packageVersion(): string {
+export function packageVersion(): string {
   if (typeof __MED_RESEARCH_VERSION__ !== "undefined") return __MED_RESEARCH_VERSION__;
   // __dirname exists in CJS; import.meta.dirname in ESM (see src/core/cache.ts loadSqlite).
   const moduleDir = typeof __dirname !== "undefined" ? __dirname : import.meta.dirname;

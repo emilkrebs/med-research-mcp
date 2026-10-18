@@ -5,7 +5,9 @@
  *
  * Single unified corpus covering both Chinese preprints (source=chinaxiv)
  * and Soviet-era Russian papers (source=russiarxiv). GET-based, no POST.
- * Optional X-API-Email header for higher rate limits (300/min vs 30/min).
+ * Optional X-API-Email header for higher rate limits (300/min vs 30/min):
+ * set from MED_RESEARCH_CHINAXIV_EMAIL, falling back to NCBI_EMAIL
+ * (see chinaxivHeaders below).
  *
  * The search endpoint cuts abstracts at 500 characters ("…outcome indic..."),
  * which often drops the Results of a long Chinese abstract. Search keeps those
@@ -23,6 +25,17 @@ const BASE = "https://chinarxiv.org/api/v1/papers";
 const MAX_RESULTS_CAP = 50;
 /** Bound on the complete-record memo, like the base class's search memo. */
 const FULL_CAP = 1000;
+
+/**
+ * ChinaRxiv asks for an X-API-Email contact header; sending it raises the rate
+ * limit from 30 to 300 requests per minute. MED_RESEARCH_CHINAXIV_EMAIL wins;
+ * NCBI_EMAIL is a sensible fallback (both are contact emails).
+ */
+export function chinaxivHeaders(): Record<string, string> {
+  // `||` so an empty MED_RESEARCH_CHINAXIV_EMAIL= (as in .env.example) still falls back.
+  const email = process.env.MED_RESEARCH_CHINAXIV_EMAIL?.trim() || process.env.NCBI_EMAIL?.trim();
+  return email ? { "X-API-Email": email } : {};
+}
 
 type Record_ = Record<string, unknown>;
 type LinkMap = Record<string, string>;
@@ -77,7 +90,7 @@ export class ChinaRXivAdapter extends RestAdapter {
   readonly id = "chinaxiv";
   readonly name = "ChinaRXiv";
 
-  constructor(http: AdapterHttp = defaultHttp()) {
+  constructor(http: AdapterHttp = defaultHttp({ headers: chinaxivHeaders() })) {
     super(http);
   }
 

@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
-import { ChinaRXivAdapter, parsePapers } from "../src/core/adapters/chinarxiv";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { ChinaRXivAdapter, chinaxivHeaders, parsePapers } from "../src/core/adapters/chinarxiv";
+import { SovietRxivAdapter } from "../src/core/adapters/russiarxiv";
 import type { AdapterHttp } from "../src/core/adapters/http";
 import { LRUBackend } from "../src/core/cache";
 
@@ -30,6 +31,65 @@ function fakeHttp(payload: unknown): { http: AdapterHttp; urls: string[] } {
   };
   return { http, urls };
 }
+
+describe("chinaxivHeaders (X-API-Email)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  /** Stub global fetch, run one search with the env-configured default http, return the sent headers. */
+  async function sentHeaders(): Promise<Record<string, string>> {
+    let captured: Record<string, string> = {};
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      captured = (init?.headers ?? {}) as Record<string, string>;
+      return new Response(JSON.stringify({ total: 0, data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    await new ChinaRXivAdapter().search({ query: "exercise" });
+    return captured;
+  }
+
+  it("sends X-API-Email when MED_RESEARCH_CHINAXIV_EMAIL is set", async () => {
+    vi.stubEnv("MED_RESEARCH_CHINAXIV_EMAIL", "chinaxiv@example.com");
+    vi.stubEnv("NCBI_EMAIL", "ncbi@example.com");
+    expect(chinaxivHeaders()).toEqual({ "X-API-Email": "chinaxiv@example.com" });
+    expect((await sentHeaders())["X-API-Email"]).toBe("chinaxiv@example.com");
+  });
+
+  it("falls back to NCBI_EMAIL when MED_RESEARCH_CHINAXIV_EMAIL is unset", async () => {
+    vi.stubEnv("NCBI_EMAIL", "ncbi@example.com");
+    expect(chinaxivHeaders()).toEqual({ "X-API-Email": "ncbi@example.com" });
+    expect((await sentHeaders())["X-API-Email"]).toBe("ncbi@example.com");
+  });
+
+  it("falls back to NCBI_EMAIL when MED_RESEARCH_CHINAXIV_EMAIL is empty (as in .env.example)", () => {
+    vi.stubEnv("MED_RESEARCH_CHINAXIV_EMAIL", "");
+    vi.stubEnv("NCBI_EMAIL", "ncbi@example.com");
+    expect(chinaxivHeaders()).toEqual({ "X-API-Email": "ncbi@example.com" });
+  });
+
+  it("sends no X-API-Email when neither email is set", async () => {
+    expect(chinaxivHeaders()).toEqual({});
+    expect((await sentHeaders())["X-API-Email"]).toBeUndefined();
+  });
+
+  it("SovietRxivAdapter sends the same default header", async () => {
+    vi.stubEnv("MED_RESEARCH_CHINAXIV_EMAIL", "chinaxiv@example.com");
+    let captured: Record<string, string> = {};
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      captured = (init?.headers ?? {}) as Record<string, string>;
+      return new Response(JSON.stringify({ total: 0, data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    await new SovietRxivAdapter().search({ query: "exercise" });
+    expect(captured["X-API-Email"]).toBe("chinaxiv@example.com");
+  });
+});
 
 describe("parsePapers", () => {
   it("maps records from data array and tags language zh", () => {
