@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="#hosted-instance">Hosted instance</a> ·
   <a href="#install">Install</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#tools">Tools</a> ·
@@ -28,6 +29,31 @@ It's an open-source tool, used in professional research work: a TypeScript libra
 
 > [!IMPORTANT]
 > This is a research aid, not a diagnostic tool. See [Medical disclaimer](#medical-disclaimer).
+
+## Hosted instance
+
+A public instance runs at `https://mcp.example.com/mcp` (Streamable HTTP), serving the same three tools with no signup. Configure your MCP client with that URL; see [docs/hosting.md](docs/hosting.md#deploy) for a client config example.
+
+```json
+{
+  "mcpServers": {
+    "med-research-mcp": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp"
+    }
+  }
+}
+```
+
+Use the hosted instance for evaluation and testing — it is shared, rate-limited and resolves full texts only through open access. **Anyone using it in production should deploy their own**: self-hosting ([below](#install) for stdio, [docs/hosting.md](docs/hosting.md) for HTTP) gives you your own rate limits, an optional persistent cache, and the institutional-proxy route, which is not usable on a hosted instance because it depends on the caller's own proxy session.
+
+| Limit | Default |
+| --- | --- |
+| Requests per IP | 60/min, burst 20 → 429 with `Retry-After` |
+| Concurrent requests (global) | 8, queue 100 → 503 with `Retry-After: 5` |
+| Request body | 1 MB → 413 |
+
+The endpoint logs no queries, has no accounts and stores nothing ([privacy note](docs/hosting.md#privacy)).
 
 ## Install
 
@@ -260,8 +286,10 @@ The MCP tools return the same payload as an `isError` result (`UNKNOWN` for unex
 | Script | Description |
 | --- | --- |
 | `npm run dev` | Run the MCP server with `tsx watch`, restarting on change. |
+| `npm run dev:http` | Same for the hosted HTTP entry (`src/http/index.ts`). |
 | `npm run build` | Build `dist/`: [tsup](https://tsup.egoist.dev/) for the JavaScript, `tsc --emitDeclarationOnly` for the type declarations. |
 | `npm start` | Run the built server (`node dist/mcp/index.js`). |
+| `npm run start:http` | Run the built HTTP server (`node dist/http/index.js`); see [docs/hosting.md](docs/hosting.md). |
 | `npm test` | Run the test suite with [vitest](https://vitest.dev/). `npm run test:watch` re-runs on change. |
 | `npm run typecheck` | Type-check without emitting. |
 | `npm run build:mcpb` | Bundle the server with esbuild and pack `dist/med-research-mcp.mcpb` for Claude Desktop. |
@@ -271,7 +299,7 @@ The build uses tsup rather than plain `tsc` because it emits **both ESM and Comm
 - **[docs/how-it-works.md](docs/how-it-works.md)** explains the internals: the search pipeline, the design grader, full-text resolution, rate limits and caching.
 - **[benchmark/](benchmark/README.md)** measures how well models answer biomedical questions with the MCP, optionally against closed-book and web-search baselines. It verifies every citation against live PubMed and grades open-ended answers blind, by hand or with an LLM judge as a second opinion.
 
-## Scope (v0.4.0)
+## Scope (v0.5.0)
 
 **In scope:**
 
@@ -281,6 +309,7 @@ The build uses tsup rather than plain `tsc` because it emits **both ESM and Comm
 - Full-text retrieval via Unpaywall, an institutional proxy, or the DOI.
 - In-memory (default) and persistent SQLite caching.
 - An MCP stdio server and a `.mcpb` bundle for Claude Desktop.
+- A stateless Streamable HTTP server for hosted deployments ([docs/hosting.md](docs/hosting.md)).
 - Direct library use via `med-research-mcp/core`, without MCP.
 
 **Out of scope (for now):**
