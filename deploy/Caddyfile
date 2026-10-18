@@ -1,0 +1,5 @@
+# Reverse proxy for the hosted instance (see docs/hosting.md).
+# Caddy terminates TLS automatically; the app listens on loopback only.
+mcp.example.com {
+	reverse_proxy 127.0.0.1:8787
+}

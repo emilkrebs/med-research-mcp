@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "med-research": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "med-research-mcp@0.5.0"]
+    }
+  }
+}

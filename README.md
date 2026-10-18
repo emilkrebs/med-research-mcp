@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="#hosted-instance">Hosted instance</a> ·
   <a href="#install">Install</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#tools">Tools</a> ·
@@ -28,6 +29,31 @@ It's an open-source tool, used in professional research work: a TypeScript libra
 
 > [!IMPORTANT]
 > This is a research aid, not a diagnostic tool. See [Medical disclaimer](#medical-disclaimer).
+
+## Hosted instance
+
+Configure your MCP client with that URL; see [docs/hosting.md](docs/hosting.md#deploy) for a client config example.
+
+```json
+{
+  "mcpServers": {
+    "med-research-mcp": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp"
+    }
+  }
+}
+```
+
+Use the hosted instance for evaluation and testing — it is shared, rate-limited and resolves full texts only through open access. **Anyone using it in production should deploy their own**: self-hosting ([below](#install) for stdio, [docs/hosting.md](docs/hosting.md) for HTTP) gives you your own rate limits, an optional persistent cache, and the institutional-proxy route, which is not usable on a hosted instance because it depends on the caller's own proxy session.
+
+| Limit | Default |
+| --- | --- |
+| Requests per IP | 60/min, burst 20 → 429 with `Retry-After` |
+| Concurrent requests (global) | 8, queue 100 → 503 with `Retry-After: 5` |
+| Request body | 1 MB → 413 |
+
+The endpoint logs no queries, has no accounts and stores nothing ([privacy note](docs/hosting.md#privacy)).
 
 ## Install
 
@@ -101,6 +127,7 @@ Set these in your MCP client's `env` block. The server reads them from its envir
 | --- | --- | --- |
 | `NCBI_EMAIL` | Recommended | Contact email sent with every NCBI request, as NCBI's usage policy asks. Without it, you're more likely to be throttled. |
 | `NCBI_API_KEY` | No | Raises the NCBI rate limit from 3 to 10 requests per second. Get one in your [NCBI account settings](https://www.ncbi.nlm.nih.gov/account/settings/). |
+| `MED_RESEARCH_CHINAXIV_EMAIL` | No | Contact email sent as `X-API-Email` on ChinaXiv and RussiaRxiv requests, raising the ChinaRxiv rate limit from 30 to 300 requests/minute. Falls back to `NCBI_EMAIL`. |
 | `MED_RESEARCH_UNPAYWALL_EMAIL` | No | Contact email for Unpaywall open-access lookups in `literature_fulltext`. Falls back to `NCBI_EMAIL`. |
 | `MED_RESEARCH_PROXY_PREFIX` | No | Your institution's EZproxy host for doi.org, e.g. `https://doi-org.ezproxy.your-university.edu`. `literature_fulltext` requests `<prefix>/<DOI>`, so `…/login?url=` prefixes don't work. Needs an active proxy session on the machine. See the [terms note](#literature_fulltext). |
 | `MED_RESEARCH_FULLTEXT_MAX_CHARS` | No | Cap on the length of returned full texts. Default `50000`. |
@@ -260,8 +287,10 @@ The MCP tools return the same payload as an `isError` result (`UNKNOWN` for unex
 | Script | Description |
 | --- | --- |
 | `npm run dev` | Run the MCP server with `tsx watch`, restarting on change. |
+| `npm run dev:http` | Same for the hosted HTTP entry (`src/http/index.ts`). |
 | `npm run build` | Build `dist/`: [tsup](https://tsup.egoist.dev/) for the JavaScript, `tsc --emitDeclarationOnly` for the type declarations. |
 | `npm start` | Run the built server (`node dist/mcp/index.js`). |
+| `npm run start:http` | Run the built HTTP server (`node dist/http/index.js`); see [docs/hosting.md](docs/hosting.md). |
 | `npm test` | Run the test suite with [vitest](https://vitest.dev/). `npm run test:watch` re-runs on change. |
 | `npm run typecheck` | Type-check without emitting. |
 | `npm run build:mcpb` | Bundle the server with esbuild and pack `dist/med-research-mcp.mcpb` for Claude Desktop. |
@@ -271,7 +300,7 @@ The build uses tsup rather than plain `tsc` because it emits **both ESM and Comm
 - **[docs/how-it-works.md](docs/how-it-works.md)** explains the internals: the search pipeline, the design grader, full-text resolution, rate limits and caching.
 - **[benchmark/](benchmark/README.md)** measures how well models answer biomedical questions with the MCP, optionally against closed-book and web-search baselines. It verifies every citation against live PubMed and grades open-ended answers blind, by hand or with an LLM judge as a second opinion.
 
-## Scope (v0.4.0)
+## Scope (v0.5.0)
 
 **In scope:**
 
@@ -281,6 +310,7 @@ The build uses tsup rather than plain `tsc` because it emits **both ESM and Comm
 - Full-text retrieval via Unpaywall, an institutional proxy, or the DOI.
 - In-memory (default) and persistent SQLite caching.
 - An MCP stdio server and a `.mcpb` bundle for Claude Desktop.
+- A stateless Streamable HTTP server for hosted deployments ([docs/hosting.md](docs/hosting.md)).
 - Direct library use via `med-research-mcp/core`, without MCP.
 
 **Out of scope (for now):**
