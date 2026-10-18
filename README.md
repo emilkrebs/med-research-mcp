@@ -2,153 +2,58 @@
 
 **Evidence-graded scientific literature search for AI agents.**
 
-`med-research-mcp` searches PubMed and a growing set of regional databases (Europe PMC, ChinaRXiv, RussiaRXiv) and labels every result's study design from NLM metadata, ranked in the evidence hierarchy and flagged for retractions and other integrity notices, so an AI agent (or a human) can tell a meta-analysis from a case report at a glance. Appraising the paper itself (reading the abstract, rating down, judging applicability) is left to the model, guided by the bundled [skills](#agent-skills). It's built for optimizing biology, supplementation research, and clinical decision support, where "what does the evidence actually say" matters more than a raw list of abstracts.
+`med-research-mcp` searches PubMed, Europe PMC, ChinaXiv and RussiaRxiv and labels every result with its study design, so an AI agent (or a human) can tell a meta-analysis from a case report at a glance. Labels come from NLM metadata, are ranked in the evidence hierarchy, and flag retractions and other integrity notices. Appraising the paper itself (reading the abstract, rating down, judging applicability) is left to the model, guided by the bundled [skills](#agent-skills). It's built for biohacking, supplementation research and clinical decision support, where "what does the evidence actually say" matters more than a raw list of abstracts.
 
-It ships as a small, dependency-light TypeScript library (`core/`) with a thin [MCP](https://modelcontextprotocol.io) stdio adapter on top, plus a `.mcpb` bundle for one-click install into Claude Desktop. It's a personal, open-source tool, and the `core/` library is designed to be embedded directly into other projects — including Biohacking-IDE, without going through MCP at all.
+- **Four databases in one call**, merged and de-duplicated by DOI.
+- **Study-design labels from NLM metadata**: a `studyType`, a 0–5 `designTier` based on the OCEBM 2011 levels, and `flags` for retractions, expressions of concern, errata and more. No keyword guessing: a record without metadata says `unknown`.
+- **Full text when the abstract isn't enough**, via Unpaywall, an institutional proxy or the DOI.
+- **Cheap**: search makes no LLM calls, and results are cached.
+- **Agent skills** that teach the model to write precise queries, read the labels and appraise evidence.
 
-This is a research aid, not a diagnostic tool. See [Medical disclaimer](#medical-disclaimer).
+It's a personal, open-source tool: a TypeScript library (`core/`) with a thin [MCP](https://modelcontextprotocol.io) stdio server on top, plus a `.mcpb` bundle for one-click install in Claude Desktop. The library has no MCP dependency and can be embedded directly, as Biohacking-IDE does.
 
-## Tool overview
+> [!IMPORTANT]
+> This is a research aid, not a diagnostic tool. See [Medical disclaimer](#medical-disclaimer).
 
-The MCP server exposes three tools:
+## Install
 
-- **`literature_search`** — search one or more databases (PubMed, Europe PMC, ChinaRXiv, RussiaRXiv), merge + de-duplicate by DOI, and return results labeled with their study design. Always cheap, no LLM.
-- **`literature_fetch`** — fetch full metadata + abstracts for database-specific ids.
-- **`literature_fulltext`** — resolve and return an article’s full text as markdown via DOI (Unpaywall → proxy → direct DOI fallback). Database-agnostic.
-
-Typical workflow: start with `literature_search`, drill into papers with `literature_fetch`, and use `literature_fulltext` when the abstract isn’t enough.
-
-## Install & build
+Requires Node.js 18 or later.
 
 ```bash
+git clone https://github.com/emilkrebs/med-research-mcp.git
+cd med-research-mcp
 npm install
+npm run build
 ```
 
-| Script | Description |
-| --- | --- |
-| `npm run dev` | Run the MCP server with `tsx watch` for local development (auto-restarts on change). |
-| `npm run build` | Build `dist/` with [tsup](https://tsup.egoist.dev/). |
-| `npm start` | Run the built server: `node dist/mcp/index.js`. |
-| `npm test` | Run the test suite with [vitest](https://vitest.dev/). |
-| `npm run build:mcpb` | Package `dist/med-research-mcp.mcpb` for Claude Desktop. |
+Then register the server with your MCP client. In the examples, replace `/path/to/med-research-mcp` with the absolute path of your clone, and `you@example.com` with your email (see [Configuration](#configuration)).
 
-The build uses **tsup**, not plain `tsc`. tsup emits dual **ESM + CJS** output for every entry point (`dist/core/index.js` / `.cjs`, etc.), which is what lets both the ESM MCP server (`dist/mcp/index.js`) and CommonJS consumers — such as Biohacking-IDE / Theia — `require()` or `import` `med-research-mcp/core` from the same package. A plain `tsc` build would only produce one module format and break one side of that split.
+### Claude Code
 
-## Tools reference
-
-### `literature_search`
-
-Search one or more databases and return merged, de-duplicated results, each labeled with its study design (see [Study design labels](#study-design-labels)). Always cheap — no LLM calls.
-
-| Parameter | Type | Required | Notes |
-| --- | --- | --- | --- |
-| `query` | `string` | yes | Search query. PubMed field tags (`[tiab]`, `[mesh]`, `[au]`) apply to the pubmed database; other databases receive it as plain text. |
-| `database` | `string \| string[]` | no | `"pubmed"` (default), `"europepmc"`, `"chinaxiv"`, `"russiarxiv"`, or `"all"`. |
-| `maxResults` | `number` | no | Results per database. Default `10`, max `50`. |
-| `minDesignTier` | `number` | no | Drop results below this design tier (`0`–`5`). Results with an unknown tier — unclassified records and most meta-analyses/systematic reviews — are dropped too, with a warning. |
-| `studyTypes` | `string[]` | no | Keep only these study types. Use this, not `minDesignTier`, to keep reviews and trials. |
-| `dateRange` | `{ from?, to? }` | no | Publication date filter, `YYYY-MM-DD`. |
-| `sort` | `"relevance" \| "date"` | no | Per-database sort; merged results are always re-sorted by design tier. |
-| `language` | `string` | no | ISO 639-1 language hint for adapters that support it. |
-
-### `literature_fetch`
-
-Fetch full metadata and abstracts for one or more ids from a specific database. Returns raw article objects with publication types, MeSH headings and retraction/correction links, plus `database`, `url`, and `language` fields for non-PubMed sources — no design label.
-
-| Parameter | Type | Required | Notes |
-| --- | --- | --- | --- |
-| `ids` | `string[]` | yes | Database-specific ids (PMIDs for pubmed, etc.). 1–50. Europe PMC records outside PubMed carry a source prefix, e.g. `CBA:521529` (Chinese Biological Abstracts). |
-| `database` | `string` | yes | Which database the ids belong to: `pubmed`, `europepmc`, `chinaxiv`, `russiarxiv`. |
-
-### `literature_fulltext`
-
-Fetch an article's full text as markdown via DOI — database-agnostic. Tries Unpaywall (open access), institutional proxy (if configured), and direct DOI access; falls back to abstract-only if paywalled. Pass the `doi` from a `literature_search` result for non-PubMed articles.
-
-| Parameter | Type | Required | Notes |
-| --- | --- | --- | --- |
-| `id` | `string` | yes | Article id (a PMID, or a non-PubMed database's id). |
-| `doi` | `string` | no | DOI — database-agnostic. Required when the id is not a numeric PMID. |
-
-## Study design labels
-
-Every `literature_search` result carries `studyType`, `designTier` and, when any apply, `flags`. They are computed from NLM metadata only — no keyword or regex rules read the title or abstract. The code is [src/core/grader.ts](src/core/grader.ts); every mapping there cites its source.
-
-**`studyType`** comes from NLM PublicationType tags (PubMed, and Europe PMC, which mirrors them), following NLM's own definitions in [MeSH](https://id.nlm.nih.gov/mesh/). A label is assigned only as far as the metadata establishes it:
-
-- `Randomized Controlled Trial` and `Equivalence Trial` (a child of RCT in the MeSH tree) → `randomized-controlled-trial`.
-- `Controlled Clinical Trial` → `non-randomized-trial`. NLM defines it as controlled and tags randomized trials as RCT instead; its controls may be historical.
-- `Clinical Trial`, phases I–IV, `Adaptive`, `Pragmatic` (moved under Clinical Trial in MeSH 2026) and `Human Challenge Trials` → `clinical-trial`: randomization and control aren't indexed.
-- `Observational Study` → `observational`. MeSH design headings ("Cohort Studies", "Prospective Studies"…) are **not** used to narrow it or to classify untagged records: sampled 2023 records showed them applied to diagnostic, intervention and ecological studies too.
-- `Meta-Analysis`, `Network Meta-Analysis` → `meta-analysis`; `Systematic Review` → `systematic-review`; `Case Reports` → `case-report`; `Review`, `Scoping Review` → `review`; veterinary tags → `animal-study`.
-- Conflicting primary tags (e.g. RCT plus Observational Study, mostly observational analyses of trial cohorts) take the lower design.
-- No such tag → `unknown`. That's common for recent papers, journals outside MEDLINE, and ChinaXiv / RussiaRxiv. Unknown means unlabeled, not weak: the model reads the abstract and classifies it, as the [`med-research`](skills/med-research/SKILL.md) skill instructs.
-
-These are NLM's labels, but not hand-curated. Since 2022 NLM indexes MEDLINE automatically (MTIA, then the neural MTIX), curating selected records by hand, and has been bringing publication types into that automation ([NLM 2021](https://www.nlm.nih.gov/pubs/techbull/nd21/nd21_medline_2022.html), [NLM 2024](https://www.nlm.nih.gov/pubs/techbull/ma24/ma24_mtix.html)). Treat a label as a strong prior to confirm when it matters.
-
-**`designTier`** ranks the design for "Does this intervention help?" by the [OCEBM 2011 Levels of Evidence](https://www.cebm.ox.ac.uk/resources/levels-of-evidence/ocebm-levels-of-evidence). When a label's definition spans levels, the lower one is used.
-
-| `studyType` | `designTier` | Basis (OCEBM 2011, treatment benefits) |
-| --- | --- | --- |
-| `meta-analysis`, `systematic-review` | 5 **only if it pooled randomized trials**; otherwise `null` | Level 1 is a systematic review *of randomized trials*. A review ranks with what it pooled, and MeSH rarely shows that: in 2022, 77% of reviews/meta-analyses carried no heading for it. Only `Network Meta-Analysis`, defined as pooling randomized trials, gets 5 |
-| `randomized-controlled-trial` | 4 | Level 2. NLM also applies the tag to secondary analyses of trial data |
-| `cohort` | 3 | Level 3 (non-randomized controlled cohort) |
-| `non-randomized-trial`, `clinical-trial`, `observational`, `case-control`, `cross-sectional` | 2 | Level 4 or a label spanning levels 3–4 (historical controls, single-arm trials, unspecified observational design) |
-| `case-report`, `review` | 1 | Below level 4: a single case, or a review not indexed as systematic (16% of 2023 papers titled "systematic review" carry only `Review`) |
-| `animal-study`, `in-vitro` | 0 | Non-human: at most mechanism-based reasoning (level 5) for human questions |
-| `unknown` | `null` | **Unrated, not weak.** When `minDesignTier` drops these, a warning reports how many |
-
-`cohort`, `case-control`, `cross-sectional` and `in-vitro` are never assigned from metadata; they exist for designs the model reads from an abstract. **`designTier` ranks the design; it doesn't appraise the study.** Risk of bias, imprecision, inconsistency, indirectness and publication bias need the paper ([GRADE](https://pubmed.ncbi.nlm.nih.gov/21208779/)), and prognosis, diagnosis and harms questions rank designs differently (OCEBM). The skills cover this.
-
-**`flags`** come from publication types, the CommentsCorrections links in PubMed and Europe PMC records, and MeSH check tags.
-
-| Flag | Source | Effect |
-| --- | --- | --- |
-| `retracted` | `Retracted Publication` tag, a `RetractionIn` link, or a publisher `RETRACTED` title prefix | tier 0 |
-| `notice` | `Retraction Notice` (named "Retraction of Publication" before 2025), `Expression of Concern`, `Published Erratum` — a notice, not a study | tier 0 |
-| `protocol` | `Clinical Trial Protocol` | tier 0 |
-| `editorial` | `Editorial`, `Comment` | tier 0 |
-| `expression-of-concern` | an `ExpressionOfConcernIn` link (the article itself is never tagged) | warning |
-| `corrected` | an `ErratumIn` link | warning |
-| `updated` | an `UpdateIn` link: a newer version exists, e.g. an updated Cochrane review | warning |
-| `animals-not-humans` | MeSH `Animals` without `Humans`. Only a warning: automated indexing drops `Humans` from human trials often enough that this filter wrongly excluded human RCTs 7× as often as under manual indexing ([Askin 2025](https://pubmed.ncbi.nlm.nih.gov/39975499/)) | warning |
-| `preprint`, `letter` | `Preprint`, `Letter` (letters include research letters) | warning |
-
-**Sort order.** Known tiers 2–5 first, then records with an unknown tier, then tiers 1 and 0. Within a tier, the per-database relevance order is kept. Search results leave out `meshHeadings` to stay compact; `literature_fetch` returns them.
-
-## Configuration
-
-| Variable | Required | Description |
-| --- | --- | --- |
-| `NCBI_EMAIL` | Recommended | Contact email sent with every NCBI request, as NCBI's usage policy asks. |
-| `NCBI_API_KEY` | No | Raises the NCBI rate limit from 3 to 10 requests/second. |
-| `MED_RESEARCH_UNPAYWALL_EMAIL` | No | Contact email for Unpaywall open-access lookups (used by `*_fulltext`). Falls back to `NCBI_EMAIL` if unset. |
-| `MED_RESEARCH_CACHE_BACKEND` | No | `memory` (default, in-process LRU) or `sqlite` (persistent, survives restarts). |
-| `MED_RESEARCH_CACHE_PATH` | No | Path for the SQLite cache file, when `MED_RESEARCH_CACHE_BACKEND=sqlite`. Defaults to `./pubmed-cache.db`. |
-
-## MCP client setup
-
-### Hermes / generic stdio (YAML)
-
-```yaml
-mcp_servers:
-  med-research-mcp:
-    command: npx
-    args: ["tsx", "/Users/private/Desktop/repos/pubmed-bio-mcp/src/mcp/index.ts"]
-    env:
-      NCBI_EMAIL: "you@example.com"
-      NCBI_API_KEY: ""
+```bash
+claude mcp add med-research-mcp -s user \
+  -e NCBI_EMAIL=you@example.com \
+  -- node /path/to/med-research-mcp/dist/mcp/index.js
 ```
 
-### Claude Desktop / Cursor (JSON)
+`-s user` registers it for all your projects; use `-s local` for the current one only. `claude mcp get med-research-mcp` checks the connection. The tools appear in new sessions.
 
-Run `npm run build` first, then point the client at the built output:
+### Claude Desktop (`.mcpb`)
+
+```bash
+npm run build:mcpb
+```
+
+Drag the resulting `dist/med-research-mcp.mcpb` onto Claude Desktop. The installer asks for your NCBI contact email and, optionally, an NCBI API key, an Unpaywall email and an institutional proxy prefix. No JSON editing required.
+
+### Cursor and other JSON configs
 
 ```json
 {
   "mcpServers": {
     "med-research-mcp": {
       "command": "node",
-      "args": ["/Users/private/Desktop/repos/pubmed-bio-mcp/dist/mcp/index.js"],
+      "args": ["/path/to/med-research-mcp/dist/mcp/index.js"],
       "env": {
         "NCBI_EMAIL": "you@example.com",
         "NCBI_API_KEY": ""
@@ -158,95 +63,211 @@ Run `npm run build` first, then point the client at the built output:
 }
 ```
 
-### Claude Desktop via `.mcpb`
+### Hermes and other YAML configs
 
-```bash
-npm run build:mcpb
+This runs the TypeScript source directly, so it needs no build and picks up source changes:
+
+```yaml
+mcp_servers:
+  med-research-mcp:
+    command: npx
+    args: ["tsx", "/path/to/med-research-mcp/src/mcp/index.ts"]
+    env:
+      NCBI_EMAIL: "you@example.com"
+      NCBI_API_KEY: ""
 ```
 
-Then drag the resulting `dist/med-research-mcp.mcpb` onto Claude Desktop. The installer prompts for your NCBI contact email at install time — no manual JSON editing required.
+Clients that run `dist/` need `npm run build` again after every source change. To make the agent use the tools well, also install the [agent skills](#agent-skills).
+
+## Configuration
+
+Set these in your MCP client's `env` block. The server reads them from its environment and doesn't load a `.env` file itself; [`.env.example`](.env.example) documents each one.
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `NCBI_EMAIL` | Recommended | Contact email sent with every NCBI request, as NCBI's usage policy asks. Without it, you're more likely to be throttled. |
+| `NCBI_API_KEY` | No | Raises the NCBI rate limit from 3 to 10 requests per second. Get one in your [NCBI account settings](https://www.ncbi.nlm.nih.gov/account/settings/). |
+| `MED_RESEARCH_UNPAYWALL_EMAIL` | No | Contact email for Unpaywall open-access lookups in `literature_fulltext`. Falls back to `NCBI_EMAIL`. |
+| `MED_RESEARCH_PROXY_PREFIX` | No | Institutional EZproxy prefix that `literature_fulltext` puts in front of the DOI, e.g. `https://login.ezproxy.your-university.edu/login?url=`. Needs an active proxy session on the machine. |
+| `MED_RESEARCH_FULLTEXT_MAX_CHARS` | No | Cap on the length of returned full texts. Default `50000`. |
+| `MED_RESEARCH_CACHE_BACKEND` | No | `memory` (default, in-process) or `sqlite` (persistent, survives restarts). |
+| `MED_RESEARCH_CACHE_PATH` | No | SQLite file for the `sqlite` backend. Default `./pubmed-cache.db`; `:memory:` for a throwaway database. |
+
+## Tools
+
+| Tool | What it does |
+| --- | --- |
+| [`literature_search`](#literature_search) | Searches one or more databases, merges and de-duplicates the results, and labels each with its study design. No LLM calls. |
+| [`literature_fetch`](#literature_fetch) | Returns full metadata and abstracts for specific ids. |
+| [`literature_fulltext`](#literature_fulltext) | Returns an article's full text as markdown, found through its DOI. |
+
+Typical workflow: start with `literature_search`, read promising papers with `literature_fetch`, and use `literature_fulltext` when the abstract isn't enough (methods, dosage, sample sizes).
+
+### `literature_search`
+
+Returns `{ articles, total, query, warnings? }`. Each article carries `studyType`, `designTier` and, when any apply, `flags` (see [Study design labels](#study-design-labels)).
+
+| Parameter | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `query` | `string` | yes | Search query. PubMed field tags (`[tiab]`, `[mesh]`, `[au]`) apply to `pubmed`; other databases receive the query as plain text. |
+| `database` | `string \| string[]` | no | `"pubmed"` (default), `"europepmc"`, `"chinaxiv"`, `"russiarxiv"`, an array of these, or `"all"`. See [Databases](#databases). |
+| `maxResults` | `number` | no | Results per database. Default `10`, max `50`. |
+| `minDesignTier` | `number` | no | Drop results below this design tier (`0`–`5`; `4` = RCTs). Also drops every result with a `null` tier (unlabeled records and most meta-analyses and systematic reviews) and reports how many in a warning. |
+| `studyTypes` | `string[]` | no | Keep only these study types. To keep reviews and trials, use this instead of `minDesignTier`. |
+| `dateRange` | `{ from?, to? }` | no | Publication date filter, `YYYY-MM-DD`. Applies to `pubmed` and `europepmc`. |
+| `sort` | `"relevance" \| "date"` | no | Order within each database. The merged list is always re-sorted by design tier. |
+| `language` | `string` | no | ISO 639-1 hint for databases that support it. |
+
+If one database fails during a multi-database search, its error becomes an entry in `warnings` and the other databases' results are still returned.
+
+### `literature_fetch`
+
+Returns `{ articles, missing, warnings? }`: the raw records with publication types, MeSH headings and retraction/correction links, plus `database`, `url` and `language` for non-PubMed sources. No design labels.
+
+| Parameter | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `ids` | `string[]` | yes | 1–50 database-specific ids: PMIDs for `pubmed`; for `europepmc`, PMIDs or prefixed ids for records outside PubMed, e.g. `CBA:521529` (Chinese Biological Abstracts) or `PPR…` preprints. |
+| `database` | `string` | yes | The database the ids belong to: `pubmed`, `europepmc`, `chinaxiv` or `russiarxiv`. |
+
+### `literature_fulltext`
+
+Tries Unpaywall (open access), then the institutional proxy (if configured), then the DOI directly, and falls back to the abstract if the article is paywalled. Returns `{ id, doi?, source, fulltext?, format, truncated, warning? }`, where `source` says which route worked (`unpaywall`, `proxy`, `direct`, or `none` for the abstract fallback).
+
+| Parameter | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `string` | yes | Article id: a PMID, or another database's id. |
+| `doi` | `string` | no | Required when `id` isn't a numeric PMID. Pass the `doi` from a `literature_search` result. |
+
+### Databases
+
+| Id | Source | Covers | Design labels |
+| --- | --- | --- | --- |
+| `pubmed` | NCBI E-utilities | PubMed / MEDLINE | Yes |
+| `europepmc` | Europe PMC REST API | A mirror of PubMed, plus preprints and other sources such as Chinese Biological Abstracts | For MEDLINE-indexed records |
+| `chinaxiv` | ChinaRxiv API | Chinese preprints, with English title and abstract when available | No: always `unknown` |
+| `russiarxiv` | ChinaRxiv API | Soviet-era and Russian papers | No: always `unknown` |
+
+## Study design labels
+
+Every `literature_search` result carries three fields, computed by [`src/core/grader.ts`](src/core/grader.ts) from NLM metadata only. No keyword or regex rules read the title or abstract.
+
+- **`studyType`**: the design, from NLM PublicationType tags (PubMed, and Europe PMC, which mirrors them). A label is assigned only as far as the metadata establishes it. Records without such tags are `unknown`, which is common for recent papers, journals outside MEDLINE, and ChinaXiv / RussiaRxiv. **Unknown means unlabeled, not weak**: the model reads the abstract and classifies it, as the [`med-research`](skills/med-research/SKILL.md) skill instructs.
+- **`designTier`**: how high the design ranks for "Does this intervention help?" by the [OCEBM 2011 Levels of Evidence](https://www.cebm.ox.ac.uk/resources/levels-of-evidence/ocebm-levels-of-evidence). When a label's definition spans levels, the lower one is used.
+- **`flags`**: integrity notices and warnings, from publication types, retraction and correction links, and MeSH check tags.
+
+| `designTier` | `studyType` |
+| --- | --- |
+| 5 | `meta-analysis`, `systematic-review`, **only if it pooled randomized trials**. Metadata rarely shows that, so only `Network Meta-Analysis` gets 5 |
+| 4 | `randomized-controlled-trial` |
+| 3 | `cohort` |
+| 2 | `non-randomized-trial`, `clinical-trial`, `observational`, `case-control`, `cross-sectional` |
+| 1 | `case-report`, `review` (not indexed as systematic) |
+| 0 | `animal-study`, `in-vitro`, and any record flagged `retracted`, `notice`, `protocol` or `editorial` |
+| `null` | `unknown`, and meta-analyses and systematic reviews whose pooled designs aren't indexed. **Unrated, not weak** |
+
+`retracted`, `notice` (retraction notices, expressions of concern, errata), `protocol` and `editorial` mark records that aren't usable as evidence. `expression-of-concern`, `corrected`, `updated` (a newer version exists), `animals-not-humans`, `preprint` and `letter` are warnings that leave the tier alone. Results are sorted with tiers 2–5 first, then `null`, then tiers 1 and 0.
+
+Keep two limits in mind:
+
+- **`designTier` ranks the design; it doesn't appraise the study.** Risk of bias, imprecision, inconsistency, indirectness and publication bias need the paper ([GRADE](https://pubmed.ncbi.nlm.nih.gov/21208779/)), and prognosis, diagnosis and harms questions rank designs differently (OCEBM). The skills cover this.
+- **The labels are NLM's, but not hand-curated.** Since 2022, NLM indexes MEDLINE automatically, curating selected records by hand ([NLM 2021](https://www.nlm.nih.gov/pubs/techbull/nd21/nd21_medline_2022.html), [NLM 2024](https://www.nlm.nih.gov/pubs/techbull/ma24/ma24_mtix.html)). Treat a label as a strong prior to confirm when it matters.
+
+**[How it works](docs/how-it-works.md#the-grader-study-design-labels)** has the full mapping from publication types to labels, the reasoning behind each tier and flag, worked examples, and the sources.
 
 ## Agent skills
 
-This repo ships three [Agent Skills](skills/) that make the MCP self-guiding, in two tiers:
+This repo ships three [Agent Skills](skills/) that make the MCP self-guiding:
 
-- **[med-research](skills/med-research/SKILL.md)** — the lean workflow skill (~85 lines): how to drive the three tools, write precise PubMed queries with field tags, read design labels and classify unlabeled papers from their abstract, choose `literature_fetch` vs `literature_fulltext`, do multi-database searches, and report findings. Includes three few-shot patterns (simple lookup, evidence synthesis, bullshit detection) so even small models converge on the right workflow, plus a pointer to the EBM reference below.
-- **[med-research-ebm](skills/med-research-ebm/SKILL.md)** — the EBM critical-appraisal reference, loaded only when a paper is about to drive a real decision: PICO framing, RoB 2 / ROBINS-I, AMSTAR-2, effect sizes/CIs/NNT, heterogeneity, Bradford Hill causation, applicability, and conflicts of interest. Kept separate so the workflow skill stays lean and fast.
-- **[med-research-setup](skills/med-research-setup/SKILL.md)** — guides an AI helping a user install, configure, and troubleshoot the server across clients (Claude Code, Claude Desktop `.mcpb`, Cursor, Hermes) and credentials.
+- **[med-research](skills/med-research/SKILL.md)**: the workflow skill. How to drive the three tools, write precise PubMed queries with field tags, read the design labels and classify unlabeled papers from their abstract, choose between `literature_fetch` and `literature_fulltext`, search several databases, and report findings. Three few-shot patterns (simple lookup, evidence synthesis, bullshit detection) help even small models converge on the right workflow.
+- **[med-research-ebm](skills/med-research-ebm/SKILL.md)**: the critical-appraisal reference, loaded only when a paper is about to drive a real decision. Covers PICO framing, RoB 2 / ROBINS-I, AMSTAR-2, effect sizes, confidence intervals and NNT, heterogeneity, Bradford Hill causation, applicability and conflicts of interest. It's kept separate so the workflow skill stays lean.
+- **[med-research-setup](skills/med-research-setup/SKILL.md)**: guides an AI that helps a user install, configure and troubleshoot the server.
 
-Install them into Claude Code so they activate alongside the MCP:
+To install them for Claude Code:
 
 ```bash
-# personal (all your projects)
+# for all your projects
 mkdir -p ~/.claude/skills && cp -r skills/* ~/.claude/skills/
 
-# or project-scoped (this workspace only)
+# or for the current project only
 mkdir -p .claude/skills && cp -r skills/* .claude/skills/
 ```
 
-Skills take effect in new Claude Code sessions. (Claude Desktop `.mcpb` installs don't auto-load skills — copy them in as above.)
+Skills take effect in new sessions. Claude Desktop `.mcpb` installs don't load skills automatically, so copy them in the same way.
 
-## Direct library use (Biohacking-IDE)
+## Using the core library
 
-The `core/` library has no MCP dependency and can be imported directly:
+`med-research-mcp/core` has no MCP dependency and can be imported directly:
 
 ```ts
-import { searchLiterature, fetchLiterature, fetchFulltext } from "med-research-mcp/core";
-import { createCache } from "med-research-mcp/core/cache";
+import { createCache, fetchFulltext, fetchLiterature, searchLiterature } from "med-research-mcp/core";
 
 const cache = createCache({ backend: "memory" });
 
-// Multi-database (primary API)
-const results = await searchLiterature(
-  { query: "creatine AND cognition", database: ["pubmed", "europepmc"], maxResults: 10 },
+// Search two databases: results come back labeled, merged and sorted by design tier.
+const { articles, warnings } = await searchLiterature(
+  { query: "creatine AND cognition[tiab]", database: ["pubmed", "europepmc"], maxResults: 10 },
   cache,
 );
 
-// Fetch full text for a result
-const article = await fetchLiterature({ ids: [results[0].id], database: "pubmed" }, cache);
+// Full metadata and abstract for the top result (`pmid` holds the database-specific id).
+const top = articles[0]!;
+const fetched = await fetchLiterature({ ids: [top.pmid], database: top.database ?? "pubmed" }, cache);
+
+// Its full text, resolved through the DOI.
+const fulltext = await fetchFulltext({ id: top.pmid, doi: top.doi }, cache);
 ```
 
-> **PubMed-only aliases:** `searchPubMed` and `fetchPubMed` remain available for PubMed-specific use cases — they are thin wrappers around the primary API.
+The build ships both ESM and CommonJS, so this works with `import` and `require` alike. Also exported: `classifyDesign` to label your own records, and the PubMed-only `searchPubMed` and `fetchPubMed`, which run the same NCBI pipeline without the multi-database merge (`searchPubMed` keeps PubMed's order instead of sorting by tier).
 
-Thanks to the dual ESM/CJS build, this works whether the consuming project uses `import` or `require`.
+## Caching and errors
 
-## Caching
+**Caching.** The `memory` backend (default) is an LRU of about 200 entries per store that dies with the process. The `sqlite` backend persists to a WAL-mode SQLite file and survives restarts; if its native `better-sqlite3` binding fails to load, the server logs a warning and uses memory instead. Summaries expire after 7 days, because their metadata changes after publication (indexing adds publication types, and retractions, expressions of concern and errata arrive at any time). Full texts expire after 30 days, as resolved URLs rot. Abstracts never expire.
 
-Two backends are available, selected via `MED_RESEARCH_CACHE_BACKEND`:
-
-- **`memory` (default)** — an in-memory LRU (roughly 200 entries per store) that dies with the process.
-- **`sqlite`** — a persistent cache that survives restarts, backed by a WAL-mode SQLite database at `MED_RESEARCH_CACHE_PATH` (default `./pubmed-cache.db`). If the native `better-sqlite3` binding fails to load, the server logs a warning and falls back to the in-memory cache.
-
-In both backends, summaries expire after 7 days, because their metadata changes after publication: indexing adds publication types, and retractions, expressions of concern and errata arrive at any time. Full texts expire after 30 days (resolved URLs rot). Abstracts never expire.
-
-## Error handling
-
-Every failure path surfaces a typed `PubMedError`:
+**Errors.** Library functions throw a `ResearchApiException`, whose `toJSON()` gives:
 
 ```ts
 {
-  code: "RATE_LIMIT" | "QUERY_TOO_BROAD" | "NO_ABSTRACT" | "PARSE_FAILURE"
-      | "NETWORK_ERROR" | "NOT_FOUND";
-  message: string;       // human-readable, for logs
-  userMessage: string;   // actionable phrasing for the agent/user
-  recoverable: boolean;  // whether retrying or adjusting can succeed
-  retryAfter?: number;   // seconds to wait before retrying (rate limits)
+  code: "RATE_LIMIT" | "QUERY_TOO_BROAD" | "PARSE_FAILURE" | "NETWORK_ERROR" | "NOT_FOUND";
+  message: string;      // human-readable, for logs
+  userMessage: string;  // actionable phrasing for the agent or user
+  recoverable: boolean; // whether retrying or adjusting can succeed
+  retryAfter?: number;  // seconds to wait before retrying (rate limits)
 }
 ```
 
-## v0.3.0 scope
+The MCP tools return the same payload as an `isError` result (`UNKNOWN` for unexpected errors).
+
+## Development
+
+| Script | Description |
+| --- | --- |
+| `npm run dev` | Run the MCP server with `tsx watch`, restarting on change. |
+| `npm run build` | Build `dist/`: [tsup](https://tsup.egoist.dev/) for the JavaScript, `tsc --emitDeclarationOnly` for the type declarations. |
+| `npm start` | Run the built server (`node dist/mcp/index.js`). |
+| `npm test` | Run the test suite with [vitest](https://vitest.dev/). `npm run test:watch` re-runs on change. |
+| `npm run typecheck` | Type-check without emitting. |
+| `npm run build:mcpb` | Bundle the server with esbuild and pack `dist/med-research-mcp.mcpb` for Claude Desktop. |
+
+The build uses tsup rather than plain `tsc` because it emits **both ESM and CommonJS** for every entry point (`dist/core/index.js` and `.cjs`, and so on). The MCP server runs as ESM, while CommonJS consumers such as Biohacking-IDE (built on Theia) `require()` `med-research-mcp/core` from the same package. A plain `tsc` build produces one module format and would break one side.
+
+- **[docs/how-it-works.md](docs/how-it-works.md)** explains the internals: the search pipeline, the design grader, full-text resolution, rate limits and caching.
+- **[benchmark/](benchmark/README.md)** measures how well models answer biomedical questions with the MCP, optionally against closed-book and web-search baselines. It verifies every citation against live PubMed and grades open-ended answers blind, by hand or with an LLM judge as a second opinion.
+
+## Scope (v0.3.0)
 
 **In scope:**
-- PubMed search and fetch via NCBI eutils, with field-tag support (`[tiab]`, `[mesh]`, `[au]`).
-- Multi-database search across PubMed, Europe PMC, ChinaRXiv, and RussiaRXiv.
-- Study-design labels and retraction/correction flags on every search result from NLM metadata (`PublicationType` tags, CommentsCorrections links) for PubMed and Europe PMC.
-- Full-text retrieval via Unpaywall, institutional proxy, and direct DOI fallback.
+
+- PubMed search and fetch via NCBI E-utilities, with field tags (`[tiab]`, `[mesh]`, `[au]`).
+- Multi-database search across PubMed, Europe PMC, ChinaXiv and RussiaRxiv.
+- Study-design labels and retraction/correction flags from NLM metadata (PublicationType tags, CommentsCorrections links) for PubMed and Europe PMC records.
+- Full-text retrieval via Unpaywall, an institutional proxy, or the DOI.
 - In-memory (default) and persistent SQLite caching.
-- MCP stdio server and a `.mcpb` bundle for Claude Desktop.
-- Direct, dependency-free library use via `med-research-mcp/core`.
+- An MCP stdio server and a `.mcpb` bundle for Claude Desktop.
+- Direct library use via `med-research-mcp/core`, without MCP.
 
 **Out of scope (for now):**
-- Any storage or transmission of PHI/patient data.
+
+- Any storage or transmission of PHI or patient data.
 
 ## Medical disclaimer
 
@@ -254,4 +275,4 @@ Every failure path surfaces a typed `PubMedError`:
 
 ## License
 
-MIT
+[MIT](LICENSE.md)
