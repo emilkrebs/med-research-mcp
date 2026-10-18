@@ -1,6 +1,6 @@
 ---
 name: med-research
-description: Use when researching biomedical, supplement, peptide, or biohacking evidence with the med-research-mcp MCP server (tools literature_search, literature_fetch, literature_fulltext). Covers writing precise PubMed queries with field tags, reading study designs (studyType, 0-5 designTier, flags), classifying unlabeled papers from the abstract, the ground rules of weighing evidence, choosing between search/fetch/fulltext, multi-database searches, and how to report findings. Three few-shot patterns (lookup, synthesis, bullshit) show the exact workflow. Trigger on questions about what the research/evidence says for a compound, dose, intervention, or biomarker.
+description: Use when researching biomedical, supplement, peptide, or longevity evidence with the med-research-mcp MCP server (tools literature_search, literature_fetch, literature_fulltext). Covers writing precise PubMed queries with field tags, reading study designs (studyType, 0-5 designTier, flags), classifying unlabeled papers from the abstract, the ground rules of weighing evidence, choosing between search/fetch/fulltext, multi-database searches, and how to report findings. Three few-shot patterns (lookup, synthesis, bullshit) show the exact workflow. Trigger on questions about what the research/evidence says for a compound, dose, intervention, or biomarker.
 ---
 
 # Using the med-research-mcp MCP

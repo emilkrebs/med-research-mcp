@@ -10,7 +10,7 @@ Guide the user through this. **Gather three things first, then run the right pat
 ## Step 0 — Gather
 
 Ask the user (or infer from context):
-1. **Which client?** Claude Code (CLI), Claude Desktop, Cursor, Hermes, or direct library import (Biohacking-IDE).
+1. **Which client?** Claude Code (CLI), Claude Desktop, Cursor, Hermes, or direct library import.
 2. **NCBI contact email** — strongly recommended; NCBI asks for one on every request and throttles anonymous traffic. (Optional: an NCBI API key, which raises the rate limit from 3 to 10 req/s.)
 
 Find the repo's absolute path (`pwd` inside it, or locate `med-research-mcp`). Substitute it for `<REPO>` below.
@@ -70,7 +70,7 @@ mcp_servers:
       # NCBI_API_KEY: "..."
 ```
 
-### Direct library import (Biohacking-IDE / any TS project)
+### Direct library import (any TS project)
 Add as a git submodule (or dependency), then `import { searchLiterature, fetchLiterature, fetchFulltext } from "med-research-mcp/core"` and `import { createCache } from "med-research-mcp/core/cache"`. The dual ESM+CJS build means both ESM and CommonJS consumers work.
 
 ## Step 3 — Environment reference
@@ -81,7 +81,7 @@ Add as a git submodule (or dependency), then `import { searchLiterature, fetchLi
 | `NCBI_API_KEY` | optional | Raises rate limit 3 → 10 req/s |
 | `MED_RESEARCH_UNPAYWALL_EMAIL` | optional | Contact email for Unpaywall lookups (`literature_fulltext`). Falls back to `NCBI_EMAIL`. |
 | `MED_RESEARCH_PROXY_PREFIX` | optional | EZproxy-style DOI prefix for off-campus full-text — `literature_fulltext` prepends it to the DOI, e.g. `https://doi-org.ezproxy.your-university.edu`. Needs an existing proxy session on the machine; use only as the institution's and publishers' terms allow. |
-| `MED_RESEARCH_CACHE_BACKEND` | optional | `memory` (default) or `sqlite` (persistent, survives restarts — used by the Biohacking-IDE integration). `sqlite` needs `better-sqlite3`, an optional native dependency of `npm install`; if it isn't installed or fails to load, the server warns and uses `memory`. `.mcpb` installs always use `memory`. |
+| `MED_RESEARCH_CACHE_BACKEND` | optional | `memory` (default) or `sqlite` (persistent, survives restarts). `sqlite` needs `better-sqlite3`, an optional native dependency of `npm install`; if it isn't installed or fails to load, the server warns and uses `memory`. `.mcpb` installs always use `memory`. |
 | `MED_RESEARCH_CACHE_PATH` | optional | SQLite file path when the backend is `sqlite` (default `./pubmed-cache.db`; `:memory:` for ephemeral). |
 | `MED_RESEARCH_FULLTEXT_MAX_CHARS` | optional | Cap on returned full-text length. Default 50000; longer bodies are truncated (`truncated: true`). |
 

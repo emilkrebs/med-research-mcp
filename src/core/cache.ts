@@ -3,7 +3,7 @@
  *
  * The interface is what the rest of the library depends on; backends are
  * swappable. Two ship: the in-memory `LRUBackend` (dies with the process) and
- * the persistent `SQLiteBackend` (survives restarts, used by Biohacking-IDE).
+ * the persistent `SQLiteBackend` (survives restarts).
  *
  * better-sqlite3 is a native module, so it's loaded lazily — only when the
  * sqlite backend is actually constructed. That keeps `LRUBackend`-only

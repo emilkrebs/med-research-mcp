@@ -15,7 +15,7 @@
   <a href="#medical-disclaimer">Disclaimer</a>
 </p>
 
-`med-research-mcp` searches PubMed, Europe PMC, ChinaXiv and RussiaRxiv and labels every result with its study design, so an AI agent (or a human) can tell a meta-analysis from a case report at a glance. Labels come from NLM metadata, are ranked in the evidence hierarchy, and flag retractions and other integrity notices. Appraising the paper itself (reading the abstract, rating down, judging applicability) is left to the model, guided by the bundled [skills](#agent-skills). It's built for biohacking, supplementation and medical research, where "what does the evidence actually say" matters more than a raw list of abstracts.
+`med-research-mcp` searches PubMed, Europe PMC, ChinaXiv and RussiaRxiv and labels every result with its study design, so an AI agent (or a human) can tell a meta-analysis from a case report at a glance. Labels come from NLM metadata, are ranked in the evidence hierarchy, and flag retractions and other integrity notices. Appraising the paper itself (reading the abstract, rating down, judging applicability) is left to the model, guided by the bundled [skills](#agent-skills). It's built for medical, clinical and supplementation research, where "what does the evidence actually say" matters more than a raw list of abstracts.
 
 - **Four databases in one call**, merged and de-duplicated by DOI.
 - **Study-design labels from NLM metadata**: a `studyType`, a 0–5 `designTier` based on the OCEBM 2011 levels, and `flags` for retractions, expressions of concern, errata and more. No keyword guessing: a record without metadata says `unknown`.
@@ -23,7 +23,7 @@
 - **Cheap**: search makes no LLM calls, and results are cached.
 - **Agent skills** that teach the model to write precise queries, read the labels and appraise evidence.
 
-It's a personal, open-source tool: a TypeScript library (`core/`) with a thin [MCP](https://modelcontextprotocol.io) stdio server on top, plus a `.mcpb` bundle for one-click install in Claude Desktop. The library has no MCP dependency and can be embedded directly, as Biohacking-IDE does.
+It's a personal, open-source tool: a TypeScript library (`core/`) with a thin [MCP](https://modelcontextprotocol.io) stdio server on top, plus a `.mcpb` bundle for one-click install in Claude Desktop. The library has no MCP dependency and can be embedded directly in other projects.
 
 > [!IMPORTANT]
 > This is a research aid, not a diagnostic tool. See [Medical disclaimer](#medical-disclaimer).
@@ -263,7 +263,7 @@ The MCP tools return the same payload as an `isError` result (`UNKNOWN` for unex
 | `npm run typecheck` | Type-check without emitting. |
 | `npm run build:mcpb` | Bundle the server with esbuild and pack `dist/med-research-mcp.mcpb` for Claude Desktop. |
 
-The build uses tsup rather than plain `tsc` because it emits **both ESM and CommonJS** for every entry point (`dist/core/index.js` and `.cjs`, and so on). The MCP server runs as ESM, while CommonJS consumers such as Biohacking-IDE (built on Theia) `require()` `med-research-mcp/core` from the same package. A plain `tsc` build produces one module format and would break one side.
+The build uses tsup rather than plain `tsc` because it emits **both ESM and CommonJS** for every entry point (`dist/core/index.js` and `.cjs`, and so on). The MCP server runs as ESM, while CommonJS consumers `require()` `med-research-mcp/core` from the same package. A plain `tsc` build produces one module format and would break one side.
 
 - **[docs/how-it-works.md](docs/how-it-works.md)** explains the internals: the search pipeline, the design grader, full-text resolution, rate limits and caching.
 - **[benchmark/](benchmark/README.md)** measures how well models answer biomedical questions with the MCP, optionally against closed-book and web-search baselines. It verifies every citation against live PubMed and grades open-ended answers blind, by hand or with an LLM judge as a second opinion.
