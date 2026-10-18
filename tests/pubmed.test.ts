@@ -225,6 +225,22 @@ describe("searchPubMed orchestration", () => {
     const out = await searchPubMed({ query: "x" }, new LRUBackend(), fakeClient());
     expect(out.articles[1]).toMatchObject({ studyType: "review", designTier: 0, flags: ["retracted"] });
   });
+
+  it("does not cache a summary whose efetch failed, so its retraction links are fetched next time", async () => {
+    // Abstracts never expire, so they can outlive an expired summary.
+    const cache = new LRUBackend();
+    cache.setAbstract("11111111", "Cached abstract.");
+    cache.setAbstract("22222222", "Cached abstract.");
+    const client = fakeClient();
+    vi.spyOn(client, "efetch").mockRejectedValueOnce(new Error("HTTP 429"));
+
+    const first = await searchPubMed({ query: "x" }, cache, client);
+    expect(first.warnings?.some((w) => /retraction\/correction links/.test(w))).toBe(true);
+    expect(cache.getSummary("22222222")).toBeNull();
+
+    const second = await searchPubMed({ query: "x" }, cache, client);
+    expect(second.articles[1]).toMatchObject({ designTier: 0, flags: ["retracted"] });
+  });
 });
 
 describe("fetchPubMed metadata refresh", () => {
@@ -238,6 +254,31 @@ describe("fetchPubMed metadata refresh", () => {
     // The retraction link arrives with efetch; the cached abstract is not lost.
     expect(out.articles[0]?.corrections).toEqual([{ type: "RetractionIn", id: "55555555" }]);
     expect(out.articles[0]?.abstract).toBeDefined();
+  });
+
+  it("does not cache a summary whose efetch failed, so its retraction links are fetched next time", async () => {
+    const cache = new LRUBackend();
+    cache.setAbstract("22222222", "Cached abstract.");
+    const client = fakeClient();
+    vi.spyOn(client, "efetch").mockRejectedValueOnce(new Error("HTTP 429"));
+
+    const first = await fetchPubMed({ ids: ["22222222"] }, cache, client);
+    expect(first.articles[0]?.corrections).toBeUndefined();
+    expect(cache.getSummary("22222222")).toBeNull();
+
+    const second = await fetchPubMed({ ids: ["22222222"] }, cache, client);
+    expect(second.articles[0]?.corrections).toEqual([{ type: "RetractionIn", id: "55555555" }]);
+  });
+
+  it("replaces a cached summary's older correction links with efetch's", async () => {
+    // No cached abstract, so efetch runs for the cached summary.
+    const cache = new LRUBackend();
+    const client = fakeClient();
+    const [stale] = (await client.esummary(["22222222"])).values();
+    cache.setSummary("22222222", { ...stale!, corrections: [{ type: "ErratumIn" }] });
+    const out = await fetchPubMed({ ids: ["22222222"] }, cache, client);
+    expect(out.articles[0]?.corrections).toEqual([{ type: "RetractionIn", id: "55555555" }]);
+    expect(cache.getSummary("22222222")?.corrections).toEqual([{ type: "RetractionIn", id: "55555555" }]);
   });
 
   it("skips efetch when both summary and abstract are cached", async () => {

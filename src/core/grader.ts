@@ -62,6 +62,7 @@
  *   J Med Libr Assoc 2025. doi:10.5195/jmla.2025.1972. PMID 39975499.
  */
 
+import { RECORD_FLAGS } from "./types.js";
 import type { Article, GradedArticle, RecordFlag, StudyType } from "./types.js";
 
 type Design = Exclude<StudyType, "unknown">;
@@ -169,11 +170,21 @@ const EDITORIAL = tag("Editorial", "Comment");
 const LETTER = tag("Letter");
 const PREPRINT = tag("Preprint"); // D000076942: "made available prior to peer review"
 
-/** Publisher-added marker on a retracted article's title ("RETRACTED: …", "[Retracted] …"). Notices are tagged instead. */
-const RETRACTED_TITLE_RE = /^\s*\[?retracted\b/i;
+/**
+ * Publisher-added marker on a retracted article's title: "RETRACTED: …", "RETRACTED ARTICLE: …",
+ * "[Retracted] …". The colon or brackets are required: "Retracted evidence and emerging insights: an
+ * updated meta-analysis …" (PMID 42218886) is not retracted. Notices carry the same prefix but are tagged.
+ */
+const RETRACTED_TITLE_RE = /^\s*(?:\[retracted\]|retracted(?:\s+article)?\s*:)/i;
 
 /** Flags that mean the record is not usable as evidence: its tier is 0. */
 const NOT_EVIDENCE: ReadonlySet<RecordFlag> = new Set(["retracted", "notice", "protocol", "editorial"]);
+
+/**
+ * Flags about the paper rather than one database's record of it: a retraction indexed in one database
+ * applies to every copy of the paper.
+ */
+const PAPER_FLAGS: ReadonlySet<RecordFlag> = new Set(["retracted", "expression-of-concern", "corrected", "updated"]);
 
 export interface Classification {
   studyType: StudyType;
@@ -222,9 +233,12 @@ export function classifyDesign(meta: Pick<Article, "title" | "publicationTypes" 
   const design = found?.design ?? null;
 
   const flags: RecordFlag[] = [];
+  const notice = NOTICE(tags);
   // RetractionIn links the article to its retraction notice [NLM-XML].
-  if (RETRACTED(tags) || links.has("RetractionIn") || RETRACTED_TITLE_RE.test(meta.title ?? "")) flags.push("retracted");
-  if (NOTICE(tags)) flags.push("notice");
+  if (RETRACTED(tags) || links.has("RetractionIn") || (!notice && RETRACTED_TITLE_RE.test(meta.title ?? ""))) {
+    flags.push("retracted");
+  }
+  if (notice) flags.push("notice");
   if (PROTOCOL(tags)) flags.push("protocol");
   if (EDITORIAL(tags)) flags.push("editorial");
   // An expression of concern is linked only, never tagged, on the article itself [NLM-XML].
@@ -260,6 +274,17 @@ export function classifyArticle(article: Article): GradedArticle {
  */
 export function rankKey(article: GradedArticle): number {
   return article.designTier ?? 1.5;
+}
+
+/**
+ * Merge two records of the same paper (same DOI): keep the higher-ranked one (the first on a tie) and
+ * add the other's paper-level flags, so a retraction known to only one database is not lost.
+ */
+export function mergeDuplicate(first: GradedArticle, second: GradedArticle): GradedArticle {
+  const [kept, other] = rankKey(second) > rankKey(first) ? [second, first] : [first, second];
+  const flags = RECORD_FLAGS.filter((f) => kept.flags?.includes(f) || (PAPER_FLAGS.has(f) && other.flags?.includes(f)));
+  if (flags.length === (kept.flags?.length ?? 0)) return kept;
+  return { ...kept, flags, ...(flags.some((f) => NOT_EVIDENCE.has(f)) ? { designTier: 0 } : {}) };
 }
 
 /** Surfaced when a tier filter removes articles whose tier is merely unknown. */

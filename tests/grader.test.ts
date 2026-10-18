@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classifyArticle, classifyDesign, DESIGN_TIER, rankKey } from "../src/core/grader";
+import { classifyArticle, classifyDesign, DESIGN_TIER, mergeDuplicate, rankKey } from "../src/core/grader";
 import { STUDY_TYPES } from "../src/core/types";
 import type { Correction, NcbiArticle } from "../src/core/types";
 
@@ -114,6 +114,7 @@ describe("classifyDesign — what it deliberately does not use", () => {
 });
 
 describe("classifyDesign — integrity flags", () => {
+  const title = (t: string, publicationTypes: string[] = []) => classifyDesign({ title: t, publicationTypes });
   const withLinks = (types: Correction["type"][], publicationTypes = ["Randomized Controlled Trial"]) =>
     classifyDesign({ title: "", publicationTypes, corrections: types.map((type) => ({ type, id: "1" })) });
 
@@ -130,8 +131,25 @@ describe("classifyDesign — integrity flags", () => {
   });
 
   it("zeroes a publisher-marked retracted title, but not a retraction notice's title", () => {
-    expect(classifyDesign({ title: "RETRACTED: Creatine and cognition", publicationTypes: [] }).flags).toEqual(["retracted"]);
-    expect(classifyDesign({ title: "Retraction notice to: Creatine and cognition", publicationTypes: [] }).flags).toEqual([]);
+    expect(title("RETRACTED: Creatine and cognition").flags).toEqual(["retracted"]);
+    expect(title("[Retracted] Knockdown of lncRNA CCEPR suppresses colorectal cancer progression.").flags).toEqual(["retracted"]);
+    // PMID 42183850 (Springer prefix), tagged only Journal Article + Review.
+    expect(title("RETRACTED ARTICLE: Interventions for Clitoral Adhesions/Phimosis in Adult Women", ["Journal Article", "Review"]))
+      .toMatchObject({ studyType: "review", designTier: 0, flags: ["retracted"] });
+    expect(title("Retraction notice to: Creatine and cognition").flags).toEqual([]);
+  });
+
+  it("does not read a title that merely starts with the word 'retracted' as a retraction", () => {
+    // PMID 42218886 and 42312980: neither is retracted.
+    expect(title("Retracted evidence and emerging insights: an updated meta-analysis of probiotics supplementation", ["Meta-Analysis"]))
+      .toMatchObject({ studyType: "meta-analysis", designTier: null, flags: [] });
+    expect(title("Retracted publications in medical journals: a cross-sectional, cross-disciplinary analysis.").flags).toEqual([]);
+  });
+
+  it("flags a notice with a 'RETRACTED:' title as a notice only — the notice itself is not retracted", () => {
+    // PMID 42886069 (MDPI retraction notice).
+    expect(title("RETRACTED: Atta et al. Synthesis of Silver Nanoparticles by Green Method", ["Journal Article", "Retraction Notice"]))
+      .toMatchObject({ designTier: 0, flags: ["notice"] });
   });
 
   it("zeroes notices: retraction notices (current and pre-2025 name), expressions of concern, errata", () => {
@@ -213,6 +231,38 @@ describe("classifyArticle / rankKey / DESIGN_TIER", () => {
     expect(rank(["Meta-Analysis"])).toBe(rank([]));
     expect(rank([])).toBeGreaterThan(rank(["Review"]));
     expect(rank(["Review"])).toBeGreaterThan(rank(["Retracted Publication"]));
+  });
+
+  describe("mergeDuplicate (two records of one paper)", () => {
+    const rct = classifyArticle(base);
+    const retracted = classifyArticle({ ...base, publicationTypes: ["Randomized Controlled Trial", "Retracted Publication"] });
+
+    it("keeps the higher-ranked copy, the first on a tie", () => {
+      const review = classifyArticle({ ...base, pmid: "2", publicationTypes: ["Review"] });
+      expect(mergeDuplicate(review, rct)).toBe(rct);
+      expect(mergeDuplicate(rct, { ...rct, pmid: "2" })).toBe(rct);
+    });
+
+    it("carries a retraction from either copy over to the kept one and zeroes its tier", () => {
+      for (const merged of [mergeDuplicate(rct, retracted), mergeDuplicate(retracted, rct)]) {
+        expect(merged).toMatchObject({ studyType: "randomized-controlled-trial", designTier: 0, flags: ["retracted"] });
+      }
+    });
+
+    it("carries paper-level warnings without touching the tier", () => {
+      const concern = classifyArticle({ ...base, corrections: [{ type: "ExpressionOfConcernIn" }, { type: "ErratumIn" }] });
+      const unknown = classifyArticle({ ...base, pmid: "C1", publicationTypes: [] });
+      expect(mergeDuplicate(unknown, concern)).toMatchObject({
+        pmid: "1",
+        designTier: 4,
+        flags: ["expression-of-concern", "corrected"],
+      });
+    });
+
+    it("does not carry record-level flags such as preprint", () => {
+      const preprint = classifyArticle({ ...base, pmid: "P1", publicationTypes: ["Preprint"] });
+      expect(mergeDuplicate(preprint, rct)).toBe(rct);
+    });
   });
 
   it("orders STUDY_TYPES by tier, so 'first type in the list' means 'highest tier'", () => {

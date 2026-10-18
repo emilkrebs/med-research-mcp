@@ -30,7 +30,7 @@ src/mcp/server.ts    createServer(): tool schemas (zod), one shared cache and NC
    │
    ▼
 src/core/            plain TypeScript, no MCP dependency (published as med-research-mcp/core)
-├─ literature.ts     searchLiterature / fetchLiterature: fan out, classify, filter, de-duplicate, sort
+├─ literature.ts     searchLiterature / fetchLiterature: fan out, classify, de-duplicate, filter, sort
 ├─ adapters/         one file per database, plus registry.ts
 ├─ pubmed.ts         NcbiClient: esearch → esummary → efetch, with a rate limiter
 ├─ grader.ts         study-design labels, tiers and flags
@@ -53,8 +53,8 @@ What `literature_search` (core: `searchLiterature` in [`literature.ts`](../src/c
 2. **Pick the adapters.** `database` defaults to `pubmed`, and `"all"` selects every adapter. Unknown ids are dropped; if none are left, the result is empty with a warning. The server substitutes a PubMed adapter bound to its shared `NcbiClient`, so all tool calls go through one rate limiter.
 3. **Fan out.** The adapters run in parallel. `search` returns ids and a hit count, then `fetch` turns the first `maxResults` ids into records. When a database fails (a network error, a rate limit, a query too broad for PubMed), its failure becomes a warning (`"<database> search failed: …"`) and the other databases still return results.
 4. **Classify.** Each record goes through `classifyArticle` ([next section](#the-grader-study-design-labels)), which adds `studyType`, `designTier` and `flags`. MeSH headings feed the classification and are then removed from search results to keep them compact.
-5. **Filter.** `minDesignTier` drops records below the given tier. A `null` tier counts as below any minimum; how many records were dropped that way is reported in a warning. `studyTypes` keeps only the listed types.
-6. **De-duplicate by DOI.** DOIs are normalized (URL and `doi:` prefixes removed, compared case-insensitively). One record per DOI survives: the higher-ranked copy, placed where the DOI first appeared. Records without a DOI are all kept.
+5. **De-duplicate by DOI.** DOIs are normalized (URL and `doi:` prefixes removed, compared case-insensitively). One record per DOI survives: the higher-ranked copy, placed where the DOI first appeared. It also takes the other copies' `retracted`, `expression-of-concern`, `corrected` and `updated` flags, since those describe the paper, not one database's record; a merged `retracted` sets its tier to 0. Records without a DOI are all kept.
+6. **Filter.** `minDesignTier` drops records below the given tier. A `null` tier counts as below any minimum; how many records were dropped that way is reported in a warning. `studyTypes` keeps only the listed types. Filtering runs after de-duplication, so a retracted copy the filter would drop still passes its flag to the copy that is kept.
 7. **Sort.** A stable sort by [rank](#ranking): tiers 5 to 2, then unknown tiers, then tiers 1 and 0. Records of equal rank keep their database's order (relevance or date), with databases in the order they were requested.
 8. **Return** `{ articles, total, query, warnings? }`, where `total` sums the hit counts each database reported before truncation.
 
@@ -70,7 +70,7 @@ What `literature_search` (core: `searchLiterature` in [`literature.ts`](../src/c
 
 `language` is read only by the `chinaxiv` adapter, where `"ru"` switches the search to the RussiaRxiv corpus.
 
-- **PubMed** makes three E-utilities calls: `esearch` for the PMIDs, `esummary` for the bibliographic record, and `efetch` (XML) for the abstract, MeSH headings and CommentsCorrections links that `esummary` lacks. `efetch` also fills in publication types when `esummary` has none. A query matching more than 100,000 records is refused with `QUERY_TOO_BROAD`.
+- **PubMed** makes three E-utilities calls: `esearch` for the PMIDs, `esummary` for the bibliographic record, and `efetch` (XML) for the abstract, MeSH headings and CommentsCorrections links that `esummary` lacks. `efetch`'s publication types replace `esummary`'s when it has any. A fresh summary is cached only after `efetch` succeeds for it, so a failed `efetch` can't leave a record cached without its retraction links. A query matching more than 100,000 records is refused with `QUERY_TOO_BROAD`.
 - **Europe PMC** returns complete records (abstract, publication types, MeSH, correction links) from a single `resultType=core` search request. MEDLINE records keep their PMID as id. Numeric ids from other sources would collide with PMIDs, so they get a source prefix, e.g. `CBA:521529` (Chinese Biological Abstracts); `PPR…` preprint and `PMC…` ids stay as they are. Europe PMC's correction link names are mapped to PubMed's (`RetractionIn`, …), so these records classify exactly like PubMed's.
 - **ChinaXiv and RussiaRxiv** come from the same ChinaRxiv API. Records use the English title and abstract when available. Search results carry abstracts cut at 500 characters; `literature_fetch` loads the complete record. These records have no publication types, so they are always `unknown`.
 
@@ -121,7 +121,7 @@ A synthesis is labeled as a synthesis even when it also carries the tags of the 
 
 | Flag | Source | Effect |
 | --- | --- | --- |
-| `retracted` | `Retracted Publication` tag, a `RetractionIn` link, or a publisher `RETRACTED` title prefix | tier 0 |
+| `retracted` | `Retracted Publication` tag, a `RetractionIn` link, or a publisher title prefix (`RETRACTED:`, `RETRACTED ARTICLE:`, `[Retracted]`; not on notices) | tier 0 |
 | `notice` | `Retraction Notice` (named "Retraction of Publication" before 2025), `Expression of Concern`, `Published Erratum`: a notice, not a study | tier 0 |
 | `protocol` | `Clinical Trial Protocol` | tier 0 |
 | `editorial` | `Editorial`, `Comment` | tier 0 |
@@ -158,7 +158,7 @@ Two rules keep the tiers conservative:
 
 ### Ranking
 
-Search results are sorted by `designTier`, with `null` ranked as 1.5 ([`rankKey`](../src/core/grader.ts)). Known tiers 2–5 come first. Unknown tiers come next, because an unlabeled record or an unrated meta-analysis may well be strong and needs reading. Case reports, narrative reviews, non-human and non-evidence records come last. The same rank decides which copy survives DOI de-duplication.
+Search results are sorted by `designTier`, with `null` ranked as 1.5 ([`rankKey`](../src/core/grader.ts)). Known tiers 2–5 come first. Unknown tiers come next, because an unlabeled record or an unrated meta-analysis may well be strong and needs reading. Case reports, narrative reviews, non-human and non-evidence records come last. The same rank decides which copy survives DOI de-duplication (it keeps the other copies' retraction and correction flags).
 
 ### Examples
 

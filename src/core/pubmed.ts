@@ -336,22 +336,18 @@ function extractCorrections(ccl: unknown): Correction[] {
   return out;
 }
 
-/** Copy efetch's publication types, MeSH and correction links onto an esummary record that lacks them. Returns true if it changed. */
-function backfill(article: Article, data: EfetchData): boolean {
-  let changed = false;
-  if (article.publicationTypes.length === 0 && data.publicationTypes.length > 0) {
-    article.publicationTypes = data.publicationTypes;
-    changed = true;
-  }
-  if (!article.meshHeadings && data.meshHeadings.length > 0) {
-    article.meshHeadings = data.meshHeadings;
-    changed = true;
-  }
-  if (!article.corrections && data.corrections.length > 0) {
-    article.corrections = data.corrections;
-    changed = true;
-  }
-  return changed;
+/**
+ * Copy efetch's publication types, MeSH and correction links onto a summary.
+ * efetch is the only source of MeSH and correction links and is at least as
+ * fresh as a cached summary, so its values replace older ones (a later
+ * RetractionIn must not be hidden behind an earlier ErratumIn).
+ */
+function applyEfetch(article: Article, data: EfetchData): void {
+  if (data.publicationTypes.length > 0) article.publicationTypes = data.publicationTypes;
+  if (data.meshHeadings.length > 0) article.meshHeadings = data.meshHeadings;
+  else delete article.meshHeadings;
+  if (data.corrections.length > 0) article.corrections = data.corrections;
+  else delete article.corrections;
 }
 
 /**
@@ -394,14 +390,13 @@ export async function searchPubMed(
   });
   if (missingSummaries.length > 0) {
     const fetched = await client.esummary(missingSummaries);
-    for (const [pmid, article] of fetched) {
-      cache.setSummary(pmid, article);
-      summaries.set(pmid, article);
-    }
+    for (const [pmid, article] of fetched) summaries.set(pmid, article);
   }
 
   // efetch for missing abstracts, and for every freshly fetched summary: only
-  // efetch carries MeSH and retraction/correction links.
+  // efetch carries MeSH and retraction/correction links. A summary is cached
+  // only once efetch has succeeded for it; caching it earlier would hide its
+  // retraction links for SUMMARY_TTL_MS after a failed efetch.
   const abstracts = new Map<string, string>();
   const needEfetch: string[] = [];
   for (const pmid of pmids) {
@@ -417,9 +412,10 @@ export async function searchPubMed(
           cache.setAbstract(pmid, data.abstract);
           abstracts.set(pmid, data.abstract);
         }
-        // esummary has no MeSH or correction links, and sometimes no publication types.
         const summary = summaries.get(pmid);
-        if (summary && backfill(summary, data)) cache.setSummary(pmid, summary);
+        if (!summary) continue;
+        applyEfetch(summary, data);
+        cache.setSummary(pmid, summary);
       }
     } catch (err) {
       // Abstracts are best-effort: degrade with a warning.
@@ -481,10 +477,7 @@ export async function fetchPubMed(
 
   if (needSummary.length > 0) {
     const fetched = await client.esummary(needSummary);
-    for (const [pmid, article] of fetched) {
-      cache.setSummary(pmid, article);
-      allArticles.set(pmid, article);
-    }
+    for (const [pmid, article] of fetched) allArticles.set(pmid, article);
   }
 
   // Check which PMIDs we couldn't get summaries for.
@@ -494,6 +487,7 @@ export async function fetchPubMed(
 
   // Abstracts (best-effort, cache-aware). efetch also runs for every freshly
   // fetched summary: only efetch carries MeSH and retraction/correction links.
+  // As in searchPubMed, a summary is cached only once efetch has succeeded for it.
   const pmidsWithSummary = [...allArticles.keys()];
   for (const pmid of pmidsWithSummary) {
     const article = allArticles.get(pmid)!;
@@ -509,12 +503,12 @@ export async function fetchPubMed(
         if (data.abstract) cache.setAbstract(pmid, data.abstract);
         const article = allArticles.get(pmid);
         if (!article) continue;
-        const changed = backfill(article, data);
+        applyEfetch(article, data);
         if (data.abstract) article.abstract = data.abstract;
-        if (changed || data.abstract) cache.setSummary(pmid, article);
+        cache.setSummary(pmid, article);
       }
     } catch {
-      warnings.push("Some abstracts could not be fetched.");
+      warnings.push("Some abstracts could not be fetched; those articles lack abstracts, MeSH headings and retraction/correction links.");
     }
   }
 

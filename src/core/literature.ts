@@ -3,8 +3,9 @@
  *
  * `searchLiterature` fans a query out to one or more {@link DatabaseAdapter}s,
  * classifies every result's design from its metadata, merges the lists,
- * de-duplicates by DOI (keeping the better-classified copy), and sorts by design
- * tier. `fetchLiterature` fetches specific ids from one database.
+ * de-duplicates by DOI (keeping the better-classified copy, with any retraction
+ * found on another copy), filters, and sorts by design tier. `fetchLiterature`
+ * fetches specific ids from one database.
  *
  * Databases without NLM publication types (ChinaXiv, RussiaRxiv) always come
  * back `unknown`: the calling model reads the design from the abstract.
@@ -13,7 +14,7 @@
 import { getAdapter, getAdapters, type DatabaseAdapter } from "./adapters/registry.js";
 import { doiKey } from "./adapters/util.js";
 import { LRUBackend, type Cache } from "./cache.js";
-import { classifyArticle, rankKey, unclassifiedDroppedWarning } from "./grader.js";
+import { classifyArticle, mergeDuplicate, rankKey, unclassifiedDroppedWarning } from "./grader.js";
 import type {
   FetchOutput,
   GradedArticle,
@@ -32,7 +33,7 @@ function toIdList(database: SearchInput["database"]): string[] {
   return list.length > 0 ? list : ["pubmed"];
 }
 
-/** Keep one article per DOI (higher rank wins); DOI-less articles all pass through. */
+/** Keep one article per DOI (see {@link mergeDuplicate}); DOI-less articles all pass through. */
 function dedupeByDoi(articles: GradedArticle[]): GradedArticle[] {
   const byKey = new Map<string, GradedArticle>();
   // `slots` preserves first-seen order; a string entry is a DOI key placeholder.
@@ -47,8 +48,8 @@ function dedupeByDoi(articles: GradedArticle[]): GradedArticle[] {
     if (!existing) {
       byKey.set(key, article);
       slots.push(key);
-    } else if (rankKey(article) > rankKey(existing)) {
-      byKey.set(key, article);
+    } else {
+      byKey.set(key, mergeDuplicate(existing, article));
     }
   }
   return slots.map((slot) => (typeof slot === "string" ? byKey.get(slot)! : slot));
@@ -93,28 +94,30 @@ export async function searchLiterature(
     }),
   );
 
-  const minTier = input.minDesignTier ?? 0;
-  const typeFilter = input.studyTypes ? new Set(input.studyTypes) : null;
-
   let total = 0;
-  let droppedUnclassified = 0;
   const graded: GradedArticle[] = [];
   for (const { count, articles } of perAdapter) {
     total += count;
     for (const article of articles) {
       // MeSH feeds the classification; search results leave it to literature_fetch to stay compact.
       const { meshHeadings: _mesh, ...g } = classifyArticle(article);
-      if ((g.designTier ?? 0) < minTier) {
-        if (g.designTier == null) droppedUnclassified += 1;
-        continue;
-      }
-      if (typeFilter && !typeFilter.has(g.studyType)) continue;
       graded.push(g);
     }
   }
-  if (droppedUnclassified > 0) warnings.push(unclassifiedDroppedWarning(droppedUnclassified));
 
-  const merged = dedupeByDoi(graded);
+  // Filter after de-duplicating: a retracted copy (tier 0) that the filter would
+  // drop must first pass its flag on to the copy that is kept.
+  const minTier = input.minDesignTier ?? 0;
+  const typeFilter = input.studyTypes ? new Set(input.studyTypes) : null;
+  let droppedUnclassified = 0;
+  const merged = dedupeByDoi(graded).filter((a) => {
+    if ((a.designTier ?? 0) < minTier) {
+      if (a.designTier == null) droppedUnclassified += 1;
+      return false;
+    }
+    return !typeFilter || typeFilter.has(a.studyType);
+  });
+  if (droppedUnclassified > 0) warnings.push(unclassifiedDroppedWarning(droppedUnclassified));
   // Stable sort — equal-rank items keep their per-adapter relevance order.
   merged.sort((a, b) => rankKey(b) - rankKey(a));
 

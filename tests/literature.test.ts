@@ -125,7 +125,46 @@ describe("searchLiterature fan-out", () => {
     );
     expect(out.articles.map((a) => a.pmid)).toEqual(["E1"]);
     // Unrated, not weak — the drop (including the unrated meta-analysis) must be surfaced.
-    expect(out.warnings?.some((w) => /4 result\(s\) with an unknown design tier/.test(w))).toBe(true);
+    // Counted per paper: scieloReview is a copy of pubmedMeta.
+    expect(out.warnings?.some((w) => /3 result\(s\) with an unknown design tier/.test(w))).toBe(true);
+  });
+
+  describe("a retraction indexed in only one database", () => {
+    const retractedPubmed: NcbiArticle = {
+      ...epmcRct,
+      pmid: "P9",
+      doi: "10.1234/EPMC",
+      publicationTypes: ["Randomized Controlled Trial", "Journal Article", "Retracted Publication"],
+      database: undefined,
+    };
+
+    it("survives de-duplication, whichever copy comes first", async () => {
+      for (const order of [[retractedPubmed, epmcRct], [epmcRct, retractedPubmed]]) {
+        const out = await searchLiterature({ query: "x", database: "all" }, new LRUBackend(), [
+          fakeAdapter("a", [order[0]!]),
+          fakeAdapter("b", [order[1]!]),
+        ]);
+        expect(out.articles).toHaveLength(1);
+        expect(out.articles[0]).toMatchObject({ studyType: "randomized-controlled-trial", designTier: 0, flags: ["retracted"] });
+      }
+    });
+
+    it("survives a copy without design metadata, which outranks tier 0", async () => {
+      const out = await searchLiterature({ query: "x", database: "all" }, new LRUBackend(), [
+        fakeAdapter("pubmed", [retractedPubmed]),
+        fakeAdapter("chinaxiv", [{ ...chinaxivRct, doi: "10.1234/epmc" }]),
+      ]);
+      expect(out.articles).toHaveLength(1);
+      expect(out.articles[0]).toMatchObject({ designTier: 0, flags: ["retracted"] });
+    });
+
+    it("is not bypassed by minDesignTier dropping the retracted copy first", async () => {
+      const out = await searchLiterature({ query: "x", database: "all", minDesignTier: 3 }, new LRUBackend(), [
+        fakeAdapter("pubmed", [retractedPubmed]),
+        fakeAdapter("europepmc", [epmcRct]),
+      ]);
+      expect(out.articles).toEqual([]);
+    });
   });
 
   it("keeps unclassified records at minDesignTier 0", async () => {
