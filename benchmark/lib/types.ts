@@ -11,10 +11,10 @@ export type Category =
   | "recent";
 
 /** The three experimental conditions. */
-export type ConditionId = "closed-book" | "web-search" | "mcp";
+export type ConditionId = "closed-book" | "web-search" | "mcp" | "mcp-skill";
 
 /** Short CLI/flag aliases for conditions (A/B/C). */
-export type ConditionLetter = "A" | "B" | "C";
+export type ConditionLetter = "A" | "B" | "C" | "D";
 
 /**
  * How a query's accuracy is scored. Discriminated on `kind`:

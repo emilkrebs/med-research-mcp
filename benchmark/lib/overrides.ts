@@ -51,7 +51,7 @@ export function parseOverrides(raw: string): OverridesFile {
     throw new Error("overrides.json: `overrides` must be an array");
   }
 
-  const validConditions = ["closed-book", "web-search", "mcp", "*"] as const;
+  const validConditions = ["closed-book", "web-search", "mcp", "mcp-skill", "*"] as const;
   for (const [i, o] of parsed.overrides.entries()) {
     if (!o.queryId || typeof o.queryId !== "string") {
       throw new Error(`overrides[${i}]: missing or invalid queryId`);

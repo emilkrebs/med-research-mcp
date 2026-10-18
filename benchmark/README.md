@@ -11,6 +11,7 @@ performance.
 | **MCP** (default) | `literature_search`, `literature_fetch`, `literature_fulltext` | the real MCP server (`createServer()` from `../src/mcp/server.ts`), driven in-process over an MCP in-memory transport |
 | **closed-book** | none | the model from training data alone (optional baseline) |
 | **web-search** | `web_search` (Brave), `web_fetch` | a standalone web baseline: search plus opening result pages (optional baseline) |
+| **mcp-skill** (`--conditions D`) | same as MCP | MCP plus the shipped [`med-research` skill](../skills/med-research/SKILL.md) appended to the system prompt: a Claude Code session with the skill loaded. MCP vs mcp-skill measures the skill. Always-on injection is the skill-loaded best case; in Claude Code the model loads a skill only when its description matches |
 
 32 queries across 7 categories (factual, drill-down, synthesis, edge-case,
 compound, recent, bullshit) × MCP-only by default × N models × R runs. Every
@@ -285,6 +286,24 @@ list of items where graders differ by more than 3 points, for adjudication.
 dimension to `null` drops that dimension (and the recomputed composite) from
 aggregation. Rows graded by humans get `accuracy_source = human`. Use
 `--overrides <path>` to apply one shared file across runs.
+
+**LLM judge (second opinion, not human grading).**
+[`judge.ts`](judge.ts) grades the rubric answers with an LLM, blind to
+condition, model and run. The judge sees the same view as `grade.ts` plus the
+abstracts of the cited PubMed records:
+
+```bash
+npx tsx benchmark/judge.ts <results-dir> [--judge qwen3.8-max] [--conditions mcp,mcp-skill] [--limit n]
+```
+
+Grades go to `judge-<model>.json` (resumable) and a report to
+`judge-<model>.md`, with judge score, proxy score and a composite recomputed
+with the judge's accuracy per condition, plus a paired mcp-skill vs mcp test.
+They are never written to `overrides.json`, so they never count as human
+grades. An LLM judge can be wrong about medicine and may not know recent
+papers: treat its scores as indicative and spot-check a sample by hand. The
+default judge, `qwen3.8-max`, runs on Alibaba Cloud Model Studio's Singapore
+endpoint and needs `DASHSCOPE_API_KEY`.
 
 ## Reproducibility
 

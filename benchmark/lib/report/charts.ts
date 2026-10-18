@@ -22,6 +22,7 @@ const COLOR: Record<ConditionId, string> = {
   "closed-book": "#E69F00",
   "web-search": "#56B4E9",
   mcp: "#009E73",
+  "mcp-skill": "#CC79A7",
 };
 
 const FALLBACK_COLORS = ["#CC79A7", "#F0E442", "#0072B2", "#D55E00", "#999999"];

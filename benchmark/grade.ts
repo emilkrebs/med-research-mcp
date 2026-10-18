@@ -107,7 +107,7 @@ export function parseArgs(argv: string[]): CliOptions | null {
 }
 
 /** Load every raw/*.json in a results dir, tolerating and warning on unparseable files. */
-async function loadRawItems(rawDir: string): Promise<RawItem[]> {
+export async function loadRawItems(rawDir: string): Promise<RawItem[]> {
   let files: string[];
   try {
     files = (await readdir(rawDir)).filter((f) => f.endsWith(".json")).sort();

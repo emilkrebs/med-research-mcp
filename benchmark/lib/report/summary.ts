@@ -78,6 +78,8 @@ export type SummaryTest = (PairedResult & { p_value_holm: number }) | null;
 export interface ModelTests {
   composite_mcp_vs_web: SummaryTest;
   composite_mcp_vs_closed: SummaryTest;
+  /** Condition D (MCP + skill) vs C (MCP): the skill's effect. Absent in older summaries. */
+  composite_skill_vs_mcp?: SummaryTest;
 }
 
 export interface Summary {
@@ -144,9 +146,9 @@ function compositeByQuery(rows: ScoreRow[], model: string, condition: ConditionI
   return new Map([...groups].map(([q, xs]) => [q, mean(xs)] as const));
 }
 
-/** Align mcp vs `other` on shared query ids and run the paired test. */
-function pairedTest(rows: ScoreRow[], model: string, other: ConditionId): PairedResult | null {
-  const mcp = compositeByQuery(rows, model, "mcp");
+/** Align `main` (default mcp) vs `other` on shared query ids and run the paired test. */
+function pairedTest(rows: ScoreRow[], model: string, other: ConditionId, main: ConditionId = "mcp"): PairedResult | null {
+  const mcp = compositeByQuery(rows, model, main);
   const base = compositeByQuery(rows, model, other);
   const a: number[] = [];
   const b: number[] = [];
@@ -193,14 +195,15 @@ export function buildSummary(rows: ScoreRow[], meta: SummaryMeta): Summary {
   summary.category_composite = categories;
 
   // Run every test first, then Holm-adjust across the whole family.
-  const raw: Record<string, { web: PairedResult | null; closed: PairedResult | null }> = {};
+  const raw: Record<string, { web: PairedResult | null; closed: PairedResult | null; skill: PairedResult | null }> = {};
   const all: PairedResult[] = [];
   for (const model of meta.models) {
     const hasMcp = rows.some((r) => r.model === model && r.condition === "mcp");
     const web = hasMcp && meta.conditions.includes("web-search") ? pairedTest(rows, model, "web-search") : null;
     const closed = hasMcp && meta.conditions.includes("closed-book") ? pairedTest(rows, model, "closed-book") : null;
-    raw[model] = { web, closed };
-    for (const t of [web, closed]) if (t) all.push(t);
+    const skill = hasMcp && meta.conditions.includes("mcp-skill") ? pairedTest(rows, model, "mcp", "mcp-skill") : null;
+    raw[model] = { web, closed, skill };
+    for (const t of [web, closed, skill]) if (t) all.push(t);
   }
   const adjusted = new Map<PairedResult, number>();
   holm(all.map((t) => t.p_value)).forEach((p, i) => adjusted.set(all[i]!, round(p, 6)));
@@ -211,6 +214,7 @@ export function buildSummary(rows: ScoreRow[], meta: SummaryMeta): Summary {
     tests[model] = {
       composite_mcp_vs_web: withHolm(raw[model]!.web),
       composite_mcp_vs_closed: withHolm(raw[model]!.closed),
+      ...(raw[model]!.skill ? { composite_skill_vs_mcp: withHolm(raw[model]!.skill) } : {}),
     };
   }
   summary.statistical_tests = tests;
@@ -270,8 +274,9 @@ function testLine(label: string, r: SummaryTest): string {
   if (!r) return `- **${label}**: not enough paired data`;
   const sig = r.p_value_holm < 0.05 ? "✅" : "—";
   const effect = r.test === "paired-t" ? "dz" : "r_rb";
+  const [a, b] = label.split(" vs ");
   return (
-    `- **${label}** ${sig}: mcp ${r.meanA.toFixed(2)} vs ${r.meanB.toFixed(2)} ` +
+    `- **${label}** ${sig}: ${a} ${r.meanA.toFixed(2)} vs ${b} ${r.meanB.toFixed(2)} ` +
     `(Δ=${r.meanDiff.toFixed(2)}, ${r.test}, n=${r.n}, p=${r.p_value.toPrecision(2)}, ` +
     `p_holm=${r.p_value_holm.toPrecision(2)}, ${effect}=${r.effect_size.toFixed(2)}, ` +
     `95% t-CI of mean Δ [${r.ci_95[0].toFixed(2)}, ${r.ci_95[1].toFixed(2)}])`
@@ -322,7 +327,7 @@ export function toMarkdown(summary: Summary): string {
 
   const hasBaselineComparison =
     meta.conditions.includes("mcp") &&
-    (meta.conditions.includes("web-search") || meta.conditions.includes("closed-book"));
+    (meta.conditions.includes("web-search") || meta.conditions.includes("closed-book") || meta.conditions.includes("mcp-skill"));
 
   if (hasBaselineComparison) {
     parts.push(
@@ -335,6 +340,7 @@ export function toMarkdown(summary: Summary): string {
       parts.push(`**${model}**`);
       parts.push(testLine("mcp vs web-search", tests[model]!.composite_mcp_vs_web));
       parts.push(testLine("mcp vs closed-book", tests[model]!.composite_mcp_vs_closed));
+      if (meta.conditions.includes("mcp-skill")) parts.push(testLine("mcp-skill vs mcp", tests[model]!.composite_skill_vs_mcp ?? null));
     }
   }
 

@@ -198,7 +198,7 @@ export class JobProgress {
 
   /** Condition names in the same hues as the charts (closed-book amber, web blue, mcp green). */
   private condition(name: string): string {
-    return name === "mcp" ? this.c.green(name) : name === "web-search" ? this.c.blue(name) : name === "closed-book" ? this.c.yellow(name) : name;
+    return name === "mcp" || name === "mcp-skill" ? this.c.green(name) : name === "web-search" ? this.c.blue(name) : name === "closed-book" ? this.c.yellow(name) : name;
   }
 
   private get label(): string {

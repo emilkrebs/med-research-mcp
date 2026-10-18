@@ -7,6 +7,8 @@
  * single file. API keys are read from the environment, never hard-coded.
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { ConditionId, ConditionLetter } from "./types.js";
 import { MODELS as DEFINED_MODELS } from "../models.data.js";
 
@@ -83,17 +85,19 @@ export function missingKeyFor(spec: ModelSpec): string | undefined {
   return process.env[spec.apiKeyEnv] ? undefined : spec.apiKeyEnv;
 }
 
-/** The three conditions and the CLI letters that select them. */
+/** The conditions and the CLI letters that select them. */
 export const CONDITIONS: Record<ConditionLetter, ConditionId> = {
   A: "closed-book",
   B: "web-search",
   C: "mcp",
+  D: "mcp-skill",
 };
 
 export const CONDITION_LETTER: Record<ConditionId, ConditionLetter> = {
   "closed-book": "A",
   "web-search": "B",
   mcp: "C",
+  "mcp-skill": "D",
 };
 
 /**
@@ -105,6 +109,22 @@ export const SYSTEM_PROMPT =
   "Cite papers by PMID where available. Give your best answer with the " +
   "evidence you have gathered so far rather than continuing to search for " +
   "certainty — an answer with caveats beats no answer.";
+
+/**
+ * The `med-research` workflow skill as shipped in ../skills, without its YAML
+ * frontmatter. Condition D appends it to the system prompt to stand in for a
+ * Claude Code session that has the skill loaded; the other conditions never see
+ * it. (In Claude Code the model loads a skill only when its description matches,
+ * so always injecting it measures the skill-loaded case.)
+ */
+export const SKILL_TEXT = readFileSync(fileURLToPath(new URL("../../skills/med-research/SKILL.md", import.meta.url)), "utf-8")
+  .replace(/^---\n[\s\S]*?\n---\n/, "")
+  .trim();
+
+/** System prompt per condition: the shared prompt, plus the skill for condition D only. */
+export function systemPromptFor(condition: ConditionId): string {
+  return condition === "mcp-skill" ? `${SYSTEM_PROMPT}\n\n${SKILL_TEXT}` : SYSTEM_PROMPT;
+}
 
 /** Composite-score weights. Must sum to 1. (Spec §"Composite Score".) */
 export const WEIGHTS = {

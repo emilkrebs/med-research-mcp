@@ -83,12 +83,12 @@ export function resolveConditions(input?: string, withBaselines = false): Condit
     return withBaselines ? ["closed-book", "web-search", "mcp"] : ["mcp"];
   }
   const byLetter = CONDITIONS as Record<string, ConditionId>;
-  const all: ConditionId[] = ["closed-book", "web-search", "mcp"];
+  const all: ConditionId[] = ["closed-book", "web-search", "mcp", "mcp-skill"];
   const out: ConditionId[] = [];
   for (const raw of input.split(",")) {
     const t = raw.trim();
     const found = byLetter[t.toUpperCase()] ?? all.find((c) => c === t.toLowerCase());
-    if (!found) throw new CliError(`Unknown condition "${t}". Use A|B|C or ${all.join("|")}.`);
+    if (!found) throw new CliError(`Unknown condition "${t}". Use A|B|C|D or ${all.join("|")}.`);
     if (!out.includes(found)) out.push(found);
   }
   return out;
