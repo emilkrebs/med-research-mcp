@@ -125,6 +125,20 @@ describe("http transport", () => {
     expect(Number(rejected!.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
   });
 
+  it("OPTIONS /mcp → 204 with CORS headers", async () => {
+    const { server, url } = await startServer();
+    running.push(server);
+
+    const res = await fetch(`${url}/mcp`, { method: "OPTIONS" });
+    expect(res.status).toBe(204);
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res.headers.get("access-control-allow-methods")).toBe("POST, GET, OPTIONS");
+    expect(res.headers.get("access-control-allow-headers")).toBe(
+      "Content-Type, Authorization, Mcp-Session-Id, MCP-Protocol-Version",
+    );
+    expect(res.headers.get("access-control-expose-headers")).toBe("Mcp-Session-Id");
+  });
+
   it("GET /mcp → 405 with Allow: POST", async () => {
     const { server, url } = await startServer();
     running.push(server);
