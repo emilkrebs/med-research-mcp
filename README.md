@@ -1,6 +1,19 @@
-# med-research-mcp
+<p align="center">
+  <img src="mcpb/icon.png" alt="med-research-mcp icon" width="120" height="120">
+</p>
 
-**Evidence-graded scientific literature search for AI agents.**
+<h1 align="center">med-research-mcp</h1>
+
+<p align="center">
+  <strong>Evidence-graded scientific literature search for AI agents.</strong>
+</p>
+
+<p align="center">
+  <a href="#tool-overview">Tools</a> ·
+  <a href="#install--build">Install</a> ·
+  <a href="#tools-reference">Reference</a> ·
+  <a href="#medical-disclaimer">Disclaimer</a>
+</p>
 
 `med-research-mcp` searches PubMed and a growing set of regional databases (Europe PMC, ChinaRXiv, RussiaRXiv) and grades the evidence quality of every result — study type, evidence score, confidence, dosage, population, and limitations — so an AI agent (or a human) can tell a meta-analysis from a case report at a glance. It's built for optimizing biology, supplementation research, and clinical decision support, where "what does the evidence actually say" matters more than a raw list of abstracts.
 
