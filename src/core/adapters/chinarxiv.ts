@@ -32,7 +32,8 @@ const FULL_CAP = 1000;
  * NCBI_EMAIL is a sensible fallback (both are contact emails).
  */
 export function chinaxivHeaders(): Record<string, string> {
-  const email = process.env.MED_RESEARCH_CHINAXIV_EMAIL ?? process.env.NCBI_EMAIL;
+  // `||` so an empty MED_RESEARCH_CHINAXIV_EMAIL= (as in .env.example) still falls back.
+  const email = process.env.MED_RESEARCH_CHINAXIV_EMAIL?.trim() || process.env.NCBI_EMAIL?.trim();
   return email ? { "X-API-Email": email } : {};
 }
 

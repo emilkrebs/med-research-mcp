@@ -75,9 +75,13 @@ export class TokenBucketLimiter {
 
   /** Drop idle keys so the map doesn't grow without bound on a public endpoint. */
   sweep(olderThanMs = 3_600_000): void {
-    const cutoff = this.now() - olderThanMs;
+    const at = this.now();
+    const cutoff = at - olderThanMs;
     for (const [key, bucket] of this.buckets) {
-      if (bucket.at < cutoff && bucket.tokens >= this.capacity) this.buckets.delete(key);
+      if (bucket.at >= cutoff) continue;
+      // Stored tokens are only refilled on take(), so project the refill before deciding.
+      const refilled = bucket.tokens + ((at - bucket.at) / 60_000) * this.ratePerMin;
+      if (refilled >= this.capacity) this.buckets.delete(key);
     }
   }
 }

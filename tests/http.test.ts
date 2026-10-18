@@ -5,7 +5,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Server } from "node:http";
+import { request, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { LRUBackend, NcbiClient } from "../src/core/index.js";
 import { packageVersion } from "../src/mcp/server.js";
@@ -41,11 +41,12 @@ async function startServer(overrides: Partial<HttpConfig> = {}): Promise<Running
   return { server, url: `http://127.0.0.1:${port}` };
 }
 
-function rpc(url: string, body: unknown, headers: Record<string, string> = {}): Promise<Response> {
+function rpc(url: string, body: unknown, headers: Record<string, string> = {}, signal?: AbortSignal): Promise<Response> {
   return fetch(`${url}/mcp`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...headers },
     body: JSON.stringify(body),
+    signal,
   });
 }
 
@@ -137,6 +138,40 @@ describe("http transport", () => {
       "Content-Type, Authorization, Mcp-Session-Id, MCP-Protocol-Version",
     );
     expect(res.headers.get("access-control-expose-headers")).toBe("Mcp-Session-Id");
+  });
+
+  it("a successful POST /mcp carries CORS headers", async () => {
+    const { server, url } = await startServer();
+    running.push(server);
+
+    const res = await rpc(url, INITIALIZE);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res.headers.get("access-control-expose-headers")).toBe("Mcp-Session-Id");
+  });
+
+  it("a slow, unfinished body does not hold a concurrency slot", async () => {
+    const { server, url } = await startServer({ maxConcurrency: 1 });
+    running.push(server);
+
+    const { port } = server.address() as AddressInfo;
+    const slow = request({
+      host: "127.0.0.1",
+      port,
+      path: "/mcp",
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": "1000" },
+    });
+    slow.on("error", () => {});
+    slow.write("{");
+    await new Promise((r) => setTimeout(r, 50));
+
+    try {
+      const res = await rpc(url, INITIALIZE, {}, AbortSignal.timeout(2_000));
+      expect(res.status).toBe(200);
+    } finally {
+      slow.destroy();
+    }
   });
 
   it("GET /mcp → 405 with Allow: POST", async () => {

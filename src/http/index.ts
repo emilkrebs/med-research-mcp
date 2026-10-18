@@ -201,17 +201,21 @@ export function createHttpServer(deps: HttpServerDeps): Server {
       return;
     }
 
+    // Read the body before taking a concurrency slot, so slow uploads can't hold slots hostage.
+    const body = await readJsonBody(req, config.maxBodyBytes);
+    if (!body.ok) {
+      sendJson(res, body.status, { error: body.message });
+      return;
+    }
+
     const release = await concurrency.acquire();
     if (!release) {
       sendJson(res, 503, { error: "Service Unavailable: concurrency queue is full" }, { "Retry-After": "5" });
       return;
     }
     try {
-      const body = await readJsonBody(req, config.maxBodyBytes);
-      if (!body.ok) {
-        sendJson(res, body.status, { error: body.message });
-        return;
-      }
+      // The transport writes its own response headers; pre-set CORS so browsers can read the result.
+      for (const [name, value] of Object.entries(CORS_HEADERS)) res.setHeader(name, value);
       await handleMcpPost(req, res, body.body, { cache: deps.cache, ncbi: deps.ncbi, allowedHosts: config.allowedHosts });
     } finally {
       release();

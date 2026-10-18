@@ -65,6 +65,12 @@ describe("chinaxivHeaders (X-API-Email)", () => {
     expect((await sentHeaders())["X-API-Email"]).toBe("ncbi@example.com");
   });
 
+  it("falls back to NCBI_EMAIL when MED_RESEARCH_CHINAXIV_EMAIL is empty (as in .env.example)", () => {
+    vi.stubEnv("MED_RESEARCH_CHINAXIV_EMAIL", "");
+    vi.stubEnv("NCBI_EMAIL", "ncbi@example.com");
+    expect(chinaxivHeaders()).toEqual({ "X-API-Email": "ncbi@example.com" });
+  });
+
   it("sends no X-API-Email when neither email is set", async () => {
     expect(chinaxivHeaders()).toEqual({});
     expect((await sentHeaders())["X-API-Email"]).toBeUndefined();
