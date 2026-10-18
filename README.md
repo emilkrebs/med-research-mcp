@@ -32,7 +32,7 @@ It's an open-source tool, used in professional research work: a TypeScript libra
 
 ## Hosted instance
 
-A public instance runs at `https://mcp.example.com/mcp` (Streamable HTTP), serving the same three tools with no signup. Configure your MCP client with that URL; see [docs/hosting.md](docs/hosting.md#deploy) for a client config example.
+Configure your MCP client with that URL; see [docs/hosting.md](docs/hosting.md#deploy) for a client config example.
 
 ```json
 {
