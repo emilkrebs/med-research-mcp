@@ -120,7 +120,7 @@ function preflight(models: ModelSpec[], conditions: ConditionId[]): string[] {
     if (missing) problems.push(`Missing ${missing} (model ${m.label})`);
   }
   if (conditions.includes("web-search") && !process.env.BRAVE_API_KEY) problems.push("Missing BRAVE_API_KEY (condition B)");
-  if (conditions.includes("mcp") && !process.env.NCBI_EMAIL) console.warn("⚠️  NCBI_EMAIL not set — NCBI may throttle. Set it to a contact email.");
+  if ((conditions.includes("mcp") || conditions.includes("mcp-skill")) && !process.env.NCBI_EMAIL) console.warn("⚠️  NCBI_EMAIL not set — NCBI may throttle. Set it to a contact email.");
   return problems;
 }
 
@@ -394,7 +394,7 @@ async function runBenchmark(opts: CliOptions, argv: string[]): Promise<void> {
       const file = rawFilename(job);
       const stored = pool.contents.get(file);
       if (!stored) continue;
-      const d = resumeDecision(stored as unknown as RunRecord, fingerprintFor(job.query, job.model, { temperature, maxSteps }));
+      const d = resumeDecision(stored as unknown as RunRecord, fingerprintFor(job.query, job.model, { temperature, maxSteps }, job.condition));
       if (d.reuse) reuse.set(file, stored);
       else rejected.set(d.reason, (rejected.get(d.reason) ?? 0) + 1);
     }

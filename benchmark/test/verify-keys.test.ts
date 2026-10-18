@@ -34,7 +34,7 @@ const reject = (prompt: string, probe?: string): BenchmarkQuery => ({
   verified: true,
 });
 
-const rct: PmidInfo = { exists: true, studyType: "randomized-controlled-trial", evidenceScore: 4, title: "T" };
+const rct: PmidInfo = { exists: true, studyType: "randomized-controlled-trial", designTier: 4, title: "T" };
 
 describe("extraction", () => {
   it("finds PMIDs in prompts and expected tokens", () => {
@@ -50,11 +50,30 @@ describe("values keys", () => {
     expect((await checkQuery(q, stub({ "111111": rct }))).status).toBe("OK");
   });
 
-  it("MISMATCH with actual vs expected on wrong type / score", async () => {
-    const r = await checkQuery(q, stub({ "111111": { ...rct, studyType: "cohort", evidenceScore: 3 } }));
+  it("MISMATCH with actual vs expected on wrong type / tier", async () => {
+    const r = await checkQuery(q, stub({ "111111": { ...rct, studyType: "cohort", designTier: 3 } }));
     expect(r.status).toBe("MISMATCH");
     expect(r.messages.join("\n")).toContain('expected "randomized-controlled-trial", actual "cohort"');
     expect(r.messages.join("\n")).toContain("expected 4/5, actual 3/5");
+  });
+
+  it("WARN, not MISMATCH, when the record has no design metadata", async () => {
+    const r = await checkQuery(q, stub({ "111111": { exists: true, studyType: "unknown", designTier: null, title: "T" } }));
+    expect(r.status).toBe("WARN");
+    expect(r.messages.join("\n")).toContain("no design metadata");
+  });
+
+  it("MISMATCH when a retraction zeroes the live tier", async () => {
+    const r = await checkQuery(q, stub({ "111111": { ...rct, designTier: 0 } }));
+    expect(r.status).toBe("MISMATCH");
+    expect(r.messages.join("\n")).toContain("expected 4/5, actual 0/5");
+  });
+
+  it("MISMATCH when the expected score disagrees with DESIGN_TIER for the expected type", async () => {
+    const bad = values("Classify PMID 111111.", ["study type: randomized-controlled-trial", "evidence score: 5/5"]);
+    const r = await checkQuery(bad, stub({ "111111": { exists: true, studyType: "unknown", designTier: null } }));
+    expect(r.status).toBe("MISMATCH");
+    expect(r.messages.join("\n")).toContain('DESIGN_TIER["randomized-controlled-trial"] = 4');
   });
 
   it("MISMATCH when a PMID does not resolve, including expected pmid tokens", async () => {

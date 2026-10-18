@@ -19,7 +19,16 @@ import type { FulltextData, Article } from "./types.js";
 /** Full texts expire after 30 days — the paper is stable but resolved OA URLs rot. */
 export const FULLTEXT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * Summaries expire after 7 days. Abstracts don't change, but a summary's
+ * metadata does: NLM adds publication types and MeSH when it indexes a record,
+ * and retractions, expressions of concern and errata can arrive at any time.
+ * A cached summary must not hide a retraction for long.
+ */
+export const SUMMARY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 export interface Cache {
+  /** Returns a cached summary, or null on a miss or if older than {@link SUMMARY_TTL_MS}. */
   getSummary(pmid: string): Article | null;
   setSummary(pmid: string, article: Article): void;
   getAbstract(pmid: string): string | null;
@@ -41,8 +50,8 @@ export interface CacheOptions {
 
 /**
  * In-memory LRU cache. Dies with the process — right for short-lived agent
- * sessions. Summaries and abstracts are immutable (papers don't change) so
- * there's no TTL here; the LRU bound alone keeps memory in check.
+ * sessions. Abstracts never expire; summaries expire after {@link SUMMARY_TTL_MS}
+ * (a server can run for days) and full texts after {@link FULLTEXT_TTL_MS}.
  */
 export class LRUBackend implements Cache {
   private readonly summaries: LRUCache<string, Article>;
@@ -50,7 +59,7 @@ export class LRUBackend implements Cache {
   private readonly fulltexts: LRUCache<string, FulltextData>;
 
   constructor(max = 200) {
-    this.summaries = new LRUCache({ max });
+    this.summaries = new LRUCache({ max, ttl: SUMMARY_TTL_MS });
     this.abstracts = new LRUCache({ max });
     // The LRU's own TTL evicts stale entries; getFulltext double-checks fetchedAt
     // so a caller-supplied stale timestamp is also honored.
@@ -152,16 +161,18 @@ function loadSqlite(): typeof SqliteDatabase {
 /**
  * Persistent cache backed by a single SQLite file. Drop-in replacement for
  * {@link LRUBackend} — same interface, same semantics, but survives restarts so
- * papers are fetched from NCBI at most once.
+ * abstracts are fetched from NCBI at most once.
  *
- * Summaries and abstracts never expire (papers are immutable); full texts
- * expire after {@link FULLTEXT_TTL_MS} because resolved OA URLs and proxy
- * sessions rot. Expiry is enforced at read time and swept by {@link vacuum}.
+ * Abstracts never expire. Summaries expire after {@link SUMMARY_TTL_MS} because
+ * their metadata changes (indexing, retractions, corrections); full texts after
+ * {@link FULLTEXT_TTL_MS} because resolved OA URLs and proxy sessions rot.
+ * Expiry is enforced at read time and swept by {@link vacuum}.
  */
 export class SQLiteBackend implements Cache {
   private readonly db: SqliteDatabase.Database;
   private readonly stmts: {
     getSummary: SqliteDatabase.Statement<[string]>;
+    vacuumSummary: SqliteDatabase.Statement<[number]>;
     setSummary: SqliteDatabase.Statement<[string, string, number]>;
     delSummary: SqliteDatabase.Statement<[string]>;
     getAbstract: SqliteDatabase.Statement<[string]>;
@@ -180,7 +191,8 @@ export class SQLiteBackend implements Cache {
     this.db.exec(SCHEMA_SQL);
 
     this.stmts = {
-      getSummary: this.db.prepare("SELECT article FROM summaries WHERE pmid = ?"),
+      getSummary: this.db.prepare("SELECT article, fetched_at FROM summaries WHERE pmid = ?"),
+      vacuumSummary: this.db.prepare("DELETE FROM summaries WHERE fetched_at < ?"),
       setSummary: this.db.prepare("INSERT OR REPLACE INTO summaries (pmid, article, fetched_at) VALUES (?, ?, ?)"),
       delSummary: this.db.prepare("DELETE FROM summaries WHERE pmid = ?"),
       getAbstract: this.db.prepare("SELECT abstract FROM abstracts WHERE pmid = ?"),
@@ -197,8 +209,12 @@ export class SQLiteBackend implements Cache {
   }
 
   getSummary(pmid: string): Article | null {
-    const row = this.stmts.getSummary.get(pmid) as { article: string } | undefined;
+    const row = this.stmts.getSummary.get(pmid) as { article: string; fetched_at: number } | undefined;
     if (!row) return null;
+    if (Date.now() - row.fetched_at > SUMMARY_TTL_MS) {
+      this.stmts.delSummary.run(pmid);
+      return null;
+    }
     try {
       return JSON.parse(row.article) as Article;
     } catch {
@@ -240,8 +256,9 @@ export class SQLiteBackend implements Cache {
     this.stmts.setFulltext.run(pmid, data.source, data.fulltext, data.format, data.fetchedAt ?? Date.now());
   }
 
-  /** Delete every expired full-text row. Runs on construction; call periodically if desired. */
+  /** Delete every expired summary and full-text row. Runs on construction; call periodically if desired. */
   vacuum(): void {
+    this.stmts.vacuumSummary.run(Date.now() - SUMMARY_TTL_MS);
     this.stmts.vacuumFulltext.run(Date.now() - FULLTEXT_TTL_MS);
   }
 

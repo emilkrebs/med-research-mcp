@@ -5,8 +5,12 @@
  *   npx tsx benchmark/scripts/verify-keys.ts
  *
  *  - `values` keys: every PMID in the prompt and every `pmid: N` in `expected`
- *    must resolve; when `expected` names a `study type:` / `evidence score:`
- *    and the prompt names a subject PMID, the live `keywordGrade` must agree.
+ *    must resolve. When `expected` names a `study type:` and the prompt names a
+ *    subject PMID, the design classified from the record's live NLM metadata
+ *    must agree; a record without design metadata (`unknown`) can't confirm the
+ *    key, which then rests on the abstract quoted in its note — a WARNING. An
+ *    `evidence score:` must equal `DESIGN_TIER` for the expected type and, when
+ *    the record is classified, its live design tier.
  *  - `reject` keys: the optional `probe` PubMed search should return nothing
  *    (hits are WARNINGS with titles, for a human to judge whether the "fake"
  *    study exists); any PMID in the prompt must NOT resolve.
@@ -20,7 +24,7 @@
 import "../lib/loadenv.js";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { searchLiterature, NcbiClient, PubMedAdapter } from "../lib/core.js";
+import { DESIGN_TIER, searchLiterature, NcbiClient, PubMedAdapter } from "../lib/core.js";
 import { defaultFetch } from "../lib/scoring/verify.js";
 import { QUERIES } from "../lib/queries.js";
 import type { BenchmarkQuery } from "../lib/types.js";
@@ -29,7 +33,8 @@ import type { BenchmarkQuery } from "../lib/types.js";
 export interface PmidInfo {
   exists: boolean;
   studyType?: string;
-  evidenceScore?: number;
+  /** Live design tier; null when the record has no design metadata. */
+  designTier?: number | null;
   title?: string;
 }
 
@@ -97,15 +102,26 @@ export async function checkQuery(q: BenchmarkQuery, lookups: Lookups): Promise<K
       const subjectInfo = subject ? info.get(subject) : undefined;
       if (subject && subjectInfo?.exists) {
         const wantType = tokenValue(key.expected, "study type");
-        if (wantType !== undefined && subjectInfo.studyType !== wantType) {
+        const unclassified = subjectInfo.studyType === "unknown";
+        if (wantType !== undefined && unclassified) {
+          messages.push(`PMID ${subject} has no design metadata; "${wantType}" rests on the abstract (see the key's note)`);
+          bump("WARN");
+        } else if (wantType !== undefined && subjectInfo.studyType !== wantType) {
           messages.push(`PMID ${subject} study type: expected "${wantType}", actual "${subjectInfo.studyType}"`);
           bump("MISMATCH");
         }
         const wantScore = tokenValue(key.expected, "evidence score");
         const wantN = wantScore ? /^(\d+)\s*\/\s*5$/.exec(wantScore)?.[1] : undefined;
-        if (wantN !== undefined && subjectInfo.evidenceScore !== Number(wantN)) {
-          messages.push(`PMID ${subject} evidence score: expected ${wantN}/5, actual ${subjectInfo.evidenceScore}/5`);
-          bump("MISMATCH");
+        if (wantN !== undefined) {
+          const scale = wantType !== undefined ? DESIGN_TIER[wantType as keyof typeof DESIGN_TIER] : undefined;
+          if (scale !== undefined && scale !== Number(wantN)) {
+            messages.push(`expected evidence score ${wantN}/5 does not match DESIGN_TIER["${wantType}"] = ${scale}`);
+            bump("MISMATCH");
+          }
+          if (subjectInfo.designTier != null && subjectInfo.designTier !== Number(wantN)) {
+            messages.push(`PMID ${subject} design tier: expected ${wantN}/5, actual ${subjectInfo.designTier}/5`);
+            bump("MISMATCH");
+          }
         }
       }
     } else if (key.kind === "reject") {
@@ -163,7 +179,7 @@ export function liveLookups(): Lookups {
       const { found } = await defaultFetch(pmids, ncbi);
       const out = new Map<string, PmidInfo>(pmids.map((p) => [p, { exists: false }]));
       for (const f of found) {
-        out.set(f.pmid, { exists: true, studyType: f.studyType, evidenceScore: f.evidenceScore, title: f.title });
+        out.set(f.pmid, { exists: true, studyType: f.studyType, designTier: f.designTier, title: f.title });
       }
       return out;
     },

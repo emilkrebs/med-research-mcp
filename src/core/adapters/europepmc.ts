@@ -8,6 +8,9 @@
  * `core` result type includes the abstract and full-text links in the search
  * response, so no second fetch is needed. Records carry a `source` (MED, PPR,
  * PMC, CBA, …) and an `id`; we key on `id` and reconstruct the article URL from both.
+ * MEDLINE records carry the same NLM PublicationType tags, MeSH headings and
+ * retraction/correction links as PubMed, so they classify the same way;
+ * preprints are tagged "Preprint".
  *
  * Ids are only unique within a source: non-PubMed sources such as CBA (Chinese
  * Biological Abstracts) reuse plain numbers that collide with PMIDs, so those
@@ -18,8 +21,8 @@
 
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { cleanDoi, first, splitAuthors, toIso1 } from "./util.js";
-import type { Article, SearchInput } from "../types.js";
+import { cleanDoi, first, splitAuthors, strArray, toIso1 } from "./util.js";
+import type { Article, Correction, CorrectionType, SearchInput } from "../types.js";
 
 const BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest/search";
 const MAX_RESULTS_CAP = 50;
@@ -36,6 +39,28 @@ interface EpmcResult {
   abstractText?: string;
   language?: string;
   fullTextUrlList?: { fullTextUrl?: { url?: string }[] };
+  pubTypeList?: { pubType?: string | string[] };
+  meshHeadingList?: { meshHeading?: { descriptorName?: string }[] };
+  commentCorrectionList?: { commentCorrection?: { id?: string; source?: string; type?: string }[] };
+}
+
+/** Europe PMC link types → PubMed CommentsCorrections RefType names. */
+const CORRECTION_TYPES: Record<string, CorrectionType> = {
+  "retraction in": "RetractionIn",
+  "expression of concern in": "ExpressionOfConcernIn",
+  "erratum in": "ErratumIn",
+  "update in": "UpdateIn",
+};
+
+function toCorrections(list: EpmcResult["commentCorrectionList"]): Correction[] {
+  const out: Correction[] = [];
+  for (const c of [list?.commentCorrection ?? []].flat()) {
+    const type = CORRECTION_TYPES[(first(c?.type) ?? "").toLowerCase()];
+    if (!type) continue;
+    const id = first(c?.id);
+    out.push({ type, ...(id ? { id: toEpmcId(first(c?.source) ?? "MED", id) } : {}) });
+  }
+  return out;
 }
 
 interface EpmcResponse {
@@ -75,7 +100,7 @@ function toArticle(r: EpmcResult): Article | null {
     authors: splitAuthors(r.authorString),
     journal: first(r.journalTitle) ?? "",
     pubDate: first(r.pubYear) ?? "",
-    publicationTypes: [],
+    publicationTypes: strArray(r.pubTypeList?.pubType),
     database: "europepmc",
     url,
     language,
@@ -83,6 +108,10 @@ function toArticle(r: EpmcResult): Article | null {
   const abstract = first(r.abstractText);
   if (abstract) article.abstract = abstract;
   if (doi) article.doi = doi;
+  const mesh = [r.meshHeadingList?.meshHeading ?? []].flat().map((h) => first(h?.descriptorName)).filter((m) => m != null);
+  if (mesh.length > 0) article.meshHeadings = mesh;
+  const corrections = toCorrections(r.commentCorrectionList);
+  if (corrections.length > 0) article.corrections = corrections;
   return article;
 }
 

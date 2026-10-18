@@ -3,9 +3,13 @@
  *
  * The scorer trusts nothing the model claims about a citation: every cited PMID
  * is fetched from PubMed. A PMID that doesn't resolve is a fabrication; one that
- * does is graded with the library's own grader so "evidence quality" is measured
- * on the exact 0–5 scale the MCP would report. Results are cached so the same
- * PMID is fetched once per process.
+ * does has its design classified from NLM metadata (PublicationType tags, retraction
+ * links) by the library's classifier, so "evidence quality" is the mean design
+ * tier on the 0–5 scale the MCP reports. Records whose tier is unknown — no
+ * design metadata, or a review/meta-analysis whose pooled designs aren't
+ * indexed — are left out of that mean; when every valid citation is unrated the
+ * mean is NaN (unscored), not 0. Results are cached so the same PMID is fetched
+ * once per process.
  *
  * What counts as a citation:
  *  - PMIDs, only when anchored ("PMID 123", "PubMed ID: 123", a PubMed URL).
@@ -15,8 +19,8 @@
  *    are scored on the same footing as PMID-citing ones).
  *  - Regional records — Europe PMC ids outside PubMed (`CBA:521529`, `PPR123`,
  *    europepmc.org/article/SRC/ID links) and ChinaXiv ids (`chinaxiv-202608.00133`)
- *    — are looked up in their own database and, when found, graded with the same
- *    grader and counted like a valid PMID. Not found stays in `other`.
+ *    — are looked up in their own database and, when found, classified the same
+ *    way and counted like a valid PMID. Not found stays in `other`.
  *  - Everything else (a DOI PubMed has never heard of, arXiv-style ids,
  *    publisher article URLs, regional ids that don't resolve) is reported in
  *    `other`: counted, NOT graded, and NEVER counted as fabricated — we cannot
@@ -33,20 +37,22 @@
  *
  * `fetchLiterature` treats abstracts as best-effort and only warns when efetch
  * fails; the default lookup turns that warning — or a control PMID that came
- * back without its abstract — into a failure too, because both the evidence
- * grade and the attribution audit read the abstract: a silently title-only
- * record would change scores depending on NCBI's rate limits.
+ * back without its abstract — into a failure too, because efetch also carries
+ * the MeSH headings the classification reads, and the attribution audit reads
+ * the abstract: a silently incomplete record would change scores depending on
+ * NCBI's rate limits.
  */
 
-import { fetchLiterature, keywordGrade, NcbiClient, PubMedAdapter, NullCache } from "../core.js";
-import type { StudyType } from "../core.js";
+import { classifyArticle, fetchLiterature, NcbiClient, parseEuropePmc, PubMedAdapter, NullCache } from "../core.js";
+import type { Correction, StudyType } from "../core.js";
 import type { EvidenceDetail } from "../types.js";
 
 export interface PmidFacts {
   /** PMID, or the regional id for a non-PubMed record (`CBA:521529`, `chinaxiv-…`). */
   pmid: string;
   exists: boolean;
-  evidenceScore: number; // 0–5, meaningful only when exists
+  /** 0–5 design tier; null when unknown (no design metadata, unrated synthesis) or the record does not exist. */
+  designTier: number | null;
   studyType: StudyType;
   title: string;
   abstract: string;
@@ -55,7 +61,7 @@ export interface PmidFacts {
   /** Author names as the database lists them ("Wang X", "Chen Zuhong"). Read by the attribution check. */
   authors?: string[];
   pubYear?: number;
-  /** NLM publication types (PubMed only). */
+  /** NLM publication types (PubMed, Europe PMC). */
   publicationTypes?: string[];
   meshHeadings?: string[];
 }
@@ -271,7 +277,7 @@ export class Verifier {
         result.set(facts.pmid, facts);
       }
       for (const pmid of missing) {
-        const facts: PmidFacts = { pmid, exists: false, evidenceScore: 0, studyType: "unknown", title: "", abstract: "" };
+        const facts: PmidFacts = { pmid, exists: false, designTier: null, studyType: "unknown", title: "", abstract: "" };
         this.memo.set(pmid, facts);
         result.set(pmid, facts);
       }
@@ -324,11 +330,11 @@ export async function defaultFetch(
   const found: PmidFacts[] = [];
   for (const article of articles) {
     if (!pmids.includes(article.pmid)) continue;
-    const graded = keywordGrade(article);
+    const graded = classifyArticle(article);
     found.push({
       pmid: article.pmid,
       exists: true,
-      evidenceScore: graded.evidenceScore,
+      designTier: graded.designTier,
       studyType: graded.studyType,
       title: article.title,
       abstract: article.abstract ?? "",
@@ -344,19 +350,32 @@ export async function defaultFetch(
 const EPMC_SEARCH = "https://www.ebi.ac.uk/europepmc/webservices/rest/search";
 const CHINAXIV_PAPERS = "https://chinarxiv.org/api/v1/papers";
 
-/** Grade a regional record exactly like a PubMed one (same keyword grader, no NLM publication types). */
-function regionalFacts(id: string, database: string, a: { title: string; abstract: string; authors: string[]; pubDate: string; journal: string }): PmidFacts {
-  const graded = keywordGrade({ pmid: id, title: a.title, abstract: a.abstract, authors: a.authors, journal: a.journal, pubDate: a.pubDate, publicationTypes: [] });
+interface RegionalRecord {
+  title: string;
+  abstract: string;
+  authors: string[];
+  pubDate: string;
+  journal: string;
+  publicationTypes?: string[];
+  meshHeadings?: string[];
+  corrections?: Correction[];
+}
+
+/** Classify a regional record exactly like a PubMed one (ChinaXiv has no metadata, so it stays unknown). */
+function regionalFacts(id: string, database: string, a: RegionalRecord): PmidFacts {
+  const graded = classifyArticle({ pmid: id, ...a, publicationTypes: a.publicationTypes ?? [] });
   return {
     pmid: id,
     exists: true,
-    evidenceScore: graded.evidenceScore,
+    designTier: graded.designTier,
     studyType: graded.studyType,
     title: a.title,
     abstract: a.abstract,
     database,
     authors: a.authors,
     ...(yearOf(a.pubDate) !== undefined ? { pubYear: yearOf(a.pubDate) } : {}),
+    ...(a.publicationTypes?.length ? { publicationTypes: a.publicationTypes } : {}),
+    ...(a.meshHeadings?.length ? { meshHeadings: a.meshHeadings } : {}),
   };
 }
 
@@ -393,12 +412,17 @@ export async function defaultRegionalLookup(item: RegionalId): Promise<PmidFacts
   const r = (body as { resultList?: { result?: Record<string, unknown>[] } } | null)?.resultList?.result?.[0];
   if (!r || String(r.id) !== extId) return null;
   const str = (v: unknown): string => (typeof v === "string" ? v : "");
+  // The adapter's parser reads the metadata the classification uses (publication types, MeSH, retraction links).
+  const meta = parseEuropePmc({ resultList: { result: [r] } }).articles[0];
   return regionalFacts(item.id, "europepmc", {
     title: str(r.title).replace(/\.$/, ""),
     abstract: str(r.abstractText).replace(/<[^>]+>/g, ""),
     authors: str(r.authorString).split(/[;,]/).map((x) => x.trim().replace(/\.$/, "")).filter(Boolean),
     pubDate: str(r.pubYear) || str(r.firstPublicationDate),
     journal: str(r.journalTitle),
+    ...(meta?.publicationTypes.length ? { publicationTypes: meta.publicationTypes } : {}),
+    ...(meta?.meshHeadings ? { meshHeadings: meta.meshHeadings } : {}),
+    ...(meta?.corrections ? { corrections: meta.corrections } : {}),
   });
 }
 
@@ -415,7 +439,10 @@ export interface CitationAudit {
   cited: string[];
   valid: PmidFacts[];
   fabricated: string[];
-  /** Mean evidence score over valid citations; 0 when there are none. */
+  /**
+   * Mean design tier over valid citations whose tier is known; 0 when no citation
+   * is valid; NaN (unscored) when citations are valid but none has a known tier.
+   */
   evidenceQuality: number;
   /** Non-PubMed / unresolvable identifiers: counted, never graded, never fabricated. */
   other: OtherCitation[];
@@ -472,6 +499,10 @@ export async function auditCitations(text: string, prompt: string, verifier: Ver
       other.set(item.id.toLowerCase(), { id: item.id, kind: item.database === "chinaxiv" ? "arxiv-like" : "europepmc" });
     }
   }
-  const evidenceQuality = valid.length > 0 ? valid.reduce((s, f) => s + f.evidenceScore, 0) / valid.length : 0;
+  // Unrated records (no design metadata, syntheses of unindexed designs) are neither
+  // good nor bad evidence, so they stay out of the mean; citing only those leaves it unscored.
+  const tiers = valid.flatMap((f) => (f.designTier == null ? [] : [f.designTier]));
+  const evidenceQuality =
+    tiers.length > 0 ? tiers.reduce((s, t) => s + t, 0) / tiers.length : valid.length > 0 ? Number.NaN : 0;
   return { cited: counted, valid, fabricated, evidenceQuality, other: [...other.values()], echoedFromPrompt };
 }

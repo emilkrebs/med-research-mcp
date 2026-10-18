@@ -1,0 +1,55 @@
+# Typecheck, test and build on every push to main and every pull request.
+# The matrix covers the oldest supported Node (the floor of `engines` in
+# package.json) and the latest 24 and 26, so the engines claim stays true.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22.22.2", "24", "26"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          check-latest: true
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            benchmark/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run build:mcpb
+
+      # The .mcpb must start on its own, as Claude Desktop runs it: unpack it
+      # outside the repo and check it answers `initialize` with the right version.
+      - name: Smoke-test the .mcpb bundle
+        run: |
+          dir="$RUNNER_TEMP/mcpb" && mkdir -p "$dir" && unzip -q dist/med-research-mcp.mcpb -d "$dir"
+          init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}'
+          expected="\"name\":\"med-research-mcp\",\"version\":\"$(node -p 'require("./package.json").version')\""
+          (echo "$init"; sleep 5) | timeout 30 node "$dir/server/index.js" | grep -qF "$expected"
+
+      # The harness imports ../src, so it runs after the root install.
+      - name: Benchmark harness (offline tests)
+        working-directory: benchmark
+        run: |
+          npm ci
+          npm run typecheck
+          npm test

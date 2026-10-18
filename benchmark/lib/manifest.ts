@@ -10,7 +10,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DEFAULTS, NORMALIZATION, SYSTEM_PROMPT, WEIGHTS, type ModelSpec } from "./config.js";
+import { DEFAULTS, NORMALIZATION, WEIGHTS, systemPromptFor, type ModelSpec } from "./config.js";
 import { SCORER_VERSION } from "./scoring/score.js";
 import type { BenchmarkQuery, ConditionId, RunRecord, RunSettings, ScoreBreakdown } from "./types.js";
 
@@ -133,12 +133,13 @@ export function fingerprintFor(
   query: BenchmarkQuery,
   model: ModelSpec,
   settings: { temperature: number; maxSteps: number },
+  condition: ConditionId = "mcp",
 ): Fingerprint {
   return {
     modelId: model.modelId,
     settings: { temperature: settings.temperature, maxSteps: settings.maxSteps, timeoutMs: DEFAULTS.timeoutMs },
     prompt: query.prompt,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: systemPromptFor(condition),
   };
 }
 

@@ -21,10 +21,9 @@ Find the repo's absolute path (`pwd` inside it, or locate `med-research-mcp`). S
 cd <REPO>
 npm install
 npm run build          # produces dist/ (dual ESM+CJS + .d.ts)
-npm test               # optional: 80 tests should pass
 ```
 
-Requires Node ≥ 18. Re-run `npm run build` after any source change — clients run the compiled `dist/`.
+Requires Node ≥ 22.22.2 (on Node 24, ≥ 24.15.0). Re-run `npm run build` after any source change — clients run the compiled `dist/`.
 
 ## Step 2 — Register with the chosen client
 
@@ -81,8 +80,8 @@ Add as a git submodule (or dependency), then `import { searchLiterature, fetchLi
 | `NCBI_EMAIL` | recommended | Contact email; avoids anonymous throttling |
 | `NCBI_API_KEY` | optional | Raises rate limit 3 → 10 req/s |
 | `MED_RESEARCH_UNPAYWALL_EMAIL` | optional | Contact email for Unpaywall lookups (`literature_fulltext`). Falls back to `NCBI_EMAIL`. |
-| `MED_RESEARCH_PROXY_PREFIX` | optional | EZproxy-style DOI prefix for off-campus full-text — `literature_fulltext` prepends it to the DOI, e.g. `https://doi-org.ezproxy.uni-kiel.de`. Needs an existing proxy session on the machine. |
-| `MED_RESEARCH_CACHE_BACKEND` | optional | `memory` (default) or `sqlite` (persistent, survives restarts — used by the Biohacking-IDE integration). `better-sqlite3` is bundled. |
+| `MED_RESEARCH_PROXY_PREFIX` | optional | EZproxy-style DOI prefix for off-campus full-text — `literature_fulltext` prepends it to the DOI, e.g. `https://doi-org.ezproxy.your-university.edu`. Needs an existing proxy session on the machine; use only as the institution's and publishers' terms allow. |
+| `MED_RESEARCH_CACHE_BACKEND` | optional | `memory` (default) or `sqlite` (persistent, survives restarts — used by the Biohacking-IDE integration). `sqlite` needs `better-sqlite3`, an optional native dependency of `npm install`; if it isn't installed or fails to load, the server warns and uses `memory`. `.mcpb` installs always use `memory`. |
 | `MED_RESEARCH_CACHE_PATH` | optional | SQLite file path when the backend is `sqlite` (default `./pubmed-cache.db`; `:memory:` for ephemeral). |
 | `MED_RESEARCH_FULLTEXT_MAX_CHARS` | optional | Cap on returned full-text length. Default 50000; longer bodies are truncated (`truncated: true`). |
 
@@ -96,7 +95,7 @@ mkdir -p ~/.claude/skills && cp -r <REPO>/skills/med-research <REPO>/skills/med-
 
 ## Step 5 — Verify
 
-Start a new session with the client and run a `literature_search` for `creatine AND cognition[tiab]` (maxResults 3). Expect a few graded articles with study types and 0–5 evidence scores.
+Start a new session with the client and run a `literature_search` for `creatine AND cognition[tiab]` (maxResults 3). Expect a few articles with a `studyType` and a 0–5 `designTier` (`null` when unknown — records without NLM design metadata, and most meta-analyses).
 
 ## Troubleshooting
 

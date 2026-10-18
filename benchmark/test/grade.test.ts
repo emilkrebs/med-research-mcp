@@ -28,7 +28,7 @@ function breakdown(status: ScoreBreakdown["status"] | undefined, proxy = 6.66): 
     accuracy: { score: proxy, kind: "rubric" },
     evidenceQuality: {
       score: 3,
-      pmids: [{ pmid: "111", valid: true, studyType: "cohort", evidenceScore: 3, title: "A title" }],
+      pmids: [{ pmid: "111", valid: true, studyType: "cohort", designTier: 3, title: "A title" }],
     },
     bullshit: { score: 0, rejected: false, fabricatedPmids: [] },
     composite: 5,

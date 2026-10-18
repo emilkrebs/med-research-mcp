@@ -3,6 +3,8 @@ import { CliError, parseCli, parsePositiveInt, parseTemperature } from "../lib/c
 import { DEFAULTS, DEFAULT_MODELS, MODELS } from "../lib/config.js";
 import { SCORER_VERSION } from "../lib/scoring/score.js";
 import { fingerprintFor, rescoreReason, resumeDecision, detectGit } from "../lib/manifest.js";
+import { CONDITIONS, SKILL_TEXT, SYSTEM_PROMPT, systemPromptFor } from "../lib/config.js";
+import { resolveConditions } from "../lib/cli.js";
 import { QUERIES } from "../lib/queries.js";
 import type { RunRecord, ScoreBreakdown } from "../lib/types.js";
 import { statusTally } from "../run.js";
@@ -135,5 +137,25 @@ describe("misc", () => {
   it("statusTally counts every status", () => {
     const rows = [{ status: "ok" }, { status: "ok" }, { status: "truncated" }] as never;
     expect(statusTally(rows)).toEqual({ ok: 2, "provider-error": 0, truncated: 1, "scoring-error": 0 });
+  });
+});
+
+describe("condition D (mcp-skill)", () => {
+  it("is selectable by letter or name", () => {
+    expect(CONDITIONS.D).toBe("mcp-skill");
+    expect(resolveConditions("C,D")).toEqual(["mcp", "mcp-skill"]);
+    expect(resolveConditions("mcp-skill")).toEqual(["mcp-skill"]);
+  });
+
+  it("appends the shipped med-research skill, without frontmatter, to D's system prompt only", () => {
+    expect(SKILL_TEXT.startsWith("# Using the med-research-mcp MCP")).toBe(true);
+    expect(SKILL_TEXT).toContain("## Ground rules of evidence");
+    expect(systemPromptFor("mcp-skill")).toBe(`${SYSTEM_PROMPT}\n\n${SKILL_TEXT}`);
+    for (const c of ["closed-book", "web-search", "mcp"] as const) expect(systemPromptFor(c)).toBe(SYSTEM_PROMPT);
+  });
+
+  it("never reuses an mcp record for mcp-skill on resume", () => {
+    const skillWant = fingerprintFor(query, model, settings, "mcp-skill");
+    expect(resumeDecision(record(), skillWant)).toEqual({ reuse: false, reason: "system prompt differs" });
   });
 });

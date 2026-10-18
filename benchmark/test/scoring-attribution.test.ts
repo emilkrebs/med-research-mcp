@@ -12,7 +12,7 @@ import type { PmidFacts } from "../lib/scoring/verify.js";
 const record = (over: Partial<PmidFacts> = {}): PmidFacts => ({
   pmid: "42765482",
   exists: true,
-  evidenceScore: 5,
+  designTier: 5,
   studyType: "meta-analysis",
   title: "Resistance training combined with creatine supplementation: a three-level meta-analysis",
   abstract: "Sixty-three studies (n = 1489) were included. Upper-body strength (g = 0.54, p < 0.001).",

@@ -15,13 +15,16 @@
  *     its answer in a fixed one-line format and the scorer checks the exact
  *     tokens it emitted against the correct ones. Each such key's expected
  *     tokens were confirmed on 2026-07-14 and RE-VERIFIED on 2026-10-17 against
- *     live PubMed and the library's own grader (`keywordGrade`): the study type
- *     + 0–5 score are what the tool assigns, and every pinned PMID resolves
- *     (36615805 meta-analysis 5, 23439798 RCT 4, 22591295 cohort 3, 28202713,
- *     27633186). factual-01/02/03 prompts were rewritten on 2026-10-17 for the
- *     current taxonomy/scale and are at answerKeyVersion 3. The regional and
- *     recent keys were read from each record's abstract on 2026-10-17 (quoted in
- *     each key's `note`).
+ *     live PubMed, and every pinned PMID resolves (36615805 meta-analysis of
+ *     21 RCTs 5, 23439798 RCT 4, 22591295 cohort 3, 28202713, 27633186). The
+ *     study type is the paper's actual design and the score is `DESIGN_TIER`
+ *     for it. The library's classifier labels 36615805 and 28202713
+ *     meta-analysis but leaves their tier null (pooled designs aren't in the
+ *     metadata); 23439798 and 22591295 carry no design PublicationType, so their
+ *     keys rest on the abstract, quoted in each note. factual-01/02/03 prompts
+ *     were rewritten on 2026-10-17 for the current taxonomy and scale and are at
+ *     answerKeyVersion 4. The regional and recent keys were read from each
+ *     record's abstract on 2026-10-17 (quoted in each key's `note`).
  *
  * On `topics`: terms a cited paper must mention to count as on-topic in the
  * attribution audit (lib/scoring/attribution.ts). Kept broad on purpose — they
@@ -53,48 +56,48 @@ export const QUERIES: BenchmarkQuery[] = [
   // Deterministic `values` keys: the model must end with the ANSWER line, which
   // is parsed field by field. Study type must be one of the library's taxonomy
   // labels (STUDY_TYPES minus `unknown`), and the 0–5 scale in the prompts must
-  // mirror SCORE_BY_TYPE in src/core/grader.ts — update both together.
+  // mirror DESIGN_TIER in src/core/grader.ts — update both together.
   {
     id: "factual-01",
     category: "factual",
     topics: ["caffeine"],
     prompt:
-      "Classify the study behind PMID 36615805 and give the 0–5 evidence score an evidence-grading tool would assign its design. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — study type: <type> | evidence score: <n>/5`\nwhere <type> is exactly one of: meta-analysis, systematic-review, randomized-controlled-trial, non-randomized-trial, cohort, case-control, cross-sectional, case-report, review, animal-study, in-vitro (listed from highest to lowest evidence). If more than one type applies, give the first one in this list (e.g. a systematic review with a meta-analysis is `meta-analysis`). The score <n> is the integer 0–5 for that design (meta-analysis or systematic-review = 5, randomized-controlled-trial = 4, non-randomized-trial or cohort = 3, case-control or cross-sectional = 2, case-report or review (narrative) = 1, animal-study or in-vitro = 0).",
+      "Classify the study behind PMID 36615805 and give the 0–5 evidence score an evidence-grading tool would assign its design. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — study type: <type> | evidence score: <n>/5`\nwhere <type> is exactly one of: meta-analysis, systematic-review, randomized-controlled-trial, cohort, non-randomized-trial, clinical-trial, observational, case-control, cross-sectional, case-report, review, animal-study, in-vitro (listed from highest to lowest evidence; clinical-trial and observational are for trials and observational studies whose specific design can't be determined). If more than one type applies, give the first one in this list (e.g. a systematic review with a meta-analysis is `meta-analysis`). The score <n> is the integer 0–5 for that design (meta-analysis or systematic-review of randomized trials = 5, and of non-randomized studies the score of the studies it pooled; randomized-controlled-trial = 4; cohort = 3; non-randomized-trial, clinical-trial, observational, case-control or cross-sectional = 2; case-report or review (not systematic) = 1; animal-study or in-vitro = 0).",
     answerKey: {
       kind: "values",
       expected: ["study type: meta-analysis", "evidence score: 5/5"],
-      note: "PMID 36615805 = caffeine/endurance-running systematic review & meta-analysis (NLM PublicationType 'Meta-Analysis'); keywordGrade → meta-analysis, score 5. Verified 2026-07-14; re-verified 2026-10-17 against live PubMed with the current grader.",
+      note: "PMID 36615805 = caffeine/endurance-running systematic review & meta-analysis (NLM PublicationType 'Meta-Analysis'). Its abstract: 'A total of 21 randomized controlled trials were included', so as a meta-analysis of randomized trials it scores 5. classifyArticle labels it meta-analysis but leaves the tier null, because the pooled designs aren't in the metadata. Verified 2026-07-14; re-verified 2026-10-17 against live PubMed.",
     },
     verified: true,
-    answerKeyVersion: 3,
+    answerKeyVersion: 4,
   },
   {
     id: "factual-02",
     category: "factual",
     topics: ["ashwagandha", "withania"],
     prompt:
-      "Classify the study behind PMID 23439798 and give the 0–5 evidence score an evidence-grading tool would assign its design. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — study type: <type> | evidence score: <n>/5`\nwhere <type> is exactly one of: meta-analysis, systematic-review, randomized-controlled-trial, non-randomized-trial, cohort, case-control, cross-sectional, case-report, review, animal-study, in-vitro (listed from highest to lowest evidence). If more than one type applies, give the first one in this list (e.g. a systematic review with a meta-analysis is `meta-analysis`). The score <n> is the integer 0–5 for that design (meta-analysis or systematic-review = 5, randomized-controlled-trial = 4, non-randomized-trial or cohort = 3, case-control or cross-sectional = 2, case-report or review (narrative) = 1, animal-study or in-vitro = 0).",
+      "Classify the study behind PMID 23439798 and give the 0–5 evidence score an evidence-grading tool would assign its design. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — study type: <type> | evidence score: <n>/5`\nwhere <type> is exactly one of: meta-analysis, systematic-review, randomized-controlled-trial, cohort, non-randomized-trial, clinical-trial, observational, case-control, cross-sectional, case-report, review, animal-study, in-vitro (listed from highest to lowest evidence; clinical-trial and observational are for trials and observational studies whose specific design can't be determined). If more than one type applies, give the first one in this list (e.g. a systematic review with a meta-analysis is `meta-analysis`). The score <n> is the integer 0–5 for that design (meta-analysis or systematic-review of randomized trials = 5, and of non-randomized studies the score of the studies it pooled; randomized-controlled-trial = 4; cohort = 3; non-randomized-trial, clinical-trial, observational, case-control or cross-sectional = 2; case-report or review (not systematic) = 1; animal-study or in-vitro = 0).",
     answerKey: {
       kind: "values",
       expected: ["study type: randomized-controlled-trial", "evidence score: 4/5"],
-      note: "PMID 23439798 = Chandrasekhar 2012 ashwagandha stress/anxiety RCT (prospective, randomized, double-blind, placebo-controlled); keywordGrade → randomized-controlled-trial, score 4. Verified 2026-07-14; re-verified 2026-10-17 against live PubMed with the current grader.",
+      note: "PMID 23439798 = Chandrasekhar 2012 ashwagandha stress/anxiety RCT — the abstract describes a 'prospective, randomized, double-blind, placebo-controlled study'. The record has no NLM design metadata (PublicationType 'Journal Article' only, no MeSH), so classifyArticle returns unknown and the model must read the design from the abstract; by the prompt's scale an RCT is 4. Verified 2026-07-14; re-verified 2026-10-17 against live PubMed.",
     },
     verified: true,
-    answerKeyVersion: 3,
+    answerKeyVersion: 4,
   },
   {
     id: "factual-03",
     category: "factual",
     topics: ["coffee", "caffeine"],
     prompt:
-      "Is PMID 22591295 a randomized controlled trial? Determine its actual study design. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — rct: <yes|no> | study type: <type>`\nwhere <type> is exactly one of: meta-analysis, systematic-review, randomized-controlled-trial, non-randomized-trial, cohort, case-control, cross-sectional, case-report, review, animal-study, in-vitro (listed from highest to lowest evidence). If more than one type applies, give the first one in this list (e.g. a systematic review with a meta-analysis is `meta-analysis`).",
+      "Is PMID 22591295 a randomized controlled trial? Determine its actual study design. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — rct: <yes|no> | study type: <type>`\nwhere <type> is exactly one of: meta-analysis, systematic-review, randomized-controlled-trial, cohort, non-randomized-trial, clinical-trial, observational, case-control, cross-sectional, case-report, review, animal-study, in-vitro (listed from highest to lowest evidence; clinical-trial and observational are for trials and observational studies whose specific design can't be determined). If more than one type applies, give the first one in this list (e.g. a systematic review with a meta-analysis is `meta-analysis`).",
     answerKey: {
       kind: "values",
       expected: ["rct: no", "study type: cohort"],
-      note: "PMID 22591295 = Freedman 2012 NEJM 'Association of coffee drinking with total and cause-specific mortality', a prospective cohort of the NIH-AARP study — not an RCT; keywordGrade → cohort, score 3. Verified 2026-07-14; re-verified 2026-10-17 against live PubMed with the current grader.",
+      note: "PMID 22591295 = Freedman 2012 NEJM 'Association of coffee drinking with total and cause-specific mortality', a prospective cohort of the NIH-AARP study — not an RCT. It has no design PublicationType (MeSH lists 'Cohort Studies', but MeSH design headings aren't used), so classifyArticle returns unknown and the model must read the design from the abstract. Verified 2026-07-14; re-verified 2026-10-17 against live PubMed.",
     },
     verified: true,
-    answerKeyVersion: 3,
+    answerKeyVersion: 4,
   },
   {
     id: "factual-04",
@@ -105,7 +108,7 @@ export const QUERIES: BenchmarkQuery[] = [
     answerKey: {
       kind: "values",
       expected: ["pmid: 28202713"],
-      note: "PMID 28202713 = Martineau et al. 2017 BMJ IPD meta-analysis of vitamin D and acute respiratory tract infection (NLM 'Meta-Analysis'); keywordGrade → meta-analysis, score 5. This is the one accepted answer. Verified 2026-07-14; re-verified 2026-10-17 against live PubMed with the current grader.",
+      note: "PMID 28202713 = Martineau et al. 2017 BMJ IPD meta-analysis of vitamin D and acute respiratory tract infection (NLM 'Meta-Analysis'), an IPD meta-analysis of randomised controlled trials. This is the one accepted answer. Verified 2026-07-14; re-verified 2026-10-17 against live PubMed with the current grader.",
     },
     verified: true,
     answerKeyVersion: 2,

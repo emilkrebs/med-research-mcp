@@ -22,6 +22,7 @@ const COLOR: Record<ConditionId, string> = {
   "closed-book": "#E69F00",
   "web-search": "#56B4E9",
   mcp: "#009E73",
+  "mcp-skill": "#CC79A7",
 };
 
 const FALLBACK_COLORS = ["#CC79A7", "#F0E442", "#0072B2", "#D55E00", "#999999"];
@@ -491,7 +492,7 @@ function evidenceHistogram(rows: ScoreRow[]): string {
     .attr("y", 26)
     .attr("font-size", 15)
     .attr("font-weight", 700)
-    .text("Evidence-quality distribution (mean score of cited PMIDs)");
+    .text("Evidence-quality distribution (mean design tier of cited records)");
   yGridAxis(svg, pad, plotW, y, (v) => String(Math.round(v)));
 
   const group = svg
@@ -526,7 +527,7 @@ function evidenceHistogram(rows: ScoreRow[]): string {
     .attr("font-size", 11)
     .attr("text-anchor", "middle")
     .attr("fill", "#666")
-    .text("evidence score bucket (0–5)");
+    .text("design tier bucket (0–5)");
   svg
     .append("line")
     .attr("x1", pad.l)

@@ -1,319 +1,273 @@
 import { describe, it, expect } from "vitest";
-import { gradeText, keywordGrade, SCORE_BY_TYPE } from "../src/core/grader";
-import type { NcbiArticle } from "../src/core/types";
+import { classifyArticle, classifyDesign, DESIGN_TIER, mergeDuplicate, rankKey } from "../src/core/grader";
+import { STUDY_TYPES } from "../src/core/types";
+import type { Correction, NcbiArticle } from "../src/core/types";
 
-describe("gradeText — publication type primary signal", () => {
-  it("trusts a Meta-Analysis publication type", () => {
-    const g = gradeText("Creatine and cognition", "A meta-analysis of 20 randomized trials.", [
-      "Meta-Analysis",
-      "Journal Article",
-    ]);
-    expect(g.studyType).toBe("meta-analysis");
-    expect(g.evidenceScore).toBe(5);
-    // Corroborated by a keyword hit → very high confidence.
-    expect(g.confidence).toBeGreaterThanOrEqual(0.9);
+const pt = (...publicationTypes: string[]) => classifyDesign({ title: "", publicationTypes });
+
+describe("classifyDesign — syntheses rank with what they pooled", () => {
+  it("ranks a network meta-analysis 5: NLM defines it as a meta-analysis of randomized trials", () => {
+    expect(pt("Network Meta-Analysis", "Systematic Review")).toMatchObject({ studyType: "meta-analysis", designTier: 5 });
   });
 
-  it("maps Systematic Review to its own top-tier type", () => {
-    const g = gradeText("Nootropics", "abstract", ["Systematic Review"]);
-    expect(g.studyType).toBe("systematic-review");
-    expect(g.evidenceScore).toBe(5);
+  it("leaves a meta-analysis unrated: its pooled designs are not indexed", () => {
+    // Even with the RCT MeSH heading (absent on most RCT syntheses, so not used).
+    const c = classifyDesign({
+      title: "",
+      publicationTypes: ["Meta-Analysis", "Systematic Review", "Journal Article"],
+      meshHeadings: ["Humans", "Randomized Controlled Trials as Topic"],
+    });
+    expect(c).toMatchObject({ studyType: "meta-analysis", designTier: null, flags: [] });
   });
 
-  it("scores a narrative Review with expert opinion, not with cohorts", () => {
-    const g = gradeText("Overview", "A general overview.", ["Review"]);
-    expect(g.studyType).toBe("review");
-    expect(g.evidenceScore).toBe(1);
+  it("leaves a systematic review unrated", () => {
+    expect(pt("Systematic Review")).toMatchObject({ studyType: "systematic-review", designTier: null });
   });
 
-  it("refines a pre-2019 'Review' tag to systematic review when the abstract says so", () => {
-    const g = gradeText(
-      "Vitamin D and falls: a systematic review",
-      "We systematically searched MEDLINE and pooled 14 randomized trials in adults.",
-      ["Journal Article", "Review"],
-    );
-    expect(g.studyType).toBe("systematic-review");
-    expect(g.evidenceScore).toBe(5);
-    expect(g.confidence).toBeCloseTo(0.8, 5);
-  });
-
-  it("prefers the most specific tag regardless of tag order", () => {
-    const g = gradeText("X", "A systematic review and meta-analysis.", ["Review", "Systematic Review", "Meta-Analysis"]);
-    expect(g.studyType).toBe("meta-analysis");
-  });
-
-  it("treats a veterinary RCT tag as an animal study", () => {
-    const g = gradeText("Dogs", "Dogs were randomized to two diets.", ["Randomized Controlled Trial, Veterinary"]);
-    expect(g.studyType).toBe("animal-study");
-    expect(g.evidenceScore).toBe(0);
-  });
-
-  it("maps Observational Study to cohort even when the abstract mentions randomized trials", () => {
-    // Real failure: an EHR cohort whose abstract compares itself to prior RCTs
-    // ("shown to reduce weight in randomized clinical trials") was misgraded as
-    // an RCT. The curated Observational Study tag must win.
-    const g = gradeText(
-      "Semaglutide vs Tirzepatide for Weight Loss",
-      "Although these drugs were shown to reduce weight in randomized clinical trials, in this cohort study of propensity-matched adults...",
-      ["Journal Article", "Observational Study", "Comparative Study"],
-    );
-    expect(g.studyType).toBe("cohort");
-    expect(g.evidenceScore).toBe(3);
+  it("classifies a synthesis as such even when it carries the designs it pooled", () => {
+    expect(pt("Review", "Systematic Review", "Meta-Analysis", "Randomized Controlled Trial").studyType).toBe("meta-analysis");
   });
 });
 
-describe("gradeText — keyword fallback and confidence", () => {
-  it("classifies an RCT from keywords with confidence capped below curated tags", () => {
-    const g = gradeText(
-      "Creatine and memory",
-      "In this double-blind, placebo-controlled randomized trial, 40 participants were enrolled.",
-      [],
+describe("classifyDesign — primary designs from publication types", () => {
+  it("ranks a randomized controlled trial 4", () => {
+    expect(pt("Randomized Controlled Trial", "Journal Article")).toMatchObject({
+      studyType: "randomized-controlled-trial",
+      designTier: 4,
+    });
+  });
+
+  it("matches tags case-insensitively", () => {
+    expect(pt("randomized controlled trial").studyType).toBe("randomized-controlled-trial");
+  });
+
+  it("treats an equivalence trial as an RCT (it sits under RCT in the MeSH tree)", () => {
+    expect(pt("Equivalence Trial").studyType).toBe("randomized-controlled-trial");
+  });
+
+  it("does not assume a pragmatic trial is randomized (MeSH 2026 moved it under Clinical Trial)", () => {
+    expect(pt("Pragmatic Clinical Trial")).toMatchObject({ studyType: "clinical-trial", designTier: 2 });
+    expect(pt("Pragmatic Clinical Trial", "Randomized Controlled Trial").studyType).toBe("randomized-controlled-trial");
+  });
+
+  it("ranks a controlled clinical trial 2: NLM's definition allows historical controls", () => {
+    expect(pt("Controlled Clinical Trial")).toMatchObject({ studyType: "non-randomized-trial", designTier: 2 });
+  });
+
+  it("labels generic and phase trial tags clinical-trial: randomization and control are not indexed", () => {
+    expect(pt("Clinical Trial")).toMatchObject({ studyType: "clinical-trial", designTier: 2 });
+    expect(pt("Clinical Trial, Phase I").studyType).toBe("clinical-trial");
+  });
+
+  it("lets the most specific trial tag win over its MeSH-tree parents and phases", () => {
+    expect(pt("Clinical Trial, Phase III", "Clinical Trial", "Randomized Controlled Trial").studyType).toBe(
+      "randomized-controlled-trial",
     );
-    expect(g.studyType).toBe("randomized-controlled-trial");
-    expect(g.evidenceScore).toBe(4);
-    expect(g.confidence).toBeCloseTo(0.8, 5);
+    expect(pt("Clinical Trial", "Controlled Clinical Trial").studyType).toBe("non-randomized-trial");
   });
 
-  it("gives a single weak cue low confidence", () => {
-    const g = gradeText("Outcomes after surgery", "A retrospective analysis of outcomes.", []);
-    expect(g.studyType).toBe("cohort");
-    expect(g.confidence).toBeLessThan(0.5);
+  it("labels an Observational Study tag observational, ranked at its lower bound", () => {
+    expect(pt("Observational Study")).toMatchObject({ studyType: "observational", designTier: 2 });
   });
 
-  it("classifies a case report", () => {
-    const g = gradeText("A case report", "We present a case report of a rare reaction.", []);
-    expect(g.studyType).toBe("case-report");
-    expect(g.evidenceScore).toBe(1);
+  it("takes the lower design when trial and observational tags conflict", () => {
+    // Mostly observational analyses of trial cohorts.
+    expect(pt("Randomized Controlled Trial", "Observational Study").studyType).toBe("observational");
   });
 
-  it("routes systematic review to its own type, not plain review", () => {
-    const g = gradeText("Title", "We conducted a systematic review of trials.", []);
-    expect(g.studyType).toBe("systematic-review");
+  it("keeps a case report with a literature review a case report", () => {
+    expect(pt("Case Reports", "Review")).toMatchObject({ studyType: "case-report", designTier: 1 });
   });
 
-  it("keeps a systematic review without pooling out of the meta-analysis type", () => {
-    const g = gradeText("Title", "A systematic review; meta-analysis was not possible due to heterogeneity.", []);
-    expect(g.studyType).toBe("systematic-review");
+  it("ranks review articles 1: NLM's Review tag covers narrative and untagged systematic reviews alike", () => {
+    expect(pt("Review")).toMatchObject({ studyType: "review", designTier: 1 });
+    expect(pt("Scoping Review").studyType).toBe("review");
   });
 
-  it("classifies a prospective cohort", () => {
-    const g = gradeText("Diet study", "A prospective cohort study with 10-year follow-up.", []);
-    expect(g.studyType).toBe("cohort");
-    expect(g.evidenceScore).toBe(3);
-  });
-
-  it("classifies a cross-sectional study", () => {
-    const g = gradeText("Vitamin D status", "This cross-sectional study used NHANES data from 5000 adults.", []);
-    expect(g.studyType).toBe("cross-sectional");
-    expect(g.evidenceScore).toBe(2);
-  });
-
-  it("returns unknown when nothing matches and says it is unclassified, not weak", () => {
-    const g = gradeText("Some title", "An abstract with no study-design cues at all.", []);
-    expect(g.studyType).toBe("unknown");
-    expect(g.evidenceScore).toBe(0);
-    expect(g.limitations?.some((l) => /unclassified/i.test(l))).toBe(true);
+  it("treats veterinary trial and observational tags as animal studies", () => {
+    expect(pt("Randomized Controlled Trial, Veterinary")).toMatchObject({ studyType: "animal-study", designTier: 0 });
+    expect(pt("Observational Study, Veterinary").studyType).toBe("animal-study");
   });
 });
 
-describe("gradeText — no optimistic bias from other studies' designs", () => {
-  it("honours 'non-randomized'", () => {
-    const g = gradeText("Ketones and cognition", "In this non-randomized controlled trial, 30 adults received ketone esters.", []);
-    expect(g.studyType).toBe("non-randomized-trial");
-    expect(g.evidenceScore).toBe(3);
+describe("classifyDesign — what it deliberately does not use", () => {
+  it("does not read design from MeSH headings (NEJM coffee cohort, PMID 22591295, stays unknown)", () => {
+    const c = classifyDesign({
+      title: "Association of coffee drinking with total and cause-specific mortality",
+      publicationTypes: ["Journal Article", "Research Support, N.I.H., Intramural"],
+      meshHeadings: ["Aged", "Coffee", "Cohort Studies", "Follow-Up Studies", "Humans", "Male"],
+    });
+    expect(c).toMatchObject({ studyType: "unknown", designTier: null });
   });
 
-  it("honours non-English negated randomization", () => {
-    const g = gradeText("Estudo", "Ensaio clínico não randomizado com 40 pacientes.", [], "pt");
-    expect(g.studyType).toBe("non-randomized-trial");
+  it("does not narrow an Observational Study tag with MeSH design headings", () => {
+    const c = classifyDesign({ title: "", publicationTypes: ["Observational Study"], meshHeadings: ["Cohort Studies"] });
+    expect(c.studyType).toBe("observational");
   });
 
-  it("ignores 'further RCTs are needed' in a cohort abstract", () => {
-    const g = gradeText(
-      "Coffee and mortality",
-      "We followed 10 000 adults in a prospective cohort. Coffee intake was associated with lower mortality. Further randomized controlled trials are needed.",
-      [],
-    );
-    expect(g.studyType).toBe("cohort");
-  });
-
-  it("ignores meta-analyses cited in the background of an RCT", () => {
-    const g = gradeText(
-      "Magnesium and sleep",
-      "Previous meta-analyses have shown mixed results. We randomly assigned 80 adults to magnesium or placebo.",
-      [],
-    );
-    expect(g.studyType).toBe("randomized-controlled-trial");
-  });
-
-  it("does not read an institutional review board as a review", () => {
-    const g = gradeText(
-      "Sleep outcomes",
-      "The institutional review board approved this prospective cohort study of 200 patients.",
-      [],
-    );
-    expect(g.studyType).toBe("cohort");
-  });
-
-  it("classifies a narrative review of meta-analyses as a review", () => {
-    const g = gradeText(
-      "Creatine: a narrative review",
-      "In this narrative review we summarize meta-analyses and RCTs on creatine.",
-      [],
-    );
-    expect(g.studyType).toBe("review");
-    expect(g.evidenceScore).toBe(1);
-  });
-
-  it("resolves equal keyword evidence to the lower tier", () => {
-    // One weak cross-sectional cue ("survey") vs one weak cohort cue ("longitudinal").
-    const g = gradeText("Diet", "A longitudinal survey of diet.", []);
-    expect(g.studyType).toBe("cross-sectional");
-  });
-
-  it("keeps an Observational Study tag even when the abstract says randomized", () => {
-    const g = gradeText("Secondary data", "Data came from a randomized controlled trial.", ["Observational Study"]);
-    expect(g.studyType).toBe("cohort");
+  it("ignores design words in the title", () => {
+    expect(classifyDesign({ title: "A randomized controlled trial of creatine", publicationTypes: ["Journal Article"] })).toMatchObject({
+      studyType: "unknown",
+      designTier: null,
+    });
   });
 });
 
-describe("gradeText — known weaknesses are damped", () => {
-  it("downgrades animal keywords when human terms are present", () => {
-    const g = gradeText(
-      "Translational work",
-      "A murine model in mice informs treatment of human patients.",
-      [],
-    );
-    expect(g.studyType).not.toBe("animal-study");
+describe("classifyDesign — integrity flags", () => {
+  const title = (t: string, publicationTypes: string[] = []) => classifyDesign({ title: t, publicationTypes });
+  const withLinks = (types: Correction["type"][], publicationTypes = ["Randomized Controlled Trial"]) =>
+    classifyDesign({ title: "", publicationTypes, corrections: types.map((type) => ({ type, id: "1" })) });
+
+  it("zeroes a retracted publication and keeps its design label", () => {
+    expect(pt("Randomized Controlled Trial", "Retracted Publication")).toMatchObject({
+      studyType: "randomized-controlled-trial",
+      designTier: 0,
+      flags: ["retracted"],
+    });
   });
 
-  it("keeps animal-study when no human terms appear", () => {
-    const g = gradeText("Obesity", "Effects in a murine model; mice were used.", []);
-    expect(g.studyType).toBe("animal-study");
-    expect(g.evidenceScore).toBe(0);
+  it("zeroes a record linked to a retraction notice even without the tag", () => {
+    expect(withLinks(["RetractionIn"])).toMatchObject({ designTier: 0, flags: ["retracted"] });
   });
 
-  it("recognizes singular 'mouse' as an animal study", () => {
-    // "mouse oocytes" was slipping through to unknown because only \bmice\b matched.
-    const g = gradeText("Epitalon and aging", "Epitalon protects mouse oocytes in vitro.", []);
-    expect(g.studyType).toBe("animal-study");
-    expect(g.evidenceScore).toBe(0);
+  it("zeroes a publisher-marked retracted title, but not a retraction notice's title", () => {
+    expect(title("RETRACTED: Creatine and cognition").flags).toEqual(["retracted"]);
+    expect(title("[Retracted] Knockdown of lncRNA CCEPR suppresses colorectal cancer progression.").flags).toEqual(["retracted"]);
+    // PMID 42183850 (Springer prefix), tagged only Journal Article + Review.
+    expect(title("RETRACTED ARTICLE: Interventions for Clitoral Adhesions/Phimosis in Adult Women", ["Journal Article", "Review"]))
+      .toMatchObject({ studyType: "review", designTier: 0, flags: ["retracted"] });
+    expect(title("Retraction notice to: Creatine and cognition").flags).toEqual([]);
   });
 
-  it("classifies a randomized mouse experiment as an animal study", () => {
-    const g = gradeText("NMN and endurance", "Mice were randomized to NMN or vehicle for 8 weeks.", []);
-    expect(g.studyType).toBe("animal-study");
-    expect(g.evidenceScore).toBe(0);
+  it("does not read a title that merely starts with the word 'retracted' as a retraction", () => {
+    // PMID 42218886 and 42312980: neither is retracted.
+    expect(title("Retracted evidence and emerging insights: an updated meta-analysis of probiotics supplementation", ["Meta-Analysis"]))
+      .toMatchObject({ studyType: "meta-analysis", designTier: null, flags: [] });
+    expect(title("Retracted publications in medical journals: a cross-sectional, cross-disciplinary analysis.").flags).toEqual([]);
   });
 
-  it("classifies work on human cell lines as in vitro", () => {
-    const g = gradeText("Berberine", "Human hepatoma cell lines were treated with berberine in vitro.", []);
-    expect(g.studyType).toBe("in-vitro");
+  it("flags a notice with a 'RETRACTED:' title as a notice only — the notice itself is not retracted", () => {
+    // PMID 42886069 (MDPI retraction notice).
+    expect(title("RETRACTED: Atta et al. Synthesis of Silver Nanoparticles by Green Method", ["Journal Article", "Retraction Notice"]))
+      .toMatchObject({ designTier: 0, flags: ["notice"] });
   });
 
-  it("does not treat 'topical' as Italian for mice", () => {
-    const g = gradeText("Crema", "Applicazione topical di una crema.", [], "it");
-    expect(g.studyType).not.toBe("animal-study");
-  });
-});
-
-describe("gradeText — rating down (never up)", () => {
-  it("zeroes a protocol and flags it", () => {
-    const g = gradeText(
-      "Study protocol for a randomized trial",
-      "We will randomize 100 patients to two arms.",
-      [],
-    );
-    expect(g.studyType).toBe("randomized-controlled-trial");
-    expect(g.evidenceScore).toBe(0);
-    expect(g.scoreAdjustments?.[0]?.reason).toMatch(/protocol/i);
-    expect(g.confidence).toBeLessThanOrEqual(0.4);
-    expect(g.limitations?.some((l) => /protocol|future-tense/i.test(l))).toBe(true);
+  it("zeroes notices: retraction notices (current and pre-2025 name), expressions of concern, errata", () => {
+    for (const notice of ["Retraction Notice", "Retraction of Publication", "Expression of Concern", "Published Erratum"]) {
+      expect(pt(notice, "Journal Article")).toMatchObject({ designTier: 0, flags: ["notice"] });
+    }
   });
 
-  it("does not treat 'the study protocol was approved' in a completed trial as a protocol", () => {
-    const g = gradeText(
-      "Zinc and colds",
-      "The study protocol was approved by the ethics committee. Adults were randomly assigned to zinc or placebo.",
-      ["Randomized Controlled Trial"],
-    );
-    expect(g.evidenceScore).toBe(4);
-    expect(g.scoreAdjustments).toBeUndefined();
+  it("zeroes a retracted record of unknown design rather than leaving it unrated", () => {
+    expect(pt("Retracted Publication", "Journal Article")).toMatchObject({ studyType: "unknown", designTier: 0 });
   });
 
-  it("zeroes a retracted publication", () => {
-    const g = gradeText("Creatine RCT", "A randomized trial.", ["Randomized Controlled Trial", "Retracted Publication"]);
-    expect(g.evidenceScore).toBe(0);
-    expect(g.scoreAdjustments?.[0]?.delta).toBe(-4);
+  it("zeroes trial protocols, editorials and comments", () => {
+    expect(pt("Clinical Trial Protocol", "Randomized Controlled Trial")).toMatchObject({ designTier: 0, flags: ["protocol"] });
+    expect(pt("Editorial").designTier).toBe(0);
+    expect(pt("Comment", "Review").flags).toEqual(["editorial"]);
   });
 
-  it("zeroes editorials and comments", () => {
-    const g = gradeText("On the new RCT", "This randomized trial is important.", ["Comment"]);
-    expect(g.evidenceScore).toBe(0);
+  it("warns of an expression of concern, an erratum and a newer version without changing the tier", () => {
+    expect(withLinks(["ExpressionOfConcernIn", "ErratumIn", "UpdateIn"])).toMatchObject({
+      designTier: 4,
+      flags: ["expression-of-concern", "corrected", "updated"],
+    });
   });
 
-  it("rates down a pilot trial by one step", () => {
-    const g = gradeText("A pilot randomized controlled trial of ashwagandha", "Adults were randomly assigned.", []);
-    expect(g.studyType).toBe("randomized-controlled-trial");
-    expect(g.evidenceScore).toBe(3);
-    expect(g.scoreAdjustments?.[0]?.reason).toMatch(/pilot/i);
+  it("warns of animals-not-humans indexing but keeps the tier: automated indexing drops Humans from human trials", () => {
+    const c = classifyDesign({ title: "", publicationTypes: ["Randomized Controlled Trial"], meshHeadings: ["Animals", "Rats"] });
+    expect(c).toMatchObject({ studyType: "randomized-controlled-trial", designTier: 4, flags: ["animals-not-humans"] });
   });
 
-  it("does not rate down a full trial that merely cites an earlier pilot", () => {
-    const g = gradeText("Ashwagandha and stress", "A previous pilot study informed this trial. Adults were randomly assigned.", []);
-    expect(g.evidenceScore).toBe(4);
+  it("never labels a record an animal study from MeSH alone", () => {
+    const c = classifyDesign({ title: "", publicationTypes: [], meshHeadings: ["Animals", "Mice"] });
+    expect(c).toMatchObject({ studyType: "unknown", designTier: null, flags: ["animals-not-humans"] });
   });
 
-  it("rates down a meta-analysis of observational studies only", () => {
-    const g = gradeText(
-      "Coffee and diabetes: a meta-analysis",
-      "We pooled 30 prospective cohort studies including 1.1 million participants.",
-      ["Meta-Analysis"],
-    );
-    expect(g.studyType).toBe("meta-analysis");
-    expect(g.evidenceScore).toBe(4);
+  it("does not warn when Humans is indexed too, or when a veterinary tag already says animal", () => {
+    expect(classifyDesign({ title: "", publicationTypes: ["Clinical Trial"], meshHeadings: ["Animals", "Humans"] }).flags).toEqual([]);
+    expect(
+      classifyDesign({ title: "", publicationTypes: ["Clinical Trial, Veterinary"], meshHeadings: ["Animals", "Dogs"] }).flags,
+    ).toEqual([]);
   });
 
-  it("zeroes a meta-analysis of animal studies", () => {
-    const g = gradeText("Rapamycin lifespan: a meta-analysis", "We pooled 29 studies in mice and rats.", ["Meta-Analysis"]);
-    expect(g.evidenceScore).toBe(0);
-  });
-
-  it("never changes the score for a non-English source", () => {
-    const en = gradeText("A randomized controlled trial", "Adults were randomly assigned.", []);
-    const es = gradeText("Ensayo clínico aleatorizado", "Los pacientes fueron asignados de forma aleatorizada.", [], "es");
-    expect(es.evidenceScore).toBe(en.evidenceScore);
+  it("notes preprints and letters without changing the tier", () => {
+    expect(pt("Preprint")).toMatchObject({ designTier: null, flags: ["preprint"] });
+    expect(pt("Letter", "Randomized Controlled Trial")).toMatchObject({ designTier: 4, flags: ["letter"] });
   });
 });
 
-describe("gradeText — extraction and title-only", () => {
-  it("caps confidence and flags a title-only grade", () => {
-    const g = gradeText("A randomized controlled trial of creatine", undefined, []);
-    expect(g.studyType).toBe("randomized-controlled-trial");
-    expect(g.confidence).toBeLessThanOrEqual(0.5);
-    expect(g.limitations?.some((l) => /title only/i.test(l))).toBe(true);
-  });
-
-  it("extracts a dosage when present", () => {
-    const g = gradeText("Dose study", "Participants took 5 g of creatine daily.", ["Review"]);
-    expect(g.dosage).toMatch(/5\s?g/i);
+describe("classifyDesign — no metadata", () => {
+  it("returns unknown with a null tier, not a weak one", () => {
+    expect(pt()).toEqual({ studyType: "unknown", designTier: null, flags: [] });
   });
 });
 
-describe("keywordGrade — article integration", () => {
-  it("merges grade fields and marks the method", () => {
-    const article: NcbiArticle = {
-      pmid: "123",
-      title: "Creatine RCT",
-      abstract: "A randomized controlled trial in adults.",
-      authors: ["Doe J"],
-      journal: "J Test",
-      pubDate: "2021",
-      publicationTypes: ["Randomized Controlled Trial"],
-    };
-    const graded = keywordGrade(article);
-    expect(graded.pmid).toBe("123");
-    expect(graded.studyType).toBe("randomized-controlled-trial");
-    expect(graded.evidenceScore).toBe(SCORE_BY_TYPE["randomized-controlled-trial"]);
+describe("classifyArticle / rankKey / DESIGN_TIER", () => {
+  const base: NcbiArticle = {
+    pmid: "1",
+    title: "Creatine and cognition",
+    abstract: "A randomized controlled trial in 40 adults.",
+    authors: ["Doe J"],
+    journal: "J Test",
+    pubDate: "2021",
+    publicationTypes: ["Randomized Controlled Trial"],
+  };
+
+  it("adds the classification and keeps every article field", () => {
+    const g = classifyArticle(base);
+    expect(g).toMatchObject({ ...base, studyType: "randomized-controlled-trial", designTier: 4 });
+    expect(g).not.toHaveProperty("flags");
+  });
+
+  it("includes flags only when some apply", () => {
+    expect(classifyArticle({ ...base, publicationTypes: ["Preprint"] }).flags).toEqual(["preprint"]);
+  });
+
+  it("sorts known tiers 2–5 first, then unknown tiers, then tiers 1 and 0", () => {
+    const rank = (publicationTypes: string[]) => rankKey(classifyArticle({ ...base, publicationTypes }));
+    expect(rank(["Observational Study"])).toBeGreaterThan(rank(["Meta-Analysis"]));
+    expect(rank(["Meta-Analysis"])).toBe(rank([]));
+    expect(rank([])).toBeGreaterThan(rank(["Review"]));
+    expect(rank(["Review"])).toBeGreaterThan(rank(["Retracted Publication"]));
+  });
+
+  describe("mergeDuplicate (two records of one paper)", () => {
+    const rct = classifyArticle(base);
+    const retracted = classifyArticle({ ...base, publicationTypes: ["Randomized Controlled Trial", "Retracted Publication"] });
+
+    it("keeps the higher-ranked copy, the first on a tie", () => {
+      const review = classifyArticle({ ...base, pmid: "2", publicationTypes: ["Review"] });
+      expect(mergeDuplicate(review, rct)).toBe(rct);
+      expect(mergeDuplicate(rct, { ...rct, pmid: "2" })).toBe(rct);
+    });
+
+    it("carries a retraction from either copy over to the kept one and zeroes its tier", () => {
+      for (const merged of [mergeDuplicate(rct, retracted), mergeDuplicate(retracted, rct)]) {
+        expect(merged).toMatchObject({ studyType: "randomized-controlled-trial", designTier: 0, flags: ["retracted"] });
+      }
+    });
+
+    it("carries paper-level warnings without touching the tier", () => {
+      const concern = classifyArticle({ ...base, corrections: [{ type: "ExpressionOfConcernIn" }, { type: "ErratumIn" }] });
+      const unknown = classifyArticle({ ...base, pmid: "C1", publicationTypes: [] });
+      expect(mergeDuplicate(unknown, concern)).toMatchObject({
+        pmid: "1",
+        designTier: 4,
+        flags: ["expression-of-concern", "corrected"],
+      });
+    });
+
+    it("does not carry record-level flags such as preprint", () => {
+      const preprint = classifyArticle({ ...base, pmid: "P1", publicationTypes: ["Preprint"] });
+      expect(mergeDuplicate(preprint, rct)).toBe(rct);
+    });
+  });
+
+  it("orders STUDY_TYPES by tier, so 'first type in the list' means 'highest tier'", () => {
+    const tiers = STUDY_TYPES.filter((t) => t !== "unknown").map((t) => DESIGN_TIER[t]);
+    expect(tiers).toEqual([...tiers].sort((a, b) => b - a));
+    for (const tier of tiers) expect(tier >= 0 && tier <= 5).toBe(true);
   });
 });
