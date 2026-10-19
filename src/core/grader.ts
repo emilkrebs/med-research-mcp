@@ -75,7 +75,8 @@ type Design = Exclude<StudyType, "unknown">;
  * gives a synthesis 5 only when that is known, otherwise null (see header).
  */
 export const DESIGN_TIER: Record<Design, number> = {
-  // Level 1: "Systematic review of randomized trials or n-of-1 trials".
+  // Level 1: "Systematic review of randomized trials or n-of-1 trials", meant as "either N-of-1
+  // randomized trials or systematic reviews of randomized trials" (OCEBM page, checked 2026-10-19).
   "meta-analysis": 5,
   "systematic-review": 5,
   // Level 2: "Randomized trial".

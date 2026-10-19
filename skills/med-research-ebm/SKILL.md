@@ -6,9 +6,10 @@ description: Load ONLY when critically appraising a study or deciding whether a 
 # EBM critical appraisal — the `med-research-ebm` reference
 
 The `designTier` orients you; evidence-based medicine tells you what to actually
-trust. Run a pivotal paper through these lenses **only when it is about to drive a
-real decision** (a dose, a "should I take X", a clinical claim). For routine
-searches and lookups, stay in the lean `med-research` workflow — don't load this.
+trust. Run a pivotal paper through these lenses **only when a conclusion will rest
+on it** (a claim about a dose, an effect size or an outcome the user wants to rely
+on). For routine searches and lookups, stay in the lean `med-research` workflow —
+don't load this.
 Numbers in brackets refer to the references at the end.
 
 ## Frame the question with PICO(S)
@@ -31,13 +32,15 @@ The best design depends on the question. The OCEBM 2011 levels [1], level 1 firs
 
 | Question | Level 1 | Level 2 | Level 3 | Level 4 |
 |---|---|---|---|---|
-| Does this intervention help? | systematic review of randomized trials or n-of-1 trials | randomized trial, or observational study with dramatic effect | non-randomized controlled cohort/follow-up study | case series, case-control or historically controlled studies |
+| Does this intervention help? | systematic review of randomized trials, or an n-of-1 trial | randomized trial, or observational study with dramatic effect | non-randomized controlled cohort/follow-up study | case series, case-control or historically controlled studies |
 | What are the harms? | systematic review of randomized trials, or n-of-1 trial (common harms also: systematic review of nested case-control studies, or observational study with dramatic effect) | randomized trial, or (exceptionally) observational study with dramatic effect | non-randomized controlled cohort/follow-up (post-marketing surveillance), with enough numbers and follow-up | case series, case-control or historically controlled studies |
 | Prognosis (what happens without treatment)? | systematic review of inception cohorts | inception cohort | cohort study or control arm of a randomized trial | case series, case-control, or poor-quality cohort |
 | Is this test accurate? | systematic review of cross-sectional studies with a consistent reference standard and blinding | individual such cross-sectional study | non-consecutive studies, or no consistent reference standard | case-control studies, or a poor or non-independent reference standard |
 
-Level 5 is mechanism-based reasoning (none is listed for prognosis). The tool's
-`designTier` follows the first row. A systematic review ranks with the studies it
+Level 5 is mechanism-based reasoning (none is listed for prognosis). The table
+says "systematic review of randomized trials or n-of-1 trials" for level 1; OCEBM
+states the intended reading is "either N-of-1 randomized trials or systematic
+reviews of randomized trials" [1]. The tool's `designTier` follows the first row. A systematic review ranks with the studies it
 pooled: a meta-analysis of cohort studies sits at the cohort level, not level 1.
 OCEBM grades a level down for poor quality, imprecision, indirectness,
 inconsistency or a very small absolute effect, and up for a large effect [1].
@@ -56,8 +59,8 @@ Match the appraisal tool to the design rather than applying one checklist to eve
 - **Case reports** — the **CARE** reporting guideline [13].
 
 Generic red flags across all designs: lack of randomization, unblinded subjective
-outcomes (placebo responses are real for patient-reported outcomes such as pain
-and nausea [14]), post-hoc subgroup "discoveries", per-protocol instead of
+outcomes (placebo interventions can influence patient-reported outcomes such as
+pain and nausea [14]), post-hoc subgroup "discoveries", per-protocol instead of
 intention-to-treat analysis, and outcome switching versus the registered protocol.
 
 ## Statistics: effect size and clinical significance
@@ -83,8 +86,9 @@ intention-to-treat analysis, and outcome switching versus the registered protoco
 Observational studies show association, not causation. For causal claims weigh the
 **Bradford Hill considerations** [24]: strength, consistency, specificity,
 temporality, biological gradient, plausibility, coherence, experiment, analogy.
-Use them to weigh the evidence, not as a checklist to tick off. Temporality
-(exposure before outcome) is required by definition. **Confounding by indication** and **reverse
+Use them to weigh the evidence, not as a checklist to tick off: Hill held that
+none of them is a sine qua non [24]. Only temporality (exposure before outcome)
+follows from what a cause is, so check it every time. **Confounding by indication** and **reverse
 causation** are the usual suspects in pharmaco-epidemiology. **Mendelian
 randomization** [25] and natural experiments can strengthen causal inference
 where RCTs are unethical or impractical.
@@ -94,9 +98,9 @@ where RCTs are unethical or impractical.
 A trial that is internally perfect but run on the wrong population does not answer
 your question [26]. Ask:
 
-- Does the study population match the patient (age, sex, comorbidity, disease severity, setting)?
+- Does the study population match the population in the question (age, sex, comorbidity, disease severity, setting)?
 - Is the intervention realistic (dose, formulation, duration, adherence, setting, cost)?
-- Are the outcomes the ones the patient cares about, measured at a meaningful time point?
+- Are the outcomes patient-important ones, measured at a meaningful time point?
 - Is the comparator current standard of care — or a straw man?
 
 ## Bias beyond the single study
@@ -118,7 +122,7 @@ actual patients.
 
 > A claim is trustworthy enough to act on when it comes from a pre-registered,
 > well-powered, low-risk-of-bias study (or better, a consistent, low-heterogeneity
-> meta-analysis of such studies), in a population matching the patient, with a
+> meta-analysis of such studies), in a population matching the question, with a
 > patient-important outcome, a clinically meaningful effect size and tight CI,
 > replicated by an independent non-conflicted group, and the benefit outweighs the
 > harms and costs in that context. Anything less is a graded hypothesis, not a fact.
@@ -130,9 +134,9 @@ actual patients.
 3. **Rate down what the tier can't see.** Pilot/feasibility trials, post-hoc or subgroup analyses, syntheses of observational-only or animal studies, single-centre or tiny samples, surrogate outcomes — each lowers certainty below the design's tier.
 4. **Population match.** Read who was studied (age, sex, ancestry, disease, setting) in the abstract. A study on healthy 20-year-olds is not directly applicable to 60-year-olds with hypertension.
 5. **Dosage.** Read the dose, formulation and duration from the abstract or full text; confirm units.
-6. **Database source.** ChinaXiv/RussiaRxiv and non-MEDLINE records carry no NLM labels. If one looks pivotal, fetch the full text before relying on it.
+6. **Database source.** ChinaXiv/RussiaRxiv and non-MEDLINE records carry no NLM labels. ChinaXiv/RussiaRxiv text is a machine translation (`machine-translated`), and most RussiaRxiv abstracts were written by the database (`machine-generated-abstract`). If one looks pivotal, read the original record (`originalUrl`) before relying on it; for other non-MEDLINE records, fetch the full text.
 7. **Fetch the abstract.** When in doubt, call `literature_fetch` with the PMID/id. Read the **Methods** and **Results** sections.
-8. **Fetch the full text.** For papers about to drive a dose or clinical decision, call `literature_fulltext`. Check methods, sample size, statistical power, effect size, and confounders.
+8. **Fetch the full text.** For papers whose doses or effects you will report, call `literature_fulltext`. Check methods, sample size, statistical power, effect size, and confounders.
 
 ## References
 
@@ -152,7 +156,7 @@ actual patients.
 14. Hróbjartsson A, Gøtzsche PC. Placebo interventions for all clinical conditions. Cochrane Database Syst Rev 2010;CD003974. PMID 20091554
 15. Altman DG, Bland JM. Absence of evidence is not evidence of absence. BMJ 1995;311:485. PMID 7647644
 16. Jaeschke R, Singer J, Guyatt GH. Measurement of health status: ascertaining the minimal clinically important difference. Control Clin Trials 1989;10:407-15. PMID 2691207
-17. Cohen J. Statistical Power Analysis for the Behavioral Sciences. 2nd ed. Hillsdale, NJ: Lawrence Erlbaum; 1988
+17. Cohen J. Statistical Power Analysis for the Behavioral Sciences. 2nd ed. Hillsdale, NJ: Lawrence Erlbaum; 1988. Summarized in Cohen J. A power primer. Psychol Bull 1992;112:155-9 (PMID 19565683), Table 1
 18. Ciani O, et al. Comparison of treatment effect sizes associated with surrogate and final patient relevant outcomes in randomised controlled trials: meta-epidemiological study. BMJ 2013;346:f457. PMID 23360719
 19. Deeks JJ, et al. Cochrane Handbook version 6.5, 2024, chapter 10. https://www.cochrane.org/authors/handbooks-and-manuals/handbook/current/chapter-10
 20. Riley RD, et al. Interpretation of random effects meta-analyses. BMJ 2011;342:d549. PMID 21310794
