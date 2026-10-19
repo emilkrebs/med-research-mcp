@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="mcpb/icon.png" alt="med-research-mcp icon" width="120" height="120">
+  <img src="https://raw.githubusercontent.com/emilkrebs/med-research-mcp/main/mcpb/icon.png" alt="med-research-mcp icon" width="120" height="120">
 </p>
 
 <h1 align="center">med-research-mcp</h1>
@@ -9,57 +9,63 @@
 </p>
 
 <p align="center">
-  <a href="#hosted-instance">Hosted instance</a> ·
   <a href="#install">Install</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#tools">Tools</a> ·
   <a href="#agent-skills">Skills</a> ·
-  <a href="#medical-disclaimer">Disclaimer</a>
+  <a href="#documentation">Docs</a> ·
+  <a href="#medical-disclaimer">Disclaimer</a> ·
+  <a href="#data-sources-and-copyright">Data sources</a>
 </p>
 
-`med-research-mcp` searches PubMed, Europe PMC, ChinaXiv and RussiaRxiv and labels every result with its study design, so an AI agent (or a human) can tell a meta-analysis from a case report at a glance. Labels come from NLM metadata, are ranked in the evidence hierarchy, and flag retractions and other integrity notices. Appraising the paper itself (reading the abstract, rating down, judging applicability) is left to the model, guided by the bundled [skills](#agent-skills). It's built for medical, clinical and supplementation research, where "what does the evidence actually say" matters more than a raw list of abstracts.
+`med-research-mcp` is an [MCP](https://modelcontextprotocol.io) server that lets an AI assistant search PubMed, Europe PMC, ChinaXiv and RussiaRxiv, and tells it what kind of study each result is. The assistant can then tell a meta-analysis from a case report, and a retracted paper from a sound one, before it answers. It's built for medical, clinical and supplementation research, where "what does the evidence actually say" matters more than a list of abstracts.
 
-- **Four databases in one call**, merged and de-duplicated by DOI.
-- **Study-design labels from NLM metadata**: a `studyType`, a 0–5 `designTier` based on the OCEBM 2011 levels, and `flags` for retractions, expressions of concern, errata and more. No keyword guessing: a record without metadata says `unknown`.
-- **Full text when the abstract isn't enough**, via Unpaywall, an institutional proxy or the DOI.
-- **Cheap**: search makes no LLM calls, and results are cached.
-- **Agent skills** that teach the model to write precise queries, read the labels and appraise evidence.
-
-It's an open-source tool, used in professional research work: a TypeScript library (`core/`) with a thin [MCP](https://modelcontextprotocol.io) stdio server on top, plus a `.mcpb` bundle for one-click install in Claude Desktop. The library has no MCP dependency and can be embedded directly in other projects.
+- **Four databases in one search**, merged and de-duplicated.
+- **Study-design labels from NLM metadata**: each result says what kind of study it is, where that design ranks in the evidence hierarchy, and whether it was retracted or corrected. No guessing: a record without metadata says `unknown`.
+- **Full text when the abstract isn't enough**, through open access, your institution's proxy, or the DOI.
+- **Agent skills** that teach the assistant to write precise queries, read the labels and appraise evidence.
+- **No LLM calls, no accounts, no telemetry.** It runs on your machine.
 
 > [!IMPORTANT]
-> This is a research aid, not a diagnostic tool. See [Medical disclaimer](#medical-disclaimer).
+> This is a research aid, not medical advice and not a diagnostic tool. Don't put anything that identifies a patient into a query: queries are sent to the databases listed under [Privacy](#privacy). See the [medical disclaimer](#medical-disclaimer).
 
-## Hosted instance
+## Install
 
-No public instance is running yet. The HTTP entry is self-hostable; see [docs/hosting.md](docs/hosting.md#deploy) for a deployment walkthrough. Once it is reachable, point your MCP client at it:
+You need [Node.js](https://nodejs.org) 22.22.2 or later on 22, 24.15.0 or later on 24, or 26+. The server runs straight from npm, so there's nothing to clone or build. In the examples, replace `you@example.com` with your email (see [Configuration](#configuration)).
+
+### Claude Code
+
+```bash
+claude mcp add med-research-mcp -s user \
+  -e NCBI_EMAIL=you@example.com \
+  -- npx -y med-research-mcp
+```
+
+`-s user` makes it available in all your projects. `claude mcp get med-research-mcp` checks the connection; the tools appear in new sessions.
+
+### Claude Desktop
+
+Download `med-research-mcp.mcpb` from the [latest release](https://github.com/emilkrebs/med-research-mcp/releases/latest) and drag it onto Claude Desktop. The installer asks for your email and a few optional settings; there's no JSON to edit.
+
+### Cursor, Windsurf, Cline and other clients
+
+Add this to the client's MCP configuration:
 
 ```json
 {
   "mcpServers": {
     "med-research-mcp": {
-      "type": "http",
-      "url": "https://your-domain.example/mcp"
+      "command": "npx",
+      "args": ["-y", "med-research-mcp"],
+      "env": { "NCBI_EMAIL": "you@example.com" }
     }
   }
 }
 ```
 
-A shared instance is convenient for evaluation, but it is rate-limited and resolves full texts only through open access. **Anyone using this in production should deploy their own**: self-hosting ([below](#install) for stdio, [docs/hosting.md](docs/hosting.md) for HTTP) gives you your own rate limits, an optional persistent cache, and the institutional-proxy route, which is not usable on a shared endpoint because it depends on the caller's own proxy session.
+Clients configured in YAML, such as Hermes, take the same `command`, `args` and `env`.
 
-If you expose the server publicly, these are the limits it enforces by default:
-
-| Limit | Default |
-| --- | --- |
-| Requests per IP | 60/min, burst 20 → 429 with `Retry-After` |
-| Concurrent requests (global) | 8, queue 100 → 503 with `Retry-After: 5` |
-| Request body | 1 MB → 413 |
-
-The HTTP entry logs no queries, has no accounts and stores nothing ([privacy note](docs/hosting.md#privacy)).
-
-## Install
-
-Requires Node.js 22.22.2 or later; on Node 24, 24.15.0 or later.
+### From source
 
 ```bash
 git clone https://github.com/emilkrebs/med-research-mcp.git
@@ -68,263 +74,83 @@ npm install
 npm run build
 ```
 
-Then register the server with your MCP client. In the examples, replace `/path/to/med-research-mcp` with the absolute path of your clone, and `you@example.com` with your email (see [Configuration](#configuration)).
-
-### Claude Code
-
-```bash
-claude mcp add med-research-mcp -s user \
-  -e NCBI_EMAIL=you@example.com \
-  -- node /path/to/med-research-mcp/dist/mcp/index.js
-```
-
-`-s user` registers it for all your projects; use `-s local` for the current one only. `claude mcp get med-research-mcp` checks the connection. The tools appear in new sessions.
-
-### Claude Desktop (`.mcpb`)
-
-```bash
-npm run build:mcpb
-```
-
-Drag the resulting `dist/med-research-mcp.mcpb` onto Claude Desktop. The installer asks for your NCBI contact email and, optionally, an NCBI API key, an Unpaywall email and an institutional proxy prefix. No JSON editing required.
-
-### Cursor and other JSON configs
-
-```json
-{
-  "mcpServers": {
-    "med-research-mcp": {
-      "command": "node",
-      "args": ["/path/to/med-research-mcp/dist/mcp/index.js"],
-      "env": {
-        "NCBI_EMAIL": "you@example.com",
-        "NCBI_API_KEY": ""
-      }
-    }
-  }
-}
-```
-
-### Hermes and other YAML configs
-
-This runs the TypeScript source directly, so it needs no build and picks up source changes:
-
-```yaml
-mcp_servers:
-  med-research-mcp:
-    command: npx
-    args: ["tsx", "/path/to/med-research-mcp/src/mcp/index.ts"]
-    env:
-      NCBI_EMAIL: "you@example.com"
-      NCBI_API_KEY: ""
-```
-
-Clients that run `dist/` need `npm run build` again after every source change. To make the agent use the tools well, also install the [agent skills](#agent-skills).
+Then use `node /path/to/med-research-mcp/dist/mcp/index.js` as the command, and `npm run build:mcpb` builds the Claude Desktop bundle. To run the server as a shared HTTP service for a team, see [docs/hosting.md](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/hosting.md).
 
 ## Configuration
 
-Set these in your MCP client's `env` block. The server reads them from its environment and doesn't load a `.env` file itself; [`.env.example`](.env.example) documents each one.
+Set these in the `env` block of your MCP client's configuration. All are optional, but do set `NCBI_EMAIL`.
 
-| Variable | Required | Description |
-| --- | --- | --- |
-| `NCBI_EMAIL` | Recommended | Contact email sent with every NCBI request, as NCBI's usage policy asks. Without it, you're more likely to be throttled. |
-| `NCBI_API_KEY` | No | Raises the NCBI rate limit from 3 to 10 requests per second. Get one in your [NCBI account settings](https://www.ncbi.nlm.nih.gov/account/settings/). |
-| `MED_RESEARCH_CHINAXIV_EMAIL` | No | Contact email sent as `X-API-Email` on `chinaxiv` and `russiarxiv` requests, raising ChinaRxiv's rate limit from 30 to 300 requests/minute. Falls back to `NCBI_EMAIL`. |
-| `MED_RESEARCH_UNPAYWALL_EMAIL` | No | Contact email for Unpaywall open-access lookups in `literature_fulltext`. Falls back to `NCBI_EMAIL`. |
-| `MED_RESEARCH_PROXY_PREFIX` | No | Your institution's EZproxy host for doi.org, e.g. `https://doi-org.ezproxy.your-university.edu`. `literature_fulltext` requests `<prefix>/<DOI>`, so `…/login?url=` prefixes don't work. Needs an active proxy session on the machine. See the [terms note](#literature_fulltext). |
-| `MED_RESEARCH_FULLTEXT_MAX_CHARS` | No | Cap on the length of returned full texts. Default `50000`. |
-| `MED_RESEARCH_CACHE_BACKEND` | No | `memory` (default, in-process) or `sqlite` (persistent, survives restarts). |
-| `MED_RESEARCH_CACHE_PATH` | No | SQLite file for the `sqlite` backend. Default `./pubmed-cache.db`; `:memory:` for a throwaway database. |
+| Variable | What it does |
+| --- | --- |
+| `NCBI_EMAIL` | Your contact email, sent with every NCBI (PubMed) request as its usage policy asks, so NCBI can reach you before blocking an IP that exceeds its limits. Also used for Unpaywall and ChinaRxiv when their own emails aren't set. |
+| `NCBI_API_KEY` | Raises the PubMed rate limit from 3 to 10 requests per second. Get one in your [NCBI account settings](https://www.ncbi.nlm.nih.gov/account/settings/). |
+| `MED_RESEARCH_UNPAYWALL_EMAIL` | Contact email for Unpaywall, which finds open-access full texts. |
+| `MED_RESEARCH_CHINAXIV_EMAIL` | Contact email for ChinaRxiv, which serves the `chinaxiv` and `russiarxiv` sources; raises its rate limit from 30 to 300 requests per minute. |
+| `MED_RESEARCH_PROXY_PREFIX` | Your institution's EZproxy host for doi.org, e.g. `https://doi-org.ezproxy.your-university.edu`, to read paywalled papers you have access to. It works only if the proxy lets this machine in without a login, e.g. on the campus network or VPN. Use it only if your institution's licences allow it: many publishers forbid using subscription content with AI tools. |
+| `MED_RESEARCH_FULLTEXT_MAX_CHARS` | Cap on the length of returned full texts. Default `50000`. |
+| `MED_RESEARCH_CACHE_BACKEND` | `memory` (default) or `sqlite`, which keeps the cache across restarts. |
+| `MED_RESEARCH_CACHE_PATH` | The SQLite file for the `sqlite` backend. Default `./pubmed-cache.db`. |
+
+[`.env.example`](https://github.com/emilkrebs/med-research-mcp/blob/main/.env.example) documents each one, plus the HTTP server's variables.
 
 ## Tools
 
 | Tool | What it does |
 | --- | --- |
-| [`literature_search`](#literature_search) | Searches one or more databases, merges and de-duplicates the results, and labels each with its study design. No LLM calls. |
-| [`literature_fetch`](#literature_fetch) | Returns full metadata and abstracts for specific ids. |
-| [`literature_fulltext`](#literature_fulltext) | Returns an article's full text as markdown, found through its DOI. |
+| `literature_search` | Searches one or more databases and labels each result with its study design, design tier and integrity flags. |
+| `literature_fetch` | Returns the full record and abstract of specific papers. |
+| `literature_fulltext` | Returns a paper's full text as markdown, when an open-access or licensed copy can be found. |
 
-Typical workflow: start with `literature_search`, read promising papers with `literature_fetch`, and use `literature_fulltext` when the abstract isn't enough (methods, dosage, sample sizes).
+The assistant usually searches first, reads the promising abstracts, and fetches the full text when it needs the methods, dosage or sample size. [docs/tools.md](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/tools.md) has every parameter.
 
-### `literature_search`
+What the labels on each result mean:
 
-Returns `{ articles, total, query, warnings? }`. Each article carries `studyType`, `designTier` and, when any apply, `flags` (see [Study design labels](#study-design-labels)).
+- **`studyType`** is the design as NLM indexed it: `meta-analysis`, `randomized-controlled-trial`, `case-report` and so on, or `unknown` when the record has no such metadata. **Unknown means unlabeled, not weak.** It's common for recent papers, journals outside MEDLINE, and the ChinaXiv and RussiaRxiv sources; the assistant reads those abstracts itself.
+- **`designTier`** ranks the design for "does this treatment work?", from 5 (a systematic review of randomized trials) down to 0 (animal and lab studies, retracted papers), following the [Oxford CEBM levels of evidence](https://www.cebm.ox.ac.uk/resources/levels-of-evidence/ocebm-levels-of-evidence). It ranks the design, not the quality of the study.
+- **`flags`** warn about retractions, corrections, expressions of concern, preprints, and machine-translated text.
 
-| Parameter | Type | Required | Notes |
-| --- | --- | --- | --- |
-| `query` | `string` | yes | Search query. PubMed field tags (`[tiab]`, `[mesh]`, `[au]`) apply to `pubmed`; other databases receive the query as plain text. |
-| `database` | `string \| string[]` | no | `"pubmed"` (default), `"europepmc"`, `"chinaxiv"`, `"russiarxiv"`, an array of these, or `"all"`. See [Databases](#databases). |
-| `maxResults` | `number` | no | Results per database. Default `10`, max `50`. |
-| `minDesignTier` | `number` | no | Drop results below this design tier (`0`–`5`; `4` = RCTs). Also drops every result with a `null` tier (unlabeled records and most meta-analyses and systematic reviews) and reports how many in a warning. |
-| `studyTypes` | `string[]` | no | Keep only these study types. To keep reviews and trials, use this instead of `minDesignTier`. `cohort`, `case-control`, `cross-sectional` and `in-vitro` are never assigned from metadata, so filtering on them returns nothing. |
-| `dateRange` | `{ from?, to? }` | no | Publication date filter, `YYYY-MM-DD`. Applies to `pubmed` and `europepmc`. |
-| `sort` | `"relevance" \| "date"` | no | Order within each database. The merged list is always re-sorted by design tier. |
-| `language` | `string` | no | ISO 639-1 hint for databases that support it. |
-
-If one database fails during a multi-database search, its error becomes an entry in `warnings` and the other databases' results are still returned.
-
-### `literature_fetch`
-
-Returns `{ articles, missing, warnings? }`: the raw records with publication types, MeSH headings and retraction/correction links, plus `database`, `url` and `language` for non-PubMed sources. No design labels.
-
-| Parameter | Type | Required | Notes |
-| --- | --- | --- | --- |
-| `ids` | `string[]` | yes | 1–50 database-specific ids: PMIDs for `pubmed`; for `europepmc`, PMIDs or prefixed ids for records outside PubMed, e.g. `CBA:521529` (Chinese Biological Abstracts) or `PPR…` preprints. |
-| `database` | `string` | yes | The database the ids belong to: `pubmed`, `europepmc`, `chinaxiv` or `russiarxiv`. |
-
-### `literature_fulltext`
-
-Tries Unpaywall (open access), then the institutional proxy (if configured), then the DOI directly, and falls back to the abstract if the article is paywalled. Returns `{ id, doi?, source, fulltext?, format, truncated, warning? }`, where `source` says which route worked (`unpaywall`, `proxy`, `direct`, or `none` for the abstract fallback).
-
-The proxy route uses your own institutional access. Use it only as your institution's and the publishers' terms allow: typically personal research use, no systematic or automated downloading, and some licenses forbid passing full texts to AI tools.
-
-| Parameter | Type | Required | Notes |
-| --- | --- | --- | --- |
-| `id` | `string` | yes | Article id: a PMID, or another database's id. |
-| `doi` | `string` | no | Required when `id` isn't a numeric PMID. Pass the `doi` from a `literature_search` result. |
-
-### Databases
-
-| Id | Source | Covers | Design labels |
-| --- | --- | --- | --- |
-| `pubmed` | NCBI E-utilities | PubMed / MEDLINE | Yes |
-| `europepmc` | Europe PMC REST API | A mirror of PubMed, plus preprints and other sources such as Chinese Biological Abstracts | For MEDLINE-indexed records |
-| `chinaxiv` | ChinaRxiv API (third party) | ChinaXiv preprints, machine-translated into English | No: always `unknown` |
-| `russiarxiv` | ChinaRxiv API (third party) | Soviet-era and Russian papers | No: always `unknown` |
-
-> **ChinaRxiv is not ChinaXiv.** [ChinaXiv](https://chinaxiv.org) is the Chinese Academy of Sciences preprint platform and does not publish a public API. `chinaxiv` and `russiarxiv` are served by [ChinaRxiv](https://chinarxiv.org), an independent project by the builder of SovietRxiv that machine-translates papers from ChinaXiv and other repositories into English. It is not affiliated with the Chinese Academy of Sciences, and the abstracts are automated translations rather than the authors' English. Check the original record before relying on a dose, population or outcome.
-
-## Study design labels
-
-Every `literature_search` result carries three fields, computed by [`src/core/grader.ts`](src/core/grader.ts) from NLM metadata only. No keyword or regex rules read the title or abstract.
-
-- **`studyType`**: the design, from NLM PublicationType tags (PubMed, and Europe PMC, which mirrors them). A label is assigned only as far as the metadata establishes it. Records without such tags are `unknown`, which is common for recent papers, journals outside MEDLINE, and ChinaXiv / RussiaRxiv (via ChinaRxiv). **Unknown means unlabeled, not weak**: the model reads the abstract and classifies it, as the [`med-research`](skills/med-research/SKILL.md) skill instructs.
-- **`designTier`**: how high the design ranks for "Does this intervention help?" by the [OCEBM 2011 Levels of Evidence](https://www.cebm.ox.ac.uk/resources/levels-of-evidence/ocebm-levels-of-evidence). When a label's definition spans levels, the lower one is used.
-- **`flags`**: integrity notices and warnings, from publication types, retraction and correction links, and MeSH check tags.
-
-| `designTier` | `studyType` |
-| --- | --- |
-| 5 | `meta-analysis`, `systematic-review`, **only if it pooled randomized trials**. Metadata rarely shows that, so only `Network Meta-Analysis` gets 5 |
-| 4 | `randomized-controlled-trial` |
-| 3 | `cohort` |
-| 2 | `non-randomized-trial`, `clinical-trial`, `observational`, `case-control`, `cross-sectional` |
-| 1 | `case-report`, `review` (not indexed as systematic) |
-| 0 | `animal-study`, `in-vitro`, and any record flagged `retracted`, `notice`, `protocol` or `editorial` |
-| `null` | `unknown`, and meta-analyses and systematic reviews whose pooled designs aren't indexed. **Unrated, not weak** |
-
-`cohort`, `case-control`, `cross-sectional` and `in-vitro` are never assigned from metadata; they're labels for designs the model reads from an abstract.
-
-`retracted`, `notice` (retraction notices, expressions of concern, errata), `protocol` and `editorial` mark records that aren't usable as evidence. `expression-of-concern`, `corrected`, `updated` (a newer version exists), `animals-not-humans`, `preprint` and `letter` are warnings that leave the tier alone. Results are sorted with tiers 2–5 first, then `null`, then tiers 1 and 0.
-
-Keep two limits in mind:
-
-- **`designTier` ranks the design; it doesn't appraise the study.** Risk of bias, imprecision, inconsistency, indirectness and publication bias need the paper ([GRADE](https://pubmed.ncbi.nlm.nih.gov/21208779/)), and prognosis, diagnosis and harms questions rank designs differently (OCEBM). The skills cover this.
-- **The labels are NLM's, but not hand-curated.** Since 2022, NLM indexes MEDLINE automatically, curating selected records by hand ([NLM 2021](https://www.nlm.nih.gov/pubs/techbull/nd21/nd21_medline_2022.html), [NLM 2024](https://www.nlm.nih.gov/pubs/techbull/ma24/ma24_mtix.html)). Treat a label as a strong prior to confirm when it matters.
-
-**[How it works](docs/how-it-works.md#the-grader-study-design-labels)** has the full mapping from publication types to labels, the reasoning behind each tier and flag, worked examples, and the sources.
+ChinaXiv and RussiaRxiv records come from [ChinaRxiv](https://chinarxiv.org), an independent project not affiliated with the Chinese Academy of Sciences' ChinaXiv. Its English text is machine-translated, and it wrote most RussiaRxiv abstracts itself; check the original record before relying on a dose, population or outcome.
 
 ## Agent skills
 
-This repo ships three [Agent Skills](skills/) that make the MCP self-guiding:
+Three [Agent Skills](https://github.com/emilkrebs/med-research-mcp/tree/main/skills) teach the assistant to use the tools well:
 
-- **[med-research](skills/med-research/SKILL.md)**: the workflow skill. How to drive the three tools, write precise PubMed queries with field tags, read the design labels and classify unlabeled papers from their abstract, choose between `literature_fetch` and `literature_fulltext`, search several databases, and report findings. Three few-shot patterns (simple lookup, evidence synthesis, bullshit detection) help even small models converge on the right workflow.
-- **[med-research-ebm](skills/med-research-ebm/SKILL.md)**: the critical-appraisal reference, loaded only when a paper is about to drive a real decision. Covers PICO framing, RoB 2 / ROBINS-I, AMSTAR-2, effect sizes, confidence intervals and NNT, heterogeneity, Bradford Hill causation, applicability and conflicts of interest. It's kept separate so the workflow skill stays lean.
-- **[med-research-setup](skills/med-research-setup/SKILL.md)**: guides an AI that helps a user install, configure and troubleshoot the server.
+- **[med-research](https://github.com/emilkrebs/med-research-mcp/blob/main/skills/med-research/SKILL.md)**: the workflow. Writing precise PubMed queries, reading the labels, classifying unlabeled papers, and reporting findings with how certain they are.
+- **[med-research-ebm](https://github.com/emilkrebs/med-research-mcp/blob/main/skills/med-research-ebm/SKILL.md)**: critical appraisal, loaded only when a paper is about to drive a real decision: risk of bias, effect sizes, heterogeneity, causation, applicability.
+- **[med-research-setup](https://github.com/emilkrebs/med-research-mcp/blob/main/skills/med-research-setup/SKILL.md)**: helps an assistant install and troubleshoot the server.
 
 To install them for Claude Code:
 
 ```bash
-# for all your projects
-mkdir -p ~/.claude/skills && cp -r skills/* ~/.claude/skills/
-
-# or for the current project only
-mkdir -p .claude/skills && cp -r skills/* .claude/skills/
+git clone --depth 1 https://github.com/emilkrebs/med-research-mcp.git
+mkdir -p ~/.claude/skills && cp -r med-research-mcp/skills/* ~/.claude/skills/
 ```
 
-Skills take effect in new sessions. Claude Desktop `.mcpb` installs don't load skills automatically, so copy them in the same way.
+Use `.claude/skills/` inside a project to install them for that project only. Skills take effect in new sessions. Claude Desktop doesn't load them from the `.mcpb`, so install them the same way.
 
-## Using the core library
+## Privacy
 
-`med-research-mcp/core` has no MCP dependency and can be imported directly:
+The server runs on your machine and sends no telemetry. Your queries go to the databases you search (NCBI for PubMed, EMBL-EBI for Europe PMC, ChinaRxiv), and full-text requests go to Unpaywall, doi.org and the publishers' sites, each under its own terms and privacy policy. Results are cached on your machine, in memory unless you choose SQLite. If you use someone else's HTTP instance, its operator receives your queries too. Don't put names, record numbers or other details that identify a patient into a query. [docs/compliance.md](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/compliance.md) has the details.
 
-```ts
-import { createCache, fetchFulltext, fetchLiterature, searchLiterature } from "med-research-mcp/core";
+## Documentation
 
-const cache = createCache({ backend: "memory" });
-
-// Search two databases: results come back labeled, merged and sorted by design tier.
-const { articles, warnings } = await searchLiterature(
-  { query: "creatine AND cognition[tiab]", database: ["pubmed", "europepmc"], maxResults: 10 },
-  cache,
-);
-
-// Full metadata and abstract for the top result (`pmid` holds the database-specific id).
-const top = articles[0]!;
-const fetched = await fetchLiterature({ ids: [top.pmid], database: top.database ?? "pubmed" }, cache);
-
-// Its full text, resolved through the DOI.
-const fulltext = await fetchFulltext({ id: top.pmid, doi: top.doi }, cache);
-```
-
-The build ships both ESM and CommonJS, so this works with `import` and `require` alike. Also exported: `classifyDesign` to label your own records, and the PubMed-only `searchPubMed` and `fetchPubMed`, which run the same NCBI pipeline without the multi-database merge (`searchPubMed` keeps PubMed's order instead of sorting by tier).
-
-## Caching and errors
-
-**Caching.** The `memory` backend (default) is an LRU of about 200 entries per store that dies with the process. The `sqlite` backend persists to a WAL-mode SQLite file and survives restarts. It needs `better-sqlite3`, an optional native dependency; if that isn't installed or fails to load, the server logs a warning and uses memory instead. Summaries expire after 7 days, because their metadata changes after publication (indexing adds publication types, and retractions, expressions of concern and errata arrive at any time). Full texts expire after 30 days, as resolved URLs rot. Abstracts never expire.
-
-**Errors.** Library functions throw a `ResearchApiException`, whose `toJSON()` gives:
-
-```ts
-{
-  code: "RATE_LIMIT" | "QUERY_TOO_BROAD" | "PARSE_FAILURE" | "NETWORK_ERROR" | "NOT_FOUND";
-  message: string;      // human-readable, for logs
-  userMessage: string;  // actionable phrasing for the agent or user
-  recoverable: boolean; // whether retrying or adjusting can succeed
-  retryAfter?: number;  // seconds to wait before retrying (rate limits)
-}
-```
-
-The MCP tools return the same payload as an `isError` result (`UNKNOWN` for unexpected errors).
-
-## Development
-
-| Script | Description |
-| --- | --- |
-| `npm run dev` | Run the MCP server with `tsx watch`, restarting on change. |
-| `npm run dev:http` | Same for the hosted HTTP entry (`src/http/index.ts`). |
-| `npm run build` | Build `dist/`: [tsup](https://tsup.egoist.dev/) for the JavaScript, `tsc --emitDeclarationOnly` for the type declarations. |
-| `npm start` | Run the built server (`node dist/mcp/index.js`). |
-| `npm run start:http` | Run the built HTTP server (`node dist/http/index.js`); see [docs/hosting.md](docs/hosting.md). |
-| `npm test` | Run the test suite with [vitest](https://vitest.dev/). `npm run test:watch` re-runs on change. |
-| `npm run typecheck` | Type-check without emitting. |
-| `npm run build:mcpb` | Bundle the server with esbuild and pack `dist/med-research-mcp.mcpb` for Claude Desktop. |
-
-The build uses tsup rather than plain `tsc` because it emits **both ESM and CommonJS** for every entry point (`dist/core/index.js` and `.cjs`, and so on). The MCP server runs as ESM, while CommonJS consumers `require()` `med-research-mcp/core` from the same package. A plain `tsc` build produces one module format and would break one side.
-
-- **[docs/how-it-works.md](docs/how-it-works.md)** explains the internals: the search pipeline, the design grader, full-text resolution, rate limits and caching.
-- **[benchmark/](benchmark/README.md)** measures how well models answer biomedical questions with the MCP, optionally against closed-book and web-search baselines. It verifies every citation against live PubMed and grades open-ended answers blind, by hand or with an LLM judge as a second opinion.
-
-## Scope (v0.5.0)
-
-**In scope:**
-
-- PubMed search and fetch via NCBI E-utilities, with field tags (`[tiab]`, `[mesh]`, `[au]`).
-- Multi-database search across PubMed, Europe PMC, ChinaXiv and RussiaRxiv.
-- Study-design labels and retraction/correction flags from NLM metadata (PublicationType tags, CommentsCorrections links) for PubMed and Europe PMC records.
-- Full-text retrieval via Unpaywall, an institutional proxy, or the DOI.
-- In-memory (default) and persistent SQLite caching.
-- An MCP stdio server and a `.mcpb` bundle for Claude Desktop.
-- A stateless Streamable HTTP server for hosted deployments ([docs/hosting.md](docs/hosting.md)).
-- Direct library use via `med-research-mcp/core`, without MCP.
-
-**Out of scope (for now):**
-
-- Any storage or transmission of PHI or patient data.
+- **[Tool reference](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/tools.md)**: parameters, results, databases, labels and errors.
+- **[How it works](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/how-it-works.md)**: the search pipeline, how the design labels are assigned and why, full-text resolution, caching, and how the benchmark grades answers.
+- **[Hosting](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/hosting.md)**: running the server over HTTP for a team.
+- **[Using the core library](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/library.md)**: the same functions without MCP.
+- **[Compliance](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/compliance.md)**: intended use, data flows, and the terms of the services it calls.
+- **[Development](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/development.md)** and **[publishing](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/publishing.md)**.
+- **[Benchmark](https://github.com/emilkrebs/med-research-mcp/blob/main/benchmark/README.md)**: how well models answer biomedical questions with the server.
+- **[Changelog](https://github.com/emilkrebs/med-research-mcp/blob/main/CHANGELOG.md)**.
 
 ## Medical disclaimer
 
-`med-research-mcp` is a research and evidence-triage tool. It does not provide medical advice, diagnosis, or treatment recommendations, and its design labels rank study designs, not the quality of individual studies. They are not a substitute for clinical judgement or a qualified professional. Always verify findings against the primary source and consult a healthcare provider before making medical or supplementation decisions.
+`med-research-mcp` is a literature search tool for research and education. It does not provide medical advice, diagnosis, or treatment recommendations, is not meant for decisions about an individual patient's care, and is not a medical device. Its design labels rank how studies were designed, not the quality of individual studies or whether their results apply to anyone. They are not a substitute for clinical judgement or a qualified professional. Always verify findings against the primary source and consult a healthcare provider before making medical or supplementation decisions.
+
+## Data sources and copyright
+
+PubMed data comes from the U.S. National Library of Medicine through NCBI's E-utilities; [NCBI's disclaimer and copyright notice](https://www.ncbi.nlm.nih.gov/home/about/policies/) applies. NLM doesn't claim copyright on PubMed abstracts, but their publishers or authors may, and NLM doesn't endorse this tool. Europe PMC data comes from the Europe PMC REST API (EMBL-EBI), under the [EMBL-EBI terms of use](https://www.ebi.ac.uk/about/terms-of-use). Open-access locations come from [Unpaywall](https://unpaywall.org). ChinaXiv and RussiaRxiv records come from the [ChinaRxiv API](https://chinarxiv.org/api/docs), whose specification declares CC BY 4.0. Full texts belong to their rights holders; use them within their licences.
 
 ## License
 
-[MIT](LICENSE.md)
+[MIT](https://github.com/emilkrebs/med-research-mcp/blob/main/LICENSE.md).

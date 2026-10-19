@@ -104,7 +104,9 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     query: z
       .string()
       .describe(
-        "Search query. PubMed field tags ([tiab], [mesh], [au]) apply to the pubmed database; other databases receive it as plain text.",
+        "Search query. PubMed field tags ([tiab], [mesh], [au]) apply to the pubmed database; other databases receive it as plain text. " +
+          "The query is sent to third-party databases: never include names, dates of birth, record numbers or other details that " +
+          "identify a person; describe the condition or intervention instead.",
       ),
     database: z
       .union([z.string(), z.array(z.string())])
