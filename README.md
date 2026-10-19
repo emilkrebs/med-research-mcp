@@ -32,20 +32,22 @@ It's an open-source tool, used in professional research work: a TypeScript libra
 
 ## Hosted instance
 
-Configure your MCP client with that URL; see [docs/hosting.md](docs/hosting.md#deploy) for a client config example.
+No public instance is running yet. The HTTP entry is self-hostable; see [docs/hosting.md](docs/hosting.md#deploy) for a deployment walkthrough. Once it is reachable, point your MCP client at it:
 
 ```json
 {
   "mcpServers": {
     "med-research-mcp": {
       "type": "http",
-      "url": "https://mcp.example.com/mcp"
+      "url": "https://your-domain.example/mcp"
     }
   }
 }
 ```
 
-Use the hosted instance for evaluation and testing — it is shared, rate-limited and resolves full texts only through open access. **Anyone using it in production should deploy their own**: self-hosting ([below](#install) for stdio, [docs/hosting.md](docs/hosting.md) for HTTP) gives you your own rate limits, an optional persistent cache, and the institutional-proxy route, which is not usable on a hosted instance because it depends on the caller's own proxy session.
+A shared instance is convenient for evaluation, but it is rate-limited and resolves full texts only through open access. **Anyone using this in production should deploy their own**: self-hosting ([below](#install) for stdio, [docs/hosting.md](docs/hosting.md) for HTTP) gives you your own rate limits, an optional persistent cache, and the institutional-proxy route, which is not usable on a shared endpoint because it depends on the caller's own proxy session.
+
+If you expose the server publicly, these are the limits it enforces by default:
 
 | Limit | Default |
 | --- | --- |
@@ -53,7 +55,7 @@ Use the hosted instance for evaluation and testing — it is shared, rate-limite
 | Concurrent requests (global) | 8, queue 100 → 503 with `Retry-After: 5` |
 | Request body | 1 MB → 413 |
 
-The endpoint logs no queries, has no accounts and stores nothing ([privacy note](docs/hosting.md#privacy)).
+The HTTP entry logs no queries, has no accounts and stores nothing ([privacy note](docs/hosting.md#privacy)).
 
 ## Install
 
@@ -127,7 +129,7 @@ Set these in your MCP client's `env` block. The server reads them from its envir
 | --- | --- | --- |
 | `NCBI_EMAIL` | Recommended | Contact email sent with every NCBI request, as NCBI's usage policy asks. Without it, you're more likely to be throttled. |
 | `NCBI_API_KEY` | No | Raises the NCBI rate limit from 3 to 10 requests per second. Get one in your [NCBI account settings](https://www.ncbi.nlm.nih.gov/account/settings/). |
-| `MED_RESEARCH_CHINAXIV_EMAIL` | No | Contact email sent as `X-API-Email` on ChinaXiv and RussiaRxiv requests, raising the ChinaRxiv rate limit from 30 to 300 requests/minute. Falls back to `NCBI_EMAIL`. |
+| `MED_RESEARCH_CHINAXIV_EMAIL` | No | Contact email sent as `X-API-Email` on `chinaxiv` and `russiarxiv` requests, raising ChinaRxiv's rate limit from 30 to 300 requests/minute. Falls back to `NCBI_EMAIL`. |
 | `MED_RESEARCH_UNPAYWALL_EMAIL` | No | Contact email for Unpaywall open-access lookups in `literature_fulltext`. Falls back to `NCBI_EMAIL`. |
 | `MED_RESEARCH_PROXY_PREFIX` | No | Your institution's EZproxy host for doi.org, e.g. `https://doi-org.ezproxy.your-university.edu`. `literature_fulltext` requests `<prefix>/<DOI>`, so `…/login?url=` prefixes don't work. Needs an active proxy session on the machine. See the [terms note](#literature_fulltext). |
 | `MED_RESEARCH_FULLTEXT_MAX_CHARS` | No | Cap on the length of returned full texts. Default `50000`. |
@@ -187,14 +189,16 @@ The proxy route uses your own institutional access. Use it only as your institut
 | --- | --- | --- | --- |
 | `pubmed` | NCBI E-utilities | PubMed / MEDLINE | Yes |
 | `europepmc` | Europe PMC REST API | A mirror of PubMed, plus preprints and other sources such as Chinese Biological Abstracts | For MEDLINE-indexed records |
-| `chinaxiv` | ChinaRxiv API | Chinese preprints, with English title and abstract when available | No: always `unknown` |
-| `russiarxiv` | ChinaRxiv API | Soviet-era and Russian papers | No: always `unknown` |
+| `chinaxiv` | ChinaRxiv API (third party) | ChinaXiv preprints, machine-translated into English | No: always `unknown` |
+| `russiarxiv` | ChinaRxiv API (third party) | Soviet-era and Russian papers | No: always `unknown` |
+
+> **ChinaRxiv is not ChinaXiv.** [ChinaXiv](https://chinaxiv.org) is the Chinese Academy of Sciences preprint platform and does not publish a public API. `chinaxiv` and `russiarxiv` are served by [ChinaRxiv](https://chinarxiv.org), an independent project by the builder of SovietRxiv that machine-translates papers from ChinaXiv and other repositories into English. It is not affiliated with the Chinese Academy of Sciences, and the abstracts are automated translations rather than the authors' English. Check the original record before relying on a dose, population or outcome.
 
 ## Study design labels
 
 Every `literature_search` result carries three fields, computed by [`src/core/grader.ts`](src/core/grader.ts) from NLM metadata only. No keyword or regex rules read the title or abstract.
 
-- **`studyType`**: the design, from NLM PublicationType tags (PubMed, and Europe PMC, which mirrors them). A label is assigned only as far as the metadata establishes it. Records without such tags are `unknown`, which is common for recent papers, journals outside MEDLINE, and ChinaXiv / RussiaRxiv. **Unknown means unlabeled, not weak**: the model reads the abstract and classifies it, as the [`med-research`](skills/med-research/SKILL.md) skill instructs.
+- **`studyType`**: the design, from NLM PublicationType tags (PubMed, and Europe PMC, which mirrors them). A label is assigned only as far as the metadata establishes it. Records without such tags are `unknown`, which is common for recent papers, journals outside MEDLINE, and ChinaXiv / RussiaRxiv (via ChinaRxiv). **Unknown means unlabeled, not weak**: the model reads the abstract and classifies it, as the [`med-research`](skills/med-research/SKILL.md) skill instructs.
 - **`designTier`**: how high the design ranks for "Does this intervention help?" by the [OCEBM 2011 Levels of Evidence](https://www.cebm.ox.ac.uk/resources/levels-of-evidence/ocebm-levels-of-evidence). When a label's definition spans levels, the lower one is used.
 - **`flags`**: integrity notices and warnings, from publication types, retraction and correction links, and MeSH check tags.
 
