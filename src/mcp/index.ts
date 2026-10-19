@@ -3,7 +3,7 @@
  * Thin MCP adapter over the med-research-mcp core library.
  *
  * Exposes three stdio tools:
- *   - literature_search   — multi-database search + keyword classification (always cheap)
+ *   - literature_search   — multi-database search, study designs labeled from NLM metadata (no LLM calls)
  *   - literature_fetch    — fetch full metadata + abstracts for given ids (pure data)
  *   - literature_fulltext — resolve and return an article's full text as markdown
  *

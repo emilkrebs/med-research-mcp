@@ -13,21 +13,27 @@
  * to markdown with turndown. PDFs are extracted with pdf-parse. The heavy
  * extraction libraries are imported lazily so importing this module stays cheap,
  * and every extraction dependency is injectable for testing.
+ *
+ * Pages are fetched with `fetchPublic` (./public-fetch.ts), which refuses
+ * loopback, private and link-local addresses at every redirect and caps the
+ * body size: the URLs come from Unpaywall and DOI registrants, not from us.
  */
 
 import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors } from "./errors.js";
+import { fetchPublic } from "./public-fetch.js";
 import { NcbiClient } from "./pubmed.js";
 import type { FulltextInput, FulltextOutput, FulltextSource, Article } from "./types.js";
 import { UnpaywallClient } from "./unpaywall.js";
 import type { UnpaywallResult } from "./unpaywall.js";
+import { USER_AGENT } from "./version.js";
 
 const DEFAULT_MAX_CHARS = 50_000;
 const DEFAULT_TIMEOUT_MS = 20_000;
 /** Extracted text shorter than this is treated as a paywall stub / failed extraction. */
 const MIN_FULLTEXT_CHARS = 500;
-const FULLTEXT_USER_AGENT = "med-research-mcp/0.2.0 (https://github.com/emilkrebs/med-research-mcp)";
+const isPmid = (id: string): boolean => /^\d+$/.test(id);
 
 /** A resource fetched from an arbitrary URL. Either `text` (HTML) or `bytes` (PDF) is set. */
 export interface FetchedResource {
@@ -80,11 +86,11 @@ export async function fetchFulltext(
 ): Promise<FulltextOutput> {
   const id = String(input.id ?? "").trim();
   // A numeric PMID or a supplied DOI is enough to proceed. Non-PubMed ids
-  // (Europe PMC "CBA:…" / "PPR…", ChinaXiv, …) aren't numeric but arrive with a DOI, and
-  // DOI-based resolution is database-agnostic — so `literature_fulltext` works
-  // for them. Without either, there's nothing to resolve.
-  if (!/^\d+$/.test(id) && !normalizeDoi(input.doi)) {
-    throw errors.notFound(String(input.id ?? ""));
+  // (Europe PMC "CBA:…" / "PPR…") aren't numeric but can arrive with a DOI, and
+  // DOI-based resolution is database-agnostic. Without either (ChinaXiv and
+  // RussiaRxiv records have no DOI), there's nothing to resolve.
+  if (!isPmid(id) && !normalizeDoi(input.doi)) {
+    throw errors.noDoi(String(input.id ?? ""));
   }
 
   const maxChars = deps.maxChars ?? envMaxChars() ?? DEFAULT_MAX_CHARS;
@@ -220,6 +226,8 @@ async function resolveAbstract(
   const cached = cache.getAbstract(id);
   if (cached) return cached;
   if (article?.abstract) return article.abstract;
+  // Only PubMed knows the abstract by this id; other databases' ids mean nothing to efetch.
+  if (!isPmid(id)) return undefined;
   try {
     const fetched = await client.efetch([id]);
     const abstract = fetched.get(id)?.abstract;
@@ -282,34 +290,23 @@ function envMaxChars(): number | undefined {
 // ─── Default (network + library) implementations ────────────────
 
 async function defaultFetchUrl(url: string, timeoutMs: number): Promise<FetchedResource> {
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      signal: ac.signal,
-      redirect: "follow",
-      headers: {
-        "User-Agent": FULLTEXT_USER_AGENT,
-        Accept: "text/html,application/xhtml+xml,application/pdf,*/*",
-      },
-    });
-    const contentType = (res.headers.get("content-type") ?? "").toLowerCase();
-    const finalUrl = res.url || url;
-    // Content-type wins over the URL extension: publishers routinely serve an
-    // HTML paywall/anti-bot page from a `…/pdf` URL, and feeding that to the PDF
-    // parser only produces garbage. Only fall back to the extension when the
-    // server didn't declare HTML.
-    const isHtml = contentType.includes("text/html") || contentType.includes("application/xhtml");
-    const isPdf = contentType.includes("application/pdf") || (!isHtml && /\.pdf($|\?)/i.test(finalUrl));
-    if (isPdf) {
-      const bytes = new Uint8Array(await res.arrayBuffer());
-      return { ok: res.ok, status: res.status, contentType, finalUrl, bytes };
-    }
-    const text = await res.text();
-    return { ok: res.ok, status: res.status, contentType, finalUrl, text };
-  } finally {
-    clearTimeout(timer);
-  }
+  const res = await fetchPublic(url, {
+    timeoutMs,
+    headers: {
+      "User-Agent": USER_AGENT,
+      Accept: "text/html,application/xhtml+xml,application/pdf,*/*",
+    },
+  });
+  const { ok, status, contentType, finalUrl } = res;
+  // Content-type wins over the URL extension: publishers routinely serve an
+  // HTML paywall/anti-bot page from a `…/pdf` URL, and feeding that to the PDF
+  // parser only produces garbage. Only fall back to the extension when the
+  // server didn't declare HTML.
+  const isHtml = contentType.includes("text/html") || contentType.includes("application/xhtml");
+  const isPdf = contentType.includes("application/pdf") || (!isHtml && /\.pdf($|\?)/i.test(finalUrl));
+  if (isPdf) return { ok, status, contentType, finalUrl, bytes: res.body };
+  // UTF-8, as Response.text() decodes.
+  return { ok, status, contentType, finalUrl, text: new TextDecoder().decode(res.body) };
 }
 
 /**

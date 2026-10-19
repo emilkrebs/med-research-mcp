@@ -46,7 +46,13 @@ export class UnpaywallClient {
   private readonly timeoutMs: number;
 
   constructor(config: UnpaywallConfig = {}) {
-    this.email = config.email ?? process.env.MED_RESEARCH_UNPAYWALL_EMAIL ?? process.env.NCBI_EMAIL;
+    // `||`, not `??`: an empty variable (a blank .mcpb field, `MED_RESEARCH_UNPAYWALL_EMAIL=` in a
+    // .env file) must still fall back to NCBI_EMAIL, as chinaxivHeaders does.
+    this.email =
+      config.email?.trim() ||
+      process.env.MED_RESEARCH_UNPAYWALL_EMAIL?.trim() ||
+      process.env.NCBI_EMAIL?.trim() ||
+      undefined;
     this.timeoutMs = config.timeoutMs ?? 15_000;
   }
 

@@ -7,24 +7,8 @@
  * connects it to stdio; the benchmark connects it to an in-memory transport.
  */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-
-/**
- * The package version, inlined by both builds (tsup.config.ts, scripts/build-mcpb.mjs):
- * the .mcpb bundle ships without a package.json to read.
- */
-declare const __MED_RESEARCH_VERSION__: string | undefined;
-
-/** The package version; package.json is read only when running from source (tsx, vitest). */
-export function packageVersion(): string {
-  if (typeof __MED_RESEARCH_VERSION__ !== "undefined") return __MED_RESEARCH_VERSION__;
-  // __dirname exists in CJS; import.meta.dirname in ESM (see src/core/cache.ts loadSqlite).
-  const moduleDir = typeof __dirname !== "undefined" ? __dirname : import.meta.dirname;
-  return (JSON.parse(readFileSync(join(moduleDir, "../../package.json"), "utf-8")) as { version: string }).version;
-}
 import {
   createCache,
   fetchFulltext,
@@ -40,6 +24,10 @@ import {
   type CacheBackend,
   type DatabaseAdapter,
 } from "../core/index.js";
+import { packageVersion } from "../core/version.js";
+
+/** Re-exported for the HTTP entry and tests, which import it from here. */
+export { packageVersion };
 
 function formatError(payload: { code: string; message: string; recoverable?: boolean }): string {
   const recoverable = payload.recoverable === true ? "yes" : "no";
@@ -48,7 +36,8 @@ function formatError(payload: { code: string; message: string; recoverable?: boo
 
 /** Cache from the MED_RESEARCH_CACHE_* env vars; falls back to in-memory if the backend is unavailable. */
 export function buildCache(): Cache {
-  const backend = (process.env.MED_RESEARCH_CACHE_BACKEND ?? "memory") as CacheBackend;
+  // `||` so an empty variable (as in .env.example) means the default, not an unknown backend.
+  const backend = (process.env.MED_RESEARCH_CACHE_BACKEND?.trim() || "memory") as CacheBackend;
   try {
     return createCache({
       backend,
@@ -122,7 +111,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .optional()
       .describe(
         'Database(s) to search: a single id, an array of ids, or "all". Default "pubmed". ' +
-          "Options: pubmed, europepmc (Europe + preprints), chinaxiv (China preprints), russiarxiv (Soviet/Russian papers).",
+          "Options: pubmed, europepmc (Europe + preprints), chinaxiv (Chinese preprints) and russiarxiv (Soviet-era " +
+          "papers), both via ChinaRxiv, a third-party service that machine-translates them into English.",
       ),
     maxResults: z.number().int().min(1).max(50).optional().describe("Results per database. Default 10, max 50."),
     minDesignTier: z
@@ -171,8 +161,9 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         "appraisal. A meta-analysis or systematic review ranks with the studies it pooled, which metadata rarely shows, " +
         "so its designTier is usually null: read the abstract to see what it pooled. flags marks retracted, notice, " +
         "protocol and editorial records (designTier 0), and warns of an expression of concern, an erratum (corrected), " +
-        "a newer version (updated), animals-not-humans indexing, preprints and letters. Results are merged, " +
-        "de-duplicated by DOI, and sorted by design tier. Always cheap — no LLM calls. " +
+        "a newer version (updated), animals-not-humans indexing, preprints, letters, machine-translated text and " +
+        "machine-generated abstracts (chinaxiv, russiarxiv: check originalUrl before relying on a number). Results are " +
+        "merged, de-duplicated by DOI, and sorted by design tier. Always cheap — no LLM calls. " +
         "Use literature_fetch to get full metadata for specific ids, and literature_fulltext for the article body.",
       inputSchema: literatureSearchShape,
       annotations: { readOnlyHint: true, openWorldHint: true },
@@ -262,8 +253,9 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       description:
         "Attempts to fetch an article's full text as markdown via Unpaywall (open access), institutional proxy " +
         "(if configured), and direct DOI access; falls back to abstract-only if paywalled. DOI resolution is " +
-        "database-agnostic, so this works for any source — pass the DOI from a literature_search result for " +
-        "non-PubMed articles. Use when the abstract isn't enough (verify dosage, sample sizes, methods).",
+        "database-agnostic: for non-PubMed articles, pass the DOI from the literature_search result. Records without " +
+        "a DOI (all chinaxiv and russiarxiv records) can't be resolved; their url links the record. Use when the " +
+        "abstract isn't enough (verify dosage, sample sizes, methods).",
       inputSchema: literatureFulltextShape,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

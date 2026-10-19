@@ -196,6 +196,26 @@ describe("fetchFulltext resolution strategy", () => {
     );
   });
 
+  it("explains that a DOI-less record from another database can't be resolved", async () => {
+    const error = await fetchFulltext({ id: "chinaxiv-202401.00027" }, new LRUBackend(), fakeClient()).catch(
+      (e: unknown) => e as ResearchApiException,
+    );
+    expect(error).toMatchObject({ code: "NOT_FOUND", recoverable: false });
+    expect(error.userMessage).toContain("no DOI");
+    expect(error.userMessage).not.toContain("PubMed article");
+  });
+
+  it("doesn't ask PubMed for the abstract of another database's id", async () => {
+    const efetch = vi.fn();
+    const client = { ...fakeClient(), efetch } as unknown as NcbiClient;
+    const result = await fetchFulltext({ id: "CBA:521529", doi: DOI }, new LRUBackend(), client, {
+      unpaywall: fakeUnpaywall(null),
+      fetchUrl: async () => paywalled(),
+    });
+    expect(result.source).toBe("none");
+    expect(efetch).not.toHaveBeenCalled();
+  });
+
   it("throws NOT_FOUND when the id has no summary and no DOI", async () => {
     await expect(
       fetchFulltext({ id: "99999999" }, new LRUBackend(), fakeClient({ summary: null })),
@@ -239,6 +259,21 @@ describe("UnpaywallClient", () => {
     expect(client.configured).toBe(false);
     expect(await client.resolve("10.1/x")).toBeNull();
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("falls back to NCBI_EMAIL when MED_RESEARCH_UNPAYWALL_EMAIL is empty (a blank .mcpb field)", async () => {
+    vi.stubEnv("MED_RESEARCH_UNPAYWALL_EMAIL", "");
+    vi.stubEnv("NCBI_EMAIL", "ncbi@example.com");
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      urls.push(url);
+      return new Response(JSON.stringify({ doi: "10.1/x", is_oa: false, oa_locations: [] }), { status: 200 });
+    });
+
+    const client = new UnpaywallClient();
+    expect(client.configured).toBe(true);
+    await client.resolve("10.1/x");
+    expect(urls[0]).toContain("email=ncbi%40example.com");
   });
 
   it("resolves a DOI to its OA URLs, PDF-first and deduped", async () => {
