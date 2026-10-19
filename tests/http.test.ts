@@ -9,7 +9,7 @@ import { request, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { LRUBackend, NcbiClient } from "../src/core/index.js";
 import { packageVersion } from "../src/mcp/server.js";
-import { createHttpServer, loadConfig, type HttpConfig } from "../src/http/index.js";
+import { createHttpServer, loadConfig, scheduleVacuum, type HttpConfig } from "../src/http/index.js";
 
 const VERSION = packageVersion();
 const TOOL_NAMES = ["literature_fetch", "literature_fulltext", "literature_search"];
@@ -259,5 +259,39 @@ describe("loadConfig", () => {
       trustProxy: true,
       allowedHosts: ["mcp.example.com", "localhost:8787"],
     });
+  });
+});
+
+describe("scheduleVacuum", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("vacuums a persistent cache on every interval", () => {
+    vi.useFakeTimers();
+    const cache = Object.assign(new LRUBackend(), { vacuum: vi.fn() });
+    const timer = scheduleVacuum(cache, 1000);
+    expect(cache.vacuum).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(3000);
+    expect(cache.vacuum).toHaveBeenCalledTimes(3);
+    clearInterval(timer);
+  });
+
+  it("does nothing for a cache without vacuum()", () => {
+    expect(scheduleVacuum(new LRUBackend(), 1000)).toBeUndefined();
+  });
+
+  it("logs a failed vacuum and keeps running", () => {
+    vi.useFakeTimers();
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const vacuum = vi.fn(() => {
+      throw new Error("disk I/O error");
+    });
+    const timer = scheduleVacuum(Object.assign(new LRUBackend(), { vacuum }), 1000);
+    vi.advanceTimersByTime(2000);
+    expect(vacuum).toHaveBeenCalledTimes(2);
+    expect(spy).toHaveBeenCalledTimes(2);
+    clearInterval(timer);
   });
 });

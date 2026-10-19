@@ -25,6 +25,7 @@ const MCP_PATH = "/mcp";
 const HEALTH_PATH = "/health";
 /** Waiting slots beyond maxConcurrency before the server answers 503. */
 const MAX_QUEUE = 100;
+const VACUUM_INTERVAL_MS = 3_600_000;
 
 export interface HttpConfig {
   port: number;
@@ -227,6 +228,26 @@ export function createHttpServer(deps: HttpServerDeps): Server {
   return server;
 }
 
+/**
+ * Sweep expired rows from a persistent cache on a timer. Backends enforce expiry
+ * at read time, but a row nobody reads again would otherwise live until the next
+ * restart, and a hosted process can run for months. Returns undefined for
+ * backends without a `vacuum()` (memory evicts on its own).
+ */
+export function scheduleVacuum(cache: Cache, intervalMs = VACUUM_INTERVAL_MS): NodeJS.Timeout | undefined {
+  const vacuum = (cache as { vacuum?: () => void }).vacuum;
+  if (typeof vacuum !== "function") return undefined;
+  const timer = setInterval(() => {
+    try {
+      vacuum.call(cache);
+    } catch (err) {
+      console.error("[med-research-mcp] cache vacuum failed:", err);
+    }
+  }, intervalMs);
+  timer.unref();
+  return timer;
+}
+
 async function main(): Promise<void> {
   const config = loadConfig();
 
@@ -246,6 +267,7 @@ async function main(): Promise<void> {
   const cache: Cache = buildCache();
   const ncbi = new NcbiClient();
   const server = createHttpServer({ cache, ncbi, config });
+  scheduleVacuum(cache);
 
   function shutdown(signal: string): void {
     console.error(`[med-research-mcp] ${signal} received — shutting down.`);
