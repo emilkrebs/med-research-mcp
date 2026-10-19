@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchFulltext, type FetchedResource, type FulltextDeps } from "../src/core/fulltext";
+import { defaultJatsToMarkdown, fetchFulltext, type FetchedResource, type FulltextDeps } from "../src/core/fulltext";
 import { UnpaywallClient, type UnpaywallResult } from "../src/core/unpaywall";
 import { FULLTEXT_TTL_MS, LRUBackend } from "../src/core/cache";
 import { NcbiClient } from "../src/core/pubmed";
@@ -94,6 +94,69 @@ describe("fetchFulltext resolution strategy", () => {
     expect(fetchUrl).toHaveBeenCalledWith("https://doi-org.ezproxy.example.edu/10.1000/xyz123", expect.any(Number));
   });
 
+  it("fetches PMC and Europe PMC copies through Europe PMC's API, never their websites", async () => {
+    const fetchUrl = vi.fn(async (url: string) =>
+      url.includes("/fullTextXML") ? { ...htmlResource("<article/>", url), contentType: "application/xml" } : paywalled(),
+    );
+    const jatsToMarkdown = vi.fn(async () => LONG_MARKDOWN);
+    const htmlToMarkdown = vi.fn(async () => LONG_MARKDOWN);
+    const deps: FulltextDeps = {
+      unpaywall: fakeUnpaywall({
+        doi: DOI,
+        isOa: true,
+        urls: [
+          "https://pmc.ncbi.nlm.nih.gov/articles/PMC1234567/pdf/main.pdf",
+          "https://europepmc.org/articles/pmc1234567",
+          "https://europepmc.org/abstract/MED/12345678", // no PMCID: a website page, dropped
+          "https://oa.example/article",
+        ],
+      }),
+      fetchUrl,
+      htmlToMarkdown,
+      jatsToMarkdown,
+    };
+
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), deps);
+    expect(out.source).toBe("unpaywall");
+    expect(fetchUrl.mock.calls.map(([url]) => url)).toEqual([
+      "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1234567/fullTextXML",
+    ]);
+    expect(jatsToMarkdown).toHaveBeenCalledWith("<article/>");
+    expect(htmlToMarkdown).not.toHaveBeenCalled();
+  });
+
+  it("skips a PMC copy outside Europe PMC's open-access set and tries the next location", async () => {
+    const fetchUrl = vi.fn(async (url: string) => (url.includes("/fullTextXML") ? paywalled() : htmlResource("<x/>", url)));
+    const deps: FulltextDeps = {
+      unpaywall: fakeUnpaywall({
+        doi: DOI,
+        isOa: true,
+        urls: ["https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7654321/", "https://oa.example/article"],
+      }),
+      fetchUrl,
+      htmlToMarkdown: async () => LONG_MARKDOWN,
+    };
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), deps);
+    expect(out.source).toBe("unpaywall");
+    expect(fetchUrl.mock.calls.map(([url]) => url)).toEqual([
+      "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC7654321/fullTextXML",
+      "https://oa.example/article",
+    ]);
+  });
+
+  it("doesn't cache a proxy text, which may be licensed to this user alone", async () => {
+    const cache = new LRUBackend();
+    const fetchUrl = vi.fn(async (url: string) => (url.includes("ezproxy") ? htmlResource("<html/>", url) : paywalled()));
+    const deps: FulltextDeps = {
+      unpaywall: fakeUnpaywall(null),
+      proxyPrefix: "https://doi-org.ezproxy.example.edu",
+      fetchUrl,
+      htmlToMarkdown: async () => LONG_MARKDOWN,
+    };
+    expect((await fetchFulltext({ id: "12345678", doi: DOI }, cache, fakeClient(), deps)).source).toBe("proxy");
+    expect(cache.getFulltext("12345678")).toBeNull();
+  });
+
   it("uses direct DOI access when there is no OA copy and no proxy", async () => {
     const fetchUrl = vi.fn(async (url: string) => (url.startsWith("https://doi.org/") ? htmlResource("<x/>", url) : paywalled()));
     const deps: FulltextDeps = { unpaywall: fakeUnpaywall(null), fetchUrl, htmlToMarkdown: async () => LONG_MARKDOWN };
@@ -157,7 +220,7 @@ describe("fetchFulltext resolution strategy", () => {
 
   it("truncates text beyond maxChars and flags truncated", async () => {
     const deps: FulltextDeps = {
-      unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["u"] }),
+      unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://oa.example/u"] }),
       fetchUrl: async () => htmlResource("<x/>"),
       htmlToMarkdown: async () => "A".repeat(5000),
       maxChars: 1000,
@@ -170,7 +233,7 @@ describe("fetchFulltext resolution strategy", () => {
   it("skips the id→DOI lookup when a DOI is supplied", async () => {
     const onEsummary = vi.fn();
     const deps: FulltextDeps = {
-      unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["u"] }),
+      unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://oa.example/u"] }),
       fetchUrl: async () => htmlResource("<x/>"),
       htmlToMarkdown: async () => LONG_MARKDOWN,
     };
@@ -180,7 +243,7 @@ describe("fetchFulltext resolution strategy", () => {
   });
 
   it("normalizes a DOI passed as a URL before resolving", async () => {
-    const resolve = vi.fn(async () => ({ doi: DOI, isOa: true, urls: ["u"] }));
+    const resolve = vi.fn(async () => ({ doi: DOI, isOa: true, urls: ["https://oa.example/u"] }));
     const deps: FulltextDeps = {
       unpaywall: { configured: true, resolve } as unknown as UnpaywallClient,
       fetchUrl: async () => htmlResource("<x/>"),
@@ -316,6 +379,36 @@ describe("UnpaywallClient", () => {
 });
 
 describe("default extraction (real libraries)", () => {
+  it("converts a JATS article from Europe PMC to markdown, without the reference list", async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+      <article><front><article-meta>
+        <title-group><article-title>Creatine and <italic>cognition</italic></article-title></title-group>
+        <abstract><p>Background text.</p><p>Results: 38 participants.</p></abstract>
+      </article-meta></front>
+      <body>
+        <sec><title>Methods</title><p>We randomised 38 adults.</p>
+          <sec><title>Outcomes</title><list><list-item><p>Memory</p></list-item><list-item><p>Speed</p></list-item></list></sec>
+          <table-wrap><label>Table 1</label><caption><p>Baseline characteristics</p></caption><table><tr><td>42</td></tr></table></table-wrap>
+        </sec>
+      </body>
+      <back><ref-list><ref><mixed-citation>Smith J. Not in the output.</mixed-citation></ref></ref-list></back></article>`;
+    const md = await defaultJatsToMarkdown(xml);
+    expect(md).toBe(
+      [
+        "# Creatine and cognition",
+        "## Abstract",
+        "Background text.",
+        "Results: 38 participants.",
+        "## Methods",
+        "We randomised 38 adults.",
+        "### Outcomes",
+        "- Memory",
+        "- Speed",
+        "*Table 1. Baseline characteristics*",
+      ].join("\n\n"),
+    );
+  });
+
   it("reduces an HTML document to its article body and converts it to markdown", async () => {
     const paragraph =
       "<p>Creatine improved memory in a randomized controlled trial with 40 healthy adults over 12 weeks.</p>";

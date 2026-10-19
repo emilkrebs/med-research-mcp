@@ -3,8 +3,9 @@
  *
  * Unpaywall (https://unpaywall.org) aggregates OA copies from preprint servers
  * (arXiv, bioRxiv), institutional repositories, PubMed Central, and publisher-
- * hosted OA. It's free, needs no key, and asks only for a contact email
- * (politeness) on each request. Rate limit: 100K requests/day.
+ * hosted OA. It's free and needs no key, but "requests must include your email"
+ * and it asks users to "limit use to 100,000 calls per day"
+ * (https://unpaywall.org/products/api, checked 2026-10-19).
  */
 
 const UNPAYWALL_BASE = "https://api.unpaywall.org/v2";

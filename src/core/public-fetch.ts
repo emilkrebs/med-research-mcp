@@ -17,12 +17,14 @@
  * - bodies are capped at {@link MAX_BODY_BYTES}.
  *
  * undici is a dependency of jsdom already; its own `fetch` is used rather than
- * the global one, whose bundled undici may be a different major version.
+ * the global one, whose bundled undici may be a different major version. Like
+ * the extraction libraries, it is loaded on first use, so starting the server
+ * (and answering `tools/list`) never depends on it.
  */
 
 import { lookup as dnsLookup, type LookupAddress } from "node:dns";
 import { BlockList, isIP, type LookupFunction } from "node:net";
-import { Agent, fetch as undiciFetch } from "undici";
+import type { Agent } from "undici";
 
 /** Redirects followed before giving up; doi.org → publisher → article page is typically 2–4. */
 export const MAX_REDIRECTS = 10;
@@ -127,10 +129,10 @@ function guardedLookup(isAllowed: (address: string) => boolean): LookupFunction 
 
 const agents = new Map<(address: string) => boolean, Agent>();
 
-function agentFor(isAllowed: (address: string) => boolean): Agent {
+function agentFor(undici: typeof import("undici"), isAllowed: (address: string) => boolean): Agent {
   let agent = agents.get(isAllowed);
   if (!agent) {
-    agent = new Agent({ connect: { lookup: guardedLookup(isAllowed) } });
+    agent = new undici.Agent({ connect: { lookup: guardedLookup(isAllowed) } });
     agents.set(isAllowed, agent);
   }
   return agent;
@@ -174,14 +176,15 @@ export interface PublicResponse {
 export async function fetchPublic(url: string, options: PublicFetchOptions): Promise<PublicResponse> {
   const isAllowed = options.isAllowedAddress ?? isPublicAddress;
   const maxBytes = options.maxBytes ?? MAX_BODY_BYTES;
-  const dispatcher = agentFor(isAllowed);
+  const undici = await import("undici");
+  const dispatcher = agentFor(undici, isAllowed);
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), options.timeoutMs);
   try {
     let current = new URL(url);
     for (let hop = 0; ; hop += 1) {
       checkUrl(current, isAllowed);
-      const res = await undiciFetch(current, {
+      const res = await undici.fetch(current, {
         dispatcher,
         redirect: "manual",
         signal: ac.signal,

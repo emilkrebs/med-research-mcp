@@ -1,13 +1,17 @@
 /**
  * Full-text resolution + extraction.
  *
- * Given a PMID (and optionally a DOI), try — in order — the machine's available
- * legal access paths, and return the article body as markdown:
+ * Given a PMID (and optionally a DOI), try — in order — the machine's access
+ * paths, and return the article body as markdown:
  *
- *   1. Unpaywall      — free, aggregates every open-access copy of a DOI
+ *   1. Unpaywall      — free, aggregates every open-access copy of a DOI; PMC and
+ *                       Europe PMC copies come from Europe PMC's full-text API
  *   2. Proxy          — an institutional EZproxy prefix, if configured
  *   3. Direct DOI     — https://doi.org/{DOI} (works on IP-authed networks / OA)
  *   4. Fallback       — the abstract, with `source: "none"` and a warning
+ *
+ * Only open-access (Unpaywall) texts are cached; a proxy or direct text may be
+ * licensed to the user alone.
  *
  * HTML is reduced to the article body with mozilla/readability, then converted
  * to markdown with turndown. PDFs are extracted with pdf-parse. The heavy
@@ -33,6 +37,8 @@ const DEFAULT_MAX_CHARS = 50_000;
 const DEFAULT_TIMEOUT_MS = 20_000;
 /** Extracted text shorter than this is treated as a paywall stub / failed extraction. */
 const MIN_FULLTEXT_CHARS = 500;
+/** Europe PMC's REST API; `<PMCID>/fullTextXML` returns an open-access article as JATS XML. */
+const EUROPE_PMC_FULLTEXT = "https://www.ebi.ac.uk/europepmc/webservices/rest/";
 const isPmid = (id: string): boolean => /^\d+$/.test(id);
 
 /** A resource fetched from an arbitrary URL. Either `text` (HTML) or `bytes` (PDF) is set. */
@@ -54,6 +60,8 @@ export interface FulltextDeps {
   fetchUrl?: (url: string, timeoutMs: number) => Promise<FetchedResource>;
   /** Reduce an HTML document to the article body and convert it to markdown. */
   htmlToMarkdown?: (html: string, url: string) => Promise<string>;
+  /** Convert a JATS XML article (Europe PMC's full-text API) to markdown. */
+  jatsToMarkdown?: (xml: string) => Promise<string>;
   /** Extract plain text from a PDF. */
   pdfToText?: (bytes: Uint8Array) => Promise<string>;
   /** Institutional proxy prefix. Defaults to $MED_RESEARCH_PROXY_PREFIX. */
@@ -74,7 +82,7 @@ interface Extracted {
 /**
  * Resolve and return the full text of a PubMed article.
  *
- * @param cache reused across calls; caches resolved full texts for 30 days.
+ * @param cache reused across calls; caches open-access full texts for 30 days.
  * @param client injectable NCBI client, used to look up the DOI and abstract.
  * @param deps injectable fetch/extraction seams; defaults hit the network.
  */
@@ -127,6 +135,7 @@ export async function fetchFulltext(
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const fetchUrl = deps.fetchUrl ?? defaultFetchUrl;
   const htmlToMarkdown = deps.htmlToMarkdown ?? defaultHtmlToMarkdown;
+  const jatsToMarkdown = deps.jatsToMarkdown ?? defaultJatsToMarkdown;
   const pdfToText = deps.pdfToText ?? defaultPdfToText;
 
   // No DOI → nothing to hand to a publisher/OA lookup. Degrade to the abstract.
@@ -156,7 +165,9 @@ export async function fetchFulltext(
         return text.length >= MIN_FULLTEXT_CHARS ? { fulltext: text, format: "pdf" } : null;
       }
       if (res.text != null) {
-        const md = (await htmlToMarkdown(res.text, res.finalUrl)).trim();
+        const md = (
+          url.startsWith(EUROPE_PMC_FULLTEXT) ? await jatsToMarkdown(res.text) : await htmlToMarkdown(res.text, res.finalUrl)
+        ).trim();
         return md.length >= MIN_FULLTEXT_CHARS ? { fulltext: md, format: "markdown" } : null;
       }
     } catch {
@@ -170,7 +181,8 @@ export async function fetchFulltext(
 
   const unpaywall = deps.unpaywall ?? new UnpaywallClient();
   const oa = await safeUnpaywall(unpaywall, doi);
-  if (oa && oa.urls.length > 0) attempts.push({ source: "unpaywall", urls: oa.urls });
+  const oaUrls = oa ? openAccessUrls(oa.urls) : [];
+  if (oaUrls.length > 0) attempts.push({ source: "unpaywall", urls: oaUrls });
 
   if (proxyPrefix) attempts.push({ source: "proxy", urls: [proxyUrl(proxyPrefix, doi)] });
 
@@ -180,12 +192,16 @@ export async function fetchFulltext(
     for (const url of attempt.urls) {
       const resolved = await extract(url);
       if (!resolved) continue;
-      cache.setFulltext(id, {
-        source: attempt.source,
-        fulltext: resolved.fulltext,
-        format: resolved.format,
-        fetchedAt: now(),
-      });
+      // Only open-access texts are cached. A proxy or direct text may be licensed to
+      // this user alone, and the cache can outlive the session or serve other callers.
+      if (attempt.source === "unpaywall") {
+        cache.setFulltext(id, {
+          source: attempt.source,
+          fulltext: resolved.fulltext,
+          format: resolved.format,
+          fetchedAt: now(),
+        });
+      }
       const { text, truncated } = clamp(resolved.fulltext, maxChars);
       return {
         id,
@@ -204,6 +220,37 @@ export async function fetchFulltext(
 }
 
 // ─── Resolution helpers ─────────────────────────────────────────
+
+/**
+ * Unpaywall's open-access URLs, in its order, with PMC and Europe PMC pages
+ * replaced. Both allow automated downloading of articles only through their
+ * APIs and bulk services: "Do not use any other automated processes for
+ * downloading articles, even if you are only retrieving articles from the PMC
+ * Article Datasets" (https://pmc.ncbi.nlm.nih.gov/about/copyright/, checked
+ * 2026-10-19), and Europe PMC names its OAI, RESTful, SOAP and bulk services
+ * as the only ones for automated downloading (https://europepmc.org/Copyright).
+ * So a PMC or Europe PMC page becomes a request to Europe PMC's full-text API
+ * for its PMCID, or is dropped when it has none.
+ */
+function openAccessUrls(urls: string[]): string[] {
+  const out: string[] = [];
+  for (const url of urls) {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      continue;
+    }
+    let target = url;
+    if (/(^|\.)(ncbi\.nlm\.nih\.gov|europepmc\.org)$/i.test(parsed.hostname)) {
+      const pmcid = /PMC\d+/i.exec(parsed.pathname + parsed.search)?.[0]?.toUpperCase();
+      if (!pmcid) continue;
+      target = `${EUROPE_PMC_FULLTEXT}${pmcid}/fullTextXML`;
+    }
+    if (!out.includes(target)) out.push(target);
+  }
+  return out;
+}
 
 async function safeUnpaywall(client: UnpaywallClient, doi: string): Promise<UnpaywallResult | null> {
   try {
@@ -330,6 +377,61 @@ export async function defaultHtmlToMarkdown(html: string, url: string): Promise<
   }
   const turndown = new Turndown({ headingStyle: "atx", codeBlockStyle: "fenced" });
   return turndown.turndown(contentHtml).trim();
+}
+
+/**
+ * Convert a JATS XML article (as Europe PMC's full-text API returns it) to
+ * markdown: title, abstract, then the body's sections as headings, paragraphs,
+ * lists, and figure and table captions. Reference lists are left out.
+ */
+export async function defaultJatsToMarkdown(xml: string): Promise<string> {
+  const { JSDOM } = await import("jsdom");
+  const doc = new JSDOM(xml, { contentType: "text/xml" }).window.document;
+  const text = (el: Element | null | undefined): string => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
+  const child = (el: Element, name: string): Element | undefined => [...el.children].find((c) => c.localName === name);
+  const out: string[] = [];
+
+  const title = doc.querySelector("article-meta article-title");
+  if (title) out.push(`# ${text(title)}`);
+  for (const abstract of doc.querySelectorAll("article-meta abstract")) {
+    out.push("## Abstract");
+    const paragraphs = abstract.querySelectorAll("p");
+    if (paragraphs.length === 0) out.push(text(abstract));
+    for (const p of paragraphs) out.push(text(p));
+  }
+
+  const walk = (node: Element, depth: number): void => {
+    for (const el of node.children) {
+      switch (el.localName) {
+        case "sec": {
+          const heading = child(el, "title");
+          if (heading) out.push(`${"#".repeat(Math.min(depth, 6))} ${text(heading)}`);
+          walk(el, depth + 1);
+          break;
+        }
+        case "title":
+          break; // printed as its section's heading
+        case "p":
+          out.push(text(el));
+          break;
+        case "list":
+          for (const item of el.children) if (item.localName === "list-item") out.push(`- ${text(item)}`);
+          break;
+        case "fig":
+        case "table-wrap": {
+          const label = child(el, "label");
+          const caption = child(el, "caption");
+          if (caption) out.push(`*${label ? `${text(label)}. ` : ""}${text(caption)}*`);
+          break;
+        }
+        default:
+          walk(el, depth);
+      }
+    }
+  };
+  const body = doc.querySelector("body");
+  if (body) walk(body, 2);
+  return out.filter(Boolean).join("\n\n");
 }
 
 /** Extract plain text from PDF bytes. Exported for the benchmark's web baseline, like `defaultHtmlToMarkdown`. */
