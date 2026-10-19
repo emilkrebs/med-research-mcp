@@ -1,23 +1,35 @@
 /**
- * ChinaRXiv / SovietRxiv adapter via the unified ChinaRxiv API.
+ * ChinaXiv and RussiaRxiv records via the ChinaRxiv API.
  *
- * API: GET https://chinarxiv.org/api/v1/papers
+ * API: GET https://chinarxiv.org/api/v1/papers (spec: https://chinarxiv.org/api/openapi.json)
  *
- * Single unified corpus covering both Chinese preprints (source=chinaxiv)
- * and Soviet-era Russian papers (source=russiarxiv). GET-based, no POST.
- * Optional X-API-Email header for higher rate limits (300/min vs 30/min):
- * set from MED_RESEARCH_CHINAXIV_EMAIL, falling back to NCBI_EMAIL
+ * ChinaRxiv is an independent project, not ChinaXiv, the Chinese Academy of
+ * Sciences preprint platform, which publishes no API. One API serves one corpus
+ * from several sites; the `source` parameter selects ChinaXiv preprints
+ * (`chinaxiv`) or the Soviet-era Russian papers of SovietRxiv (`russiarxiv`).
+ * Without it, a search mixes the corpora, so every request sets it.
+ *
+ * "Most records are machine-translated; some are originally in English"
+ * (chinarxiv.org, checked 2026-10-19). `source_language` names the original's
+ * language, and `abstract_source: "machine_generated"` marks an abstract the
+ * project wrote itself, as it did for almost all Soviet papers (see
+ * russiarxiv.ts). Both reach the record (`machineTranslated`,
+ * `machineGeneratedAbstract`), and the grader turns them into warning flags.
+ * The records carry no DOI.
+ *
+ * Rate limits: 30 requests per minute anonymously, 300 with an X-API-Email
+ * header, set from MED_RESEARCH_CHINAXIV_EMAIL, falling back to NCBI_EMAIL
  * (see chinaxivHeaders below).
  *
  * The search endpoint cuts abstracts at 500 characters ("…outcome indic..."),
- * which often drops the Results of a long Chinese abstract. Search keeps those
- * previews (one request per search); an explicit fetch (`fetchFull`) loads the
- * complete record from `/papers/{id}`.
+ * which often drops the Results of a long abstract. Search keeps those previews
+ * (one request per search); an explicit fetch (`fetchFull`) loads the complete
+ * record from `/papers/{id}`.
  */
 
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { cleanDoi, first, strArray, toIso1 } from "./util.js";
+import { cleanDoi, first, strArray } from "./util.js";
 import type { Cache } from "../cache.js";
 import type { Article, SearchInput } from "../types.js";
 
@@ -25,6 +37,18 @@ const BASE = "https://chinarxiv.org/api/v1/papers";
 const MAX_RESULTS_CAP = 50;
 /** Bound on the complete-record memo, like the base class's search memo. */
 const FULL_CAP = 1000;
+
+/** The corpora this adapter reads, by adapter id (also the API's `source` value). */
+export type ChinaRxivCorpus = "chinaxiv" | "russiarxiv";
+
+/** Where each corpus shows its English record pages (chinarxiv.org has no pages for `ru-` ids). */
+const ITEM_PAGE: Record<ChinaRxivCorpus, string> = {
+  chinaxiv: "https://chinarxiv.org/items/",
+  russiarxiv: "https://sovietrxiv.org/items/",
+};
+
+/** The original language when ChinaRxiv names none; the API's filter counts legacy rows as "zh" too. */
+const CORPUS_LANGUAGE: Record<ChinaRxivCorpus, string> = { chinaxiv: "zh", russiarxiv: "ru" };
 
 /**
  * ChinaRxiv asks for an X-API-Email contact header; sending it raises the rate
@@ -38,39 +62,44 @@ export function chinaxivHeaders(): Record<string, string> {
 }
 
 type Record_ = Record<string, unknown>;
-type LinkMap = Record<string, string>;
 
 export interface PaperResponse {
   data?: Record_[];
   total?: number;
-  page?: number;
   limit?: number;
+  next_cursor?: string | null;
 }
 
+/** One ChinaRxiv record (`PaperSummary` from search, `PaperDetail` from `/papers/{id}`) as an Article. */
 function toArticle(r: Record_): Article | null {
-  const id = first(r.id) ?? first(r.paper_id);
+  const id = first(r.id);
   if (!id) return null;
-  const doi = cleanDoi(first(r.doi));
-  const source = (first(r.source) ?? "chinaxiv") as string;
-  const language = source === "russiarxiv" ? "ru" : "zh";
-
-  // Prefer English title/abstract when available, fall back to original
-  const title = (first(r.title_en) ?? first(r.title) ?? "").replace(/\.$/, "");
-  const abstract = first(r.abstract_en) ?? first(r.abstract);
-  const url = first(r.url) ?? ((r._links as LinkMap)?.self) ?? `https://chinarxiv.org/papers/${id}`;
+  const corpus: ChinaRxivCorpus = first(r.source) === "russiarxiv" ? "russiarxiv" : "chinaxiv";
+  // zh, en, ru, de, or "mixed" (Chinese with some English); none on legacy rows.
+  const sourceLanguage = first(r.source_language);
 
   const article: Article = {
     pmid: id,
-    title,
+    title: (first(r.title) ?? "").replace(/\.$/, ""),
     authors: strArray(r.authors),
-    journal: first(r.journal) ?? first(r.publication) ?? "ChinaRXiv",
-    pubDate: first(r.pub_date) ?? first(r.date) ?? first(r.year) ?? "",
+    journal: first(r.publication_title) ?? first(r.publication) ?? (corpus === "chinaxiv" ? "ChinaXiv" : ""),
+    pubDate: first(r.date) ?? "",
     publicationTypes: [],
-    database: source === "russiarxiv" ? "russiarxiv" : "chinaxiv",
-    url,
-    language,
+    database: corpus,
+    url: `${ITEM_PAGE[corpus]}${encodeURIComponent(id)}`,
+    language: sourceLanguage && sourceLanguage !== "mixed" ? sourceLanguage : CORPUS_LANGUAGE[corpus],
   };
-  if (abstract) article.abstract = abstract;
+  const original = first(r.source_url);
+  if (original) article.originalUrl = original;
+  // Conservative: anything not detected as English counts as translated, "mixed" and legacy rows included.
+  if (sourceLanguage !== "en") article.machineTranslated = true;
+  const abstract = first(r.abstract);
+  if (abstract) {
+    article.abstract = abstract;
+    if (first(r.abstract_source) === "machine_generated") article.machineGeneratedAbstract = true;
+  }
+  // Not in the v1 schema; kept so a DOI, should records gain one, enables de-duplication and full text.
+  const doi = cleanDoi(first(r.doi));
   if (doi) article.doi = doi;
   return article;
 }
@@ -86,22 +115,24 @@ export function parsePapers(data: PaperResponse): { count: number; articles: Art
   return { count, articles };
 }
 
-export class ChinaRXivAdapter extends RestAdapter {
-  readonly id = "chinaxiv";
-  readonly name = "ChinaRXiv";
+/** One corpus of the ChinaRxiv API. Subclasses pick the corpus; everything else is shared. */
+export abstract class ChinaRxivApiAdapter extends RestAdapter {
+  protected abstract readonly corpus: ChinaRxivCorpus;
 
-  constructor(http: AdapterHttp = defaultHttp({ headers: chinaxivHeaders() })) {
+  constructor(http: AdapterHttp = defaultHttp({ headers: chinaxivHeaders(), source: "ChinaRxiv" })) {
     super(http);
+  }
+
+  /** The API `source` to search; the chinaxiv adapter reads `language: "ru"` as RussiaRxiv. */
+  protected sourceFor(_input: SearchInput): ChinaRxivCorpus {
+    return this.corpus;
   }
 
   async search(input: SearchInput): Promise<{ count: number; ids: string[] }> {
     const limit = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
-    const params = new URLSearchParams({
-      q: input.query,
-      limit: String(limit),
-      page: "1",
-    });
-    if (input.language === "ru") params.set("source", "russiarxiv");
+    const params = new URLSearchParams({ q: input.query, limit: String(limit), source: this.sourceFor(input) });
+    if (input.dateRange?.from) params.set("from_date", input.dateRange.from);
+    if (input.dateRange?.to) params.set("to_date", input.dateRange.to);
 
     const data = await this.http.json<PaperResponse>(`${BASE}?${params.toString()}`);
     const parsed = parsePapers(data);
@@ -150,5 +181,16 @@ export class ChinaRXivAdapter extends RestAdapter {
     const record = await this.http.json<Record_>(`${BASE}/${encodeURIComponent(id)}`);
     const article = parsePapers({ data: [record] }).articles[0];
     return article?.pmid === id ? article : null;
+  }
+}
+
+/** ChinaXiv preprints. */
+export class ChinaRXivAdapter extends ChinaRxivApiAdapter {
+  readonly id = "chinaxiv";
+  readonly name = "ChinaXiv (via ChinaRxiv)";
+  protected readonly corpus = "chinaxiv";
+
+  protected override sourceFor(input: SearchInput): ChinaRxivCorpus {
+    return input.language === "ru" ? "russiarxiv" : "chinaxiv";
   }
 }

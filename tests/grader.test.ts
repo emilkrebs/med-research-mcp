@@ -196,6 +196,15 @@ describe("classifyDesign — integrity flags", () => {
     expect(pt("Preprint")).toMatchObject({ designTier: null, flags: ["preprint"] });
     expect(pt("Letter", "Randomized Controlled Trial")).toMatchObject({ designTier: 4, flags: ["letter"] });
   });
+
+  it("warns of machine-translated text and machine-written abstracts (ChinaRxiv records) without a tier", () => {
+    const record = { title: "T", publicationTypes: [], machineTranslated: true, machineGeneratedAbstract: true };
+    expect(classifyDesign(record)).toEqual({
+      studyType: "unknown",
+      designTier: null,
+      flags: ["machine-translated", "machine-generated-abstract"],
+    });
+  });
 });
 
 describe("classifyDesign — no metadata", () => {

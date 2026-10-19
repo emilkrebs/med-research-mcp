@@ -37,6 +37,8 @@ export type StudyType = (typeof STUDY_TYPES)[number];
  * Facts about a record, read from its database metadata. `retracted`, `notice`,
  * `protocol` and `editorial` mean the record is not usable as evidence, so its
  * `designTier` is 0; the rest are warnings that leave the tier alone.
+ * `machine-translated` and `machine-generated-abstract` describe the text of a
+ * ChinaXiv or RussiaRxiv record, not the study.
  */
 export const RECORD_FLAGS = [
   "retracted",
@@ -49,6 +51,8 @@ export const RECORD_FLAGS = [
   "animals-not-humans",
   "preprint",
   "letter",
+  "machine-translated",
+  "machine-generated-abstract",
 ] as const;
 
 export type RecordFlag = (typeof RECORD_FLAGS)[number];
@@ -97,6 +101,12 @@ export interface Article {
   url?: string;
   /** Language of the article (ISO 639-1). Treated as "en" when absent. */
   language?: string;
+  /** The record a translated copy was made from (ChinaXiv, Math-Net.Ru, …), for checking the original. */
+  originalUrl?: string;
+  /** Title and abstract are a machine translation into English (ChinaXiv and RussiaRxiv records). */
+  machineTranslated?: boolean;
+  /** The abstract was written by the database, not the authors (most RussiaRxiv records). */
+  machineGeneratedAbstract?: boolean;
 }
 
 /** An article with its study design classified from NLM metadata. */

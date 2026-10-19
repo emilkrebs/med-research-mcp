@@ -54,11 +54,13 @@ export function isMedResearchError(value: unknown): value is ResearchApiExceptio
 }
 
 export const errors = {
-  rateLimit(retryAfter = 1): ResearchApiException {
+  /** @param source the database that answered 429, named in the message. */
+  rateLimit(retryAfter = 1, source = "PubMed"): ResearchApiException {
+    const hint = source === "PubMed" ? " Set NCBI_API_KEY to raise the limit from 3 to 10 requests/second." : "";
     return new ResearchApiException({
       code: "RATE_LIMIT",
-      message: `Rate limit hit; retry after ${retryAfter}s`,
-      userMessage: `Too many requests to PubMed. Wait ${retryAfter}s and try again. Set an API-Key, like NCBI_API_KEY to raise the limit from 3 to 10 requests/second.`,
+      message: `${source} rate limit hit; retry after ${retryAfter}s`,
+      userMessage: `Too many requests to ${source}. Wait ${retryAfter}s and try again.${hint}`,
       recoverable: true,
       retryAfter,
     });
@@ -96,6 +98,19 @@ export const errors = {
       code: "NOT_FOUND",
       message: `PMID ${pmid} not found`,
       userMessage: `No PubMed article found for PMID ${pmid}. Check the identifier.`,
+      recoverable: false,
+    });
+  },
+
+  /** A non-PubMed id reached a DOI-based lookup without a DOI. */
+  noDoi(id: string): ResearchApiException {
+    return new ResearchApiException({
+      code: "NOT_FOUND",
+      message: `No DOI for non-PubMed id ${id}`,
+      userMessage:
+        `"${id}" is not a PMID, and no DOI was given. Full text is found through the DOI: pass the doi from the ` +
+        `literature_search result. Records without one (ChinaXiv and RussiaRxiv records have none) can't be resolved; ` +
+        `open their url instead.`,
       recoverable: false,
     });
   },

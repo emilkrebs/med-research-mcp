@@ -59,7 +59,7 @@ async function bundleServer() {
       platform: "node",
       format: "cjs",
       target: "node22",
-      // The bundle ships without package.json; src/mcp/server.ts reads this instead.
+      // The bundle ships without package.json; src/core/version.ts reads this instead.
       define: { __MED_RESEARCH_VERSION__: JSON.stringify(version) },
       minify: false,
       sourcemap: false,

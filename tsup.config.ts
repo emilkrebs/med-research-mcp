@@ -18,7 +18,7 @@ export default defineConfig({
   // native compiler, so we let tsc handle .d.ts directly.
   dts: false,
   target: "node22",
-  // Read by src/mcp/server.ts, so the server never reads package.json at runtime.
+  // Read by src/core/version.ts, so the build never reads package.json at runtime.
   define: { __MED_RESEARCH_VERSION__: JSON.stringify(version) },
   outDir: "dist",
   sourcemap: true,

@@ -131,7 +131,7 @@ export class EuropePmcAdapter extends RestAdapter {
   readonly id = "europepmc";
   readonly name = "Europe PMC";
 
-  constructor(http: AdapterHttp = defaultHttp()) {
+  constructor(http: AdapterHttp = defaultHttp({ source: "Europe PMC" })) {
     super(http);
   }
 

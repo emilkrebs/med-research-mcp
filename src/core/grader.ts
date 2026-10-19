@@ -6,7 +6,9 @@
  * and CommentsCorrections links, and one MeSH warning from the Animals/Humans
  * check tags. A record without such metadata (not yet MEDLINE-indexed, regional
  * databases) stays `unknown`: the calling model reads the design from the
- * abstract, guided by the `med-research` skill.
+ * abstract, guided by the `med-research` skill. Two more warnings describe a
+ * ChinaXiv or RussiaRxiv record's text: machine-translated, or an abstract the
+ * database wrote itself.
  *
  * These labels are NLM's, but not hand-curated: since 2022 NLM indexes MEDLINE
  * automatically (MTIA, then the neural MTIX), with human curation of selected
@@ -224,7 +226,9 @@ function designFromTags(tags: ReadonlySet<string>): { design: Design; tier?: num
 }
 
 /** Classify a record from its metadata. Exposed for testing without constructing an Article. */
-export function classifyDesign(meta: Pick<Article, "title" | "publicationTypes" | "meshHeadings" | "corrections">): Classification {
+export function classifyDesign(
+  meta: Pick<Article, "title" | "publicationTypes" | "meshHeadings" | "corrections" | "machineTranslated" | "machineGeneratedAbstract">,
+): Classification {
   const tags = lowerSet(meta.publicationTypes);
   const mesh = lowerSet(meta.meshHeadings);
   const links = new Set((meta.corrections ?? []).map((c) => c.type));
@@ -254,6 +258,10 @@ export function classifyDesign(meta: Pick<Article, "title" | "publicationTypes" 
   }
   if (PREPRINT(tags)) flags.push("preprint");
   if (LETTER(tags)) flags.push("letter");
+  // The record's text, not the study: set by the ChinaRxiv adapter from the API's
+  // source_language and abstract_source fields (see adapters/chinarxiv.ts).
+  if (meta.machineTranslated) flags.push("machine-translated");
+  if (meta.machineGeneratedAbstract) flags.push("machine-generated-abstract");
 
   let designTier: number | null = null;
   if (flags.some((f) => NOT_EVIDENCE.has(f))) designTier = 0;

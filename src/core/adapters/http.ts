@@ -10,9 +10,9 @@
  */
 
 import { errors } from "../errors.js";
+import { USER_AGENT } from "../version.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
-const DEFAULT_USER_AGENT = "med-research-mcp/0.5.0 (https://github.com/emilkrebs/med-research-mcp)";
 
 /** Fetches a URL and returns either parsed JSON or raw text. */
 export interface AdapterHttp {
@@ -27,11 +27,14 @@ export interface HttpOptions {
   userAgent?: string;
   /** Extra headers merged into every request (after User-Agent/Accept, so they can override). */
   headers?: Record<string, string>;
+  /** Service name for rate-limit errors, e.g. "Europe PMC". */
+  source?: string;
 }
 
 export function defaultHttp(options: HttpOptions = {}): AdapterHttp {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
+  const userAgent = options.userAgent ?? USER_AGENT;
+  const source = options.source ?? "the database";
 
   async function request(url: string, accept: string): Promise<Response> {
     const ac = new AbortController();
@@ -48,7 +51,7 @@ export function defaultHttp(options: HttpOptions = {}): AdapterHttp {
       clearTimeout(timer);
     }
     if (res.status === 429) {
-      throw errors.rateLimit(Number(res.headers.get("retry-after")) || 1);
+      throw errors.rateLimit(Number(res.headers.get("retry-after")) || 1, source);
     }
     if (!res.ok) {
       throw errors.network(`Upstream returned HTTP ${res.status}`);
