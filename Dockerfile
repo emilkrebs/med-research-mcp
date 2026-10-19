@@ -1,9 +1,10 @@
 # Hosted MCP server over Streamable HTTP (src/http/index.ts).
 # Multi-stage: build with dev dependencies, run with production ones only.
 # The build stage needs a full install: tsc (TS 7 native) and tsup (esbuild)
-# ship their platform binaries as optional dependencies. Optional packages are
-# pruned afterwards, which also drops better-sqlite3 — the hosted instance
-# uses the default in-memory cache.
+# ship their platform binaries as optional dependencies. Pruning with
+# --omit=dev drops those along with the dev packages that own them, but keeps
+# better-sqlite3 (an optional dependency of this package) for the persistent
+# cache. The default is still the in-memory cache; see docs/hosting.md.
 
 FROM node:22-slim AS build
 WORKDIR /app
@@ -11,7 +12,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json tsup.config.ts ./
 COPY src ./src
-RUN npm run build && npm prune --omit=dev --omit=optional
+RUN npm run build && npm prune --omit=dev
 
 FROM node:22-slim
 ENV NODE_ENV=production
@@ -23,6 +24,9 @@ WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
+# Home for the SQLite cache file. Owned by `node` so a named volume mounted here
+# is writable; unused unless MED_RESEARCH_CACHE_BACKEND=sqlite is set.
+RUN mkdir /data && chown node:node /data
 # The default HOST (127.0.0.1) would not be reachable outside the container.
 ENV HOST=0.0.0.0
 USER node

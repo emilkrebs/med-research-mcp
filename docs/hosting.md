@@ -23,8 +23,11 @@ The hosted endpoint is designed to know as little as possible:
   entries are swept hourly.
 - **No accounts.** Access control is a single shared bearer token, or none.
 - **No storage.** The default cache backend is in-memory and dies with the
-  process. (`MED_RESEARCH_CACHE_BACKEND=sqlite` is available if you run your
-  own instance and want persistence.)
+  process. If you run your own instance you can opt in to a persistent SQLite
+  cache ([below](#persistent-cache-sqlite)); it holds public article records
+  keyed by ID, never query text or client IPs, but the set of cached IDs does
+  show which articles have been looked up. Leave it off on an instance where
+  that matters.
 
 ## Endpoints
 
@@ -48,7 +51,7 @@ git clone https://github.com/emilkrebs/med-research-mcp.git
 cd med-research-mcp
 npm ci                   # full install: tsc (TS 7) and tsup need their optional platform binaries
 npm run build
-npm prune --omit=dev --omit=optional   # drop build tooling and better-sqlite3; the hosted cache is in-memory
+npm prune --omit=dev     # drop build tooling; better-sqlite3 stays for the optional persistent cache
 
 NCBI_EMAIL=you@example.com \
 MED_RESEARCH_HTTP_TOKEN=$(openssl rand -hex 32) \
@@ -93,7 +96,51 @@ docker run -d --name med-research-mcp \
 The image runs as the `node` user, sets `HOST=0.0.0.0` (the default loopback
 bind would be unreachable outside the container), exposes 8787 and health
 checks `GET /health`. Keep the port on loopback and proxy to it, or publish it
-as you see fit.
+as you see fit. The cache is in-memory unless you enable the SQLite backend
+below.
+
+## Persistent cache (SQLite)
+
+By default the cache starts empty on every restart. To keep it across restarts
+and deploys, switch to the SQLite backend:
+
+```bash
+MED_RESEARCH_CACHE_BACKEND=sqlite \
+MED_RESEARCH_CACHE_PATH=/var/lib/med-research-mcp/cache.db \
+NCBI_EMAIL=you@example.com \
+MED_RESEARCH_HTTP_TOKEN=<token> \
+npm run start:http
+```
+
+The directory must exist and be writable by the service user. With Docker,
+keep the file on a volume (the image creates `/data`, owned by `node`):
+
+```bash
+docker run -d --name med-research-mcp \
+  -e NCBI_EMAIL=you@example.com \
+  -e MED_RESEARCH_HTTP_TOKEN=<token> \
+  -e MED_RESEARCH_CACHE_BACKEND=sqlite \
+  -e MED_RESEARCH_CACHE_PATH=/data/cache.db \
+  -v med-research-cache:/data \
+  -p 127.0.0.1:8787:8787 \
+  med-research-mcp
+```
+
+A bind mount instead of a named volume must be writable by uid 1000 (`node`).
+
+- **Check the startup log.** If SQLite can't be used (the module fails to load,
+  or the path isn't writable) the server logs `… — using in-memory cache.` and
+  keeps running with the in-memory cache, so a misconfiguration doesn't stop
+  the service, it just loses persistence.
+- **No compiler needed on common platforms.** `better-sqlite3` ships prebuilt
+  binaries for Linux (x64 and arm64, glibc and musl), macOS and Windows.
+  Other platforms compile it from source.
+- **One instance per cache file.** The rate limiters are per-process anyway, so
+  this is a single-host setup. Don't share the file between replicas.
+- **Expiry.** Summaries expire after 7 days and full texts after 30; abstracts
+  never do. Expired rows are removed on startup and then hourly. Because
+  abstracts are kept, the file grows with the number of distinct articles
+  served. It is only a cache: stop the server and delete the file to reset it.
 
 ## Environment variables
 
@@ -114,7 +161,7 @@ lists the rest):
 
 Relevant non-HTTP variables, unchanged: `NCBI_EMAIL` (recommended),
 `NCBI_API_KEY`, `MED_RESEARCH_UNPAYWALL_EMAIL`, `MED_RESEARCH_CACHE_BACKEND`,
-`MED_RESEARCH_CACHE_PATH`.
+`MED_RESEARCH_CACHE_PATH` (see [Persistent cache](#persistent-cache-sqlite)).
 
 **`MED_RESEARCH_PROXY_PREFIX` is not usable in a hosted setup.** The
 institutional-proxy route depends on the caller's own proxy session; a hosted
@@ -144,4 +191,6 @@ through open access (Unpaywall / direct DOI) there.
   if it isn't an IP. stdout stays clean.
 - `SIGINT`/`SIGTERM` stop accepting connections, close the HTTP server and
   flush the cache backend before exiting 0.
+- With the SQLite cache, expired rows are swept hourly; a failed sweep is
+  logged to stderr and retried on the next tick.
 - `GET /health` is suitable for load-balancer and container health checks.
