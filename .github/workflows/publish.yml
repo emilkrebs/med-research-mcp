@@ -1,0 +1,76 @@
+# Publish to npm when a GitHub release is published. A prerelease version
+# (0.6.0-next.1) goes to the `next` dist-tag, any other to `latest`. npm trusted
+# publishing authenticates the job (OIDC, no token), and npm adds provenance.
+#
+# The first version was published by hand, since npm only takes a trusted
+# publisher for a package that exists: see docs/publishing.md.
+
+name: Publish
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+# Never let two publish runs race each other.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: npm
+    runs-on: ubuntu-latest
+    # The trusted publisher on npmjs.com names this environment.
+    environment: publish
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing and provenance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Node 24 ships npm 11.19; trusted publishing needs 11.5.1 or later. No
+      # dependency cache: a release job shouldn't restore what other runs saved.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          check-latest: true
+          package-manager-cache: false
+          registry-url: "https://registry.npmjs.org"
+
+      # The tag must name the version being published, and the release must be
+      # marked as a pre-release exactly when the version is one: the README links
+      # to the latest release, which GitHub picks among non-pre-releases.
+      - name: Check the release against package.json
+        id: version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::Release tag $TAG doesn't match package.json version $version."
+            exit 1
+          fi
+          case "${version%%+*}" in
+            *-*) dist_tag=next is_prerelease=true ;;
+            *) dist_tag=latest is_prerelease=false ;;
+          esac
+          if [ "$PRERELEASE" != "$is_prerelease" ]; then
+            echo "::error::The release's pre-release setting ($PRERELEASE) doesn't match version $version."
+            exit 1
+          fi
+          echo "dist-tag=$dist_tag" >> "$GITHUB_OUTPUT"
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      # prepublishOnly builds dist/.
+      - run: npm publish --tag "$DIST_TAG"
+        env:
+          DIST_TAG: ${{ steps.version.outputs.dist-tag }}

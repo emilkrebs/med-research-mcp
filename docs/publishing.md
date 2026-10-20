@@ -4,15 +4,15 @@ How to publish a version to npm, GitHub and ModelScope's MCP Square. The order m
 
 ## 1. Before the first release
 
-- **Make the GitHub repository public.** ModelScope's quick create reads the README from GitHub, the README's logo loads from `raw.githubusercontent.com`, and the install instructions clone the repository and link its releases.
+- **Make the GitHub repository public.** ModelScope's quick create reads the README from GitHub, the README's logo loads from `raw.githubusercontent.com`, and the install instructions clone the repository and link its releases. npm also generates provenance only for packages published from a public repository.
 - **Register the tool name with NCBI.** NCBI's usage guidelines say that sending `tool` and `email` "is not sufficient to comply with this policy; these values must be registered with NCBI" ([NBK25497](https://www.ncbi.nlm.nih.gov/books/NBK25497/)). Email <eutilities@ncbi.nlm.nih.gov> with the tool name `med-research-mcp`, your contact email, your name and the repository URL. It's a one-off.
 - **Read the terms of the services the server calls** ([compliance.md](compliance.md#upstream-services)), and ModelScope's [user agreement](https://www.modelscope.cn/docs/agreements/terms) before submitting there (see [step 5](#5-modelscope-mcp-square)).
 
 ## 2. Prepare the version
 
 1. Make sure CI is green on `main`.
-2. Set the version in `package.json` with `npm version <x.y.z> --no-git-tag-version`, then in `mcpb/manifest.json`, `plugin.json` and `mcp.json` (`build:mcpb` refuses a manifest version that differs from `package.json`).
-3. In [CHANGELOG.md](../CHANGELOG.md), replace "(unreleased)" with the date.
+2. Set the version in `package.json` with `npm version <x.y.z> --no-git-tag-version`, then in `mcpb/manifest.json`, `plugin.json` and `mcp.json` (`build:mcpb` refuses a manifest version that differs from `package.json`). A pre-release has a suffix: `0.6.0-next.0`, `0.6.0-next.1`, …
+3. In [CHANGELOG.md](../CHANGELOG.md), replace "(unreleased)" with the date. Leave it for a pre-release.
 4. Run the checks the release depends on:
 
    ```bash
@@ -22,16 +22,29 @@ How to publish a version to npm, GitHub and ModelScope's MCP Square. The order m
    npm pack --dry-run   # should list dist/core, dist/mcp, dist/http, src, skills, mcpb/manifest.json
    ```
 
-5. Commit, tag `v<x.y.z>` and push both.
+5. Commit and push to `main`, or merge a pull request with the change.
 
-## 3. npm
+## 3. GitHub release
+
+Publishing a release publishes the package to npm ([step 4](#4-npm)). Build the `.mcpb` from `main` and create the release with the changelog section as its notes:
 
 ```bash
-npm login
-npm publish            # prepublishOnly rebuilds dist/
+git switch main && git pull
+npm run build:mcpb
+gh release create v<x.y.z> dist/med-research-mcp.mcpb --target main --title v<x.y.z> --notes-file <notes.md>
 ```
 
-Then check the published package the way a client runs it, from a directory outside the repository and with no environment variables set: it must start, keep stdout clean (stdout is the MCP channel; logs go to stderr), and list three tools.
+For a pre-release, add `--prerelease` (on the website: "Set as a pre-release"). The workflow refuses a release whose pre-release setting doesn't match the version. The README's Claude Desktop instructions link to the latest release's `.mcpb`, and GitHub's latest release skips pre-releases, so that link keeps pointing at the last release.
+
+## 4. npm
+
+[`publish.yml`](../.github/workflows/publish.yml) runs when a release is published. It checks that the tag is `v` plus the version in `package.json` and that the release's pre-release setting matches the version, runs the typecheck and tests, and runs `npm publish`. It authenticates with [trusted publishing](https://docs.npmjs.com/trusted-publishers), with no token, and npm adds provenance. A pre-release goes to the `next` dist-tag and any other version to `latest`, so `npx med-research-mcp` keeps installing the last release and `med-research-mcp@next` the pre-release.
+
+The job runs in the `publish` environment. To require an approval before each publish, add required reviewers under the repository's Settings → Environments → publish.
+
+A run that fails before `npm publish` has published nothing. Fix the cause and re-run it; if the fix needs a new commit, delete the release and its tag and create them again.
+
+Once it has published, check the package the way a client runs it, from a directory outside the repository and with no environment variables set: it must start, keep stdout clean (stdout is the MCP channel; logs go to stderr), and list three tools.
 
 ```bash
 cd "$(mktemp -d)"
@@ -42,9 +55,24 @@ printf '%s\n' \
   | npx -y med-research-mcp@<x.y.z>
 ```
 
-## 4. GitHub release
+### The first publish
 
-Create a release for the tag, paste the changelog section as its notes, and attach `dist/med-research-mcp.mcpb` from `npm run build:mcpb`. The README's Claude Desktop instructions link to the latest release's `.mcpb`.
+npm only takes a trusted publisher for a package that exists, so the first version, a pre-release, is published from your machine, and the second one through the workflow:
+
+1. Prepare `0.6.0-next.0` as in [step 2](#2-prepare-the-version).
+2. On `main`, at that commit:
+
+   ```bash
+   npm login
+   npm publish --tag next   # prepublishOnly rebuilds dist/
+   git tag v0.6.0-next.0 && git push origin v0.6.0-next.0
+   ```
+
+   npm refuses a pre-release without `--tag`. This version has no provenance; npm generates it only in CI. Don't create a GitHub release for it: the workflow would try to publish the version again and fail.
+3. Prepare `0.6.0-next.1`.
+4. On npmjs.com, add a trusted publisher under the package's Settings → Trusted publishing: GitHub Actions, user `emilkrebs`, repository `med-research-mcp`, workflow filename `publish.yml`, environment `publish` (all case-sensitive). Under allowed actions, allow `npm publish`; otherwise only [staged publishing](https://docs.npmjs.com/staged-publishing) is allowed. A new configuration expires if it hasn't published within 2 days, which is why the next version is ready first.
+5. Create the release for `v0.6.0-next.1` as a pre-release ([step 3](#3-github-release)). The workflow publishes it to `next`, and its npm page should show provenance.
+6. Under Settings → Publishing access, choose "Require two-factor authentication and disallow tokens". The workflow doesn't use a token, so it keeps working.
 
 ## 5. ModelScope MCP Square
 
@@ -97,7 +125,7 @@ ModelScope lists MCP servers at <https://www.modelscope.cn/mcp> and can host npm
 
 **ModelScope's terms to know** ([user agreement](https://www.modelscope.cn/docs/agreements/terms), checked 2026-10-19). Content published there is reviewed for prohibited material (political, pornographic, violent, illegal, advertising or spam). Publishing grants ModelScope a worldwide, irrevocable, sublicensable licence to host and distribute it, and every user a perpetual, irrevocable licence to use, copy and adapt it through ModelScope (§3.2.1; compatible with the MIT license). The agreement is governed by Chinese law (§9.5), registration requires phone verification (§2.2.2), and the service "旨在供中华人民共和国内地用户使用" — is intended for users in mainland China, without a guarantee for anyone else (§10.2).
 
-**On each later release:** ModelScope doesn't re-read the README by itself. Update the README and config in the listing's Settings; hosted connections with `@latest` pick up the new npm version.
+**On each later release:** ModelScope doesn't re-read the README by itself. Update the README and config in the listing's Settings; hosted connections with `@latest` pick up the new npm version. Pre-releases go to `next` and leave the listing alone.
 
 Questions about a listing: DingTalk group 44837352, as ModelScope's [contribution article](https://www.modelscope.cn/headlines/article/1189) gives.
 
