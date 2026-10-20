@@ -8,6 +8,7 @@ import { XMLParser } from "fast-xml-parser";
 import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors } from "./errors.js";
+import { USER_AGENT } from "./version.js";
 import { classifyArticle, unclassifiedDroppedWarning } from "./grader.js";
 import { CORRECTION_TYPES } from "./types.js";
 import type { Correction, CorrectionType, FetchInput, FetchOutput, GradedArticle, Article, SearchInput, SearchOutput, StudyType } from "./types.js";
@@ -123,7 +124,7 @@ export class NcbiClient {
       const timer = setTimeout(() => ac.abort(), this.timeoutMs);
       let res: Response;
       try {
-        res = await fetch(url, { signal: ac.signal });
+        res = await fetch(url, { signal: ac.signal, headers: { "User-Agent": USER_AGENT } });
       } catch (err) {
         throw errors.network(err instanceof Error ? err.message : String(err));
       } finally {

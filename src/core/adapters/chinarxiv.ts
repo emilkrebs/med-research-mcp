@@ -29,7 +29,7 @@
 
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { cleanDoi, first, strArray } from "./util.js";
+import { cleanDoi, first, isoDateBound, strArray, withoutPubMedTags } from "./util.js";
 import type { Cache } from "../cache.js";
 import type { Article, SearchInput } from "../types.js";
 
@@ -130,9 +130,12 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
 
   async search(input: SearchInput): Promise<{ count: number; ids: string[] }> {
     const limit = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
-    const params = new URLSearchParams({ q: input.query, limit: String(limit), source: this.sourceFor(input) });
-    if (input.dateRange?.from) params.set("from_date", input.dateRange.from);
-    if (input.dateRange?.to) params.set("to_date", input.dateRange.to);
+    // PubMed field tags mean nothing here and would be searched as words.
+    const params = new URLSearchParams({ q: withoutPubMedTags(input.query), limit: String(limit), source: this.sourceFor(input) });
+    const from = isoDateBound(input.dateRange?.from, "from");
+    const to = isoDateBound(input.dateRange?.to, "to");
+    if (from) params.set("from_date", from);
+    if (to) params.set("to_date", to);
 
     const data = await this.http.json<PaperResponse>(`${BASE}?${params.toString()}`);
     const parsed = parsePapers(data);

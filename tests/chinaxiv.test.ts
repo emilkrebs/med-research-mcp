@@ -196,6 +196,19 @@ describe("ChinaRXivAdapter", () => {
     expect(params.get("to_date")).toBe("1961-12-31");
   });
 
+  it("expands a year or month to full dates and drops PubMed field tags from the query", async () => {
+    const { http, urls } = fakeHttp({ total: 0, data: [] });
+    await new ChinaRXivAdapter(http).search({ query: "creatine AND cognition[tiab]", dateRange: { from: "2020", to: "2021-02" } });
+    const params = new URL(urls[0]!).searchParams;
+    expect(params.get("q")).toBe("creatine AND cognition");
+    expect(params.get("from_date")).toBe("2020-01-01");
+    expect(params.get("to_date")).toBe("2021-02-28");
+
+    const invalid = fakeHttp({ total: 0, data: [] });
+    await new ChinaRXivAdapter(invalid.http).search({ query: "x", dateRange: { from: "last year" } });
+    expect(new URL(invalid.urls[0]!).searchParams.has("from_date")).toBe(false);
+  });
+
   it("cold fetch() uses the exact /papers/{id} endpoint and maps the date field", async () => {
     const record = { ...CHINAXIV_RECORD, id: "chinaxiv-202608.00133", date: "2026-08-26" };
     const { http, urls } = fakeHttp(record);

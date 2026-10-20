@@ -8,6 +8,8 @@
  * (https://unpaywall.org/products/api, checked 2026-10-19).
  */
 
+import { USER_AGENT } from "./version.js";
+
 const UNPAYWALL_BASE = "https://api.unpaywall.org/v2";
 
 /** A single open-access location as reported by Unpaywall. */
@@ -75,7 +77,7 @@ export class UnpaywallClient {
     const timer = setTimeout(() => ac.abort(), this.timeoutMs);
     let res: Response;
     try {
-      res = await fetch(url, { signal: ac.signal });
+      res = await fetch(url, { signal: ac.signal, headers: { "User-Agent": USER_AGENT } });
     } catch {
       return null;
     } finally {

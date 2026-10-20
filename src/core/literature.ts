@@ -14,6 +14,7 @@
 import { ADAPTERS, getAdapter, getAdapters, type DatabaseAdapter } from "./adapters/registry.js";
 import { doiKey } from "./adapters/util.js";
 import { LRUBackend, type Cache } from "./cache.js";
+import { isMedResearchError } from "./errors.js";
 import { classifyArticle, mergeDuplicate, rankKey, unclassifiedDroppedWarning } from "./grader.js";
 import type {
   FetchOutput,
@@ -33,26 +34,20 @@ function toIdList(database: SearchInput["database"]): string[] {
   return list.length > 0 ? list : ["pubmed"];
 }
 
-/** Keep one article per DOI (see {@link mergeDuplicate}); DOI-less articles all pass through. */
+/**
+ * Keep one article per DOI (see {@link mergeDuplicate}). DOI-less articles are merged only
+ * when the same database returned the same id twice (the chinaxiv adapter with language
+ * "ru" and the russiarxiv adapter search the same corpus).
+ */
 function dedupeByDoi(articles: GradedArticle[]): GradedArticle[] {
+  // Map iteration keeps first-seen order: a merged copy takes the place of the first one.
   const byKey = new Map<string, GradedArticle>();
-  // `slots` preserves first-seen order; a string entry is a DOI key placeholder.
-  const slots: (GradedArticle | string)[] = [];
   for (const article of articles) {
-    const key = doiKey(article.doi);
-    if (!key) {
-      slots.push(article);
-      continue;
-    }
+    const key = doiKey(article.doi) ?? `id:${article.database ?? "pubmed"}:${article.pmid}`;
     const existing = byKey.get(key);
-    if (!existing) {
-      byKey.set(key, article);
-      slots.push(key);
-    } else {
-      byKey.set(key, mergeDuplicate(existing, article));
-    }
+    byKey.set(key, existing ? mergeDuplicate(existing, article) : article);
   }
-  return slots.map((slot) => (typeof slot === "string" ? byKey.get(slot)! : slot));
+  return [...byKey.values()];
 }
 
 /**
@@ -81,6 +76,7 @@ export async function searchLiterature(
   const maxResults = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
 
   // Fan out. One adapter failing must not sink the others — it degrades to a warning.
+  const failures: unknown[] = [];
   const perAdapter = await Promise.all(
     selected.map(async (adapter) => {
       try {
@@ -88,11 +84,16 @@ export async function searchLiterature(
         const articles = await adapter.fetch(ids.slice(0, maxResults), cache);
         return { count, articles };
       } catch (err) {
-        warnings.push(`${adapter.name} search failed: ${err instanceof Error ? err.message : String(err)}`);
+        failures.push(err);
+        const reason = isMedResearchError(err) ? err.userMessage : err instanceof Error ? err.message : String(err);
+        warnings.push(`${adapter.name} search failed: ${reason}`);
         return { count: 0, articles: [] as Article[] };
       }
     }),
   );
+  // When nothing was searched successfully, an empty result would read as "no studies exist".
+  // Raise the error instead, with its code (RATE_LIMIT, QUERY_TOO_BROAD, …) and retry hint.
+  if (failures.length === selected.length) throw failures[0];
 
   let total = 0;
   const graded: GradedArticle[] = [];
@@ -150,8 +151,9 @@ export async function fetchLiterature(
   }
 
   const articles = resolved.fetchFull ? await resolved.fetchFull(input.ids, cache) : await resolved.fetch(input.ids, cache);
-  // Case-insensitive: adapters return canonical ids ("PPR123456") for any input case.
-  const found = new Set(articles.map((a) => a.pmid.toUpperCase()));
+  // Case-insensitive: adapters return canonical ids ("PPR123456") for any input case. A PMCID
+  // fetched from Europe PMC comes back under its PMID, so it counts as found through `pmcid`.
+  const found = new Set(articles.flatMap((a) => [a.pmid, a.pmcid ?? ""]).map((id) => id.toUpperCase()));
   const missing = input.ids.filter((id) => !found.has(id.toUpperCase()));
 
   return {

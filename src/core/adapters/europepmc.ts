@@ -21,7 +21,7 @@
 
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { cleanDoi, first, splitAuthors, strArray, toIso1 } from "./util.js";
+import { cleanDoi, first, isoDateBound, splitAuthors, strArray, toIso1, withoutPubMedTags } from "./util.js";
 import type { Article, Correction, CorrectionType, SearchInput } from "../types.js";
 
 const BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest/search";
@@ -31,6 +31,7 @@ interface EpmcResult {
   id?: string;
   source?: string;
   pmid?: string;
+  pmcid?: string;
   doi?: string;
   title?: string;
   authorString?: string;
@@ -108,6 +109,8 @@ function toArticle(r: EpmcResult): Article | null {
   const abstract = first(r.abstractText);
   if (abstract) article.abstract = abstract;
   if (doi) article.doi = doi;
+  const pmcid = first(r.pmcid);
+  if (pmcid && /^PMC\d+$/i.test(pmcid)) article.pmcid = pmcid.toUpperCase();
   const mesh = [r.meshHeadingList?.meshHeading ?? []].flat().map((h) => first(h?.descriptorName)).filter((m) => m != null);
   if (mesh.length > 0) article.meshHeadings = mesh;
   const corrections = toCorrections(r.commentCorrectionList);
@@ -136,9 +139,10 @@ export class EuropePmcAdapter extends RestAdapter {
   }
 
   private buildQuery(input: SearchInput): string {
-    let query = input.query;
-    const from = input.dateRange?.from;
-    const to = input.dateRange?.to;
+    // PubMed field tags mean nothing here and would be searched as words.
+    let query = withoutPubMedTags(input.query);
+    const from = isoDateBound(input.dateRange?.from, "from");
+    const to = isoDateBound(input.dateRange?.to, "to");
     if (from || to) {
       query += ` AND (FIRST_PDATE:[${from ?? "1900-01-01"} TO ${to ?? "3000-01-01"}])`;
     }

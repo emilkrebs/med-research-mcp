@@ -19,6 +19,36 @@ export function strArray(value: unknown): string[] {
     .filter((s) => s.length > 0);
 }
 
+/**
+ * The query without PubMed field tags ("cognition[tiab]" → "cognition"), for databases
+ * that would search a tag as a word: Europe PMC finds 16 records for
+ * `creatine AND cognition[tiab]` and 7,179 for `creatine AND cognition` (2026-10-20).
+ * Bracketed text with digits, such as the radiotracer "[18F]FDG", is kept.
+ */
+export function withoutPubMedTags(query: string): string {
+  return query
+    .replace(/\[[A-Za-z][A-Za-z /:-]{0,40}\]/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+/**
+ * A date bound as YYYY-MM-DD, for APIs that accept nothing else (ChinaRxiv answers 422):
+ * "2020" → 2020-01-01 as a lower bound or 2020-12-31 as an upper one, "2020-05" →
+ * 2020-05-01 or 2020-05-31. Undefined for anything that isn't a date.
+ */
+export function isoDateBound(value: string | undefined, bound: "from" | "to"): string | undefined {
+  const m = /^(\d{4})(?:[-/](\d{1,2})(?:[-/](\d{1,2}))?)?$/.exec(value?.trim() ?? "");
+  if (!m) return undefined;
+  const year = Number(m[1]);
+  const month = m[2] ? Number(m[2]) : bound === "from" ? 1 : 12;
+  if (month < 1 || month > 12) return undefined;
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const day = m[3] ? Number(m[3]) : bound === "from" ? 1 : lastDay;
+  if (day < 1 || day > lastDay) return undefined;
+  return `${m[1]}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
 /** Split a comma/semicolon-separated author string ("Smith J, Doe A") into names. */
 export function splitAuthors(value: unknown): string[] {
   const s = first(value);

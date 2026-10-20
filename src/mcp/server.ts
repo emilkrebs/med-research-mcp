@@ -53,6 +53,9 @@ export function buildCache(): Cache {
 
 const DATABASES = ["pubmed", "europepmc", "chinaxiv", "russiarxiv"] as const;
 
+/** A date as PubMed reads it; the other adapters expand a year or month to its first or last day. */
+const isoDate = z.string().regex(/^\d{4}(?:[-/]\d{1,2}(?:[-/]\d{1,2})?)?$/, "Use YYYY-MM-DD, YYYY-MM or YYYY.");
+
 export interface CreateServerOptions {
   /** Cache shared by the server's tools. Defaults to the env-configured cache (MED_RESEARCH_CACHE_*). */
   cache?: Cache;
@@ -104,7 +107,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     query: z
       .string()
       .describe(
-        "Search query. PubMed field tags ([tiab], [mesh], [au]) apply to the pubmed database; other databases receive it as plain text. " +
+        "Search query. PubMed field tags ([tiab], [mesh], [au]) apply to the pubmed database; for other databases they are removed. " +
           "The query is sent to third-party databases: never include names, dates of birth, record numbers or other details that " +
           "identify a person; describe the condition or intervention instead.",
       ),
@@ -134,9 +137,9 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
           "metadata (tagged observational studies come back as observational), so filtering on them returns nothing.",
       ),
     dateRange: z
-      .object({ from: z.string().optional(), to: z.string().optional() })
+      .object({ from: isoDate.optional(), to: isoDate.optional() })
       .optional()
-      .describe("Publication date filter, YYYY-MM-DD."),
+      .describe("Publication date filter: YYYY-MM-DD, YYYY-MM or YYYY (a year or month covers all of it)."),
     sort: z
       .enum(["relevance", "date"])
       .optional()

@@ -101,6 +101,8 @@ export interface Article {
   url?: string;
   /** Language of the article (ISO 639-1). Treated as "en" when absent. */
   language?: string;
+  /** PubMed Central id (Europe PMC records that have one). */
+  pmcid?: string;
   /** The record a translated copy was made from (ChinaXiv, Math-Net.Ru, …), for checking the original. */
   originalUrl?: string;
   /** Title and abstract are a machine translation into English (ChinaXiv and RussiaRxiv records). */

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { searchLiterature, fetchLiterature } from "../src/core/literature";
-import { cleanDoi, doiKey } from "../src/core/adapters/util";
+import { cleanDoi, doiKey, isoDateBound, withoutPubMedTags } from "../src/core/adapters/util";
+import { errors } from "../src/core/errors";
 import { LRUBackend } from "../src/core/cache";
 import type { DatabaseAdapter } from "../src/core/adapters/types";
 import type { NcbiArticle } from "../src/core/types";
@@ -202,6 +203,60 @@ describe("searchLiterature fan-out", () => {
     expect(out.warnings?.some((w) => w.includes("Boom DB") && w.includes("upstream 503"))).toBe(true);
   });
 
+  it("raises the error when every database it searched failed, instead of an empty result", async () => {
+    const tooBroad: DatabaseAdapter = {
+      id: "pubmed",
+      name: "PubMed / NCBI",
+      search: async () => {
+        throw errors.queryTooBroad(250_000);
+      },
+      fetch: async () => [],
+    };
+    // An empty article list would read as "no studies exist"; the caller gets the code and the hint instead.
+    await expect(searchLiterature({ query: "x" }, new LRUBackend(), [tooBroad])).rejects.toMatchObject({
+      code: "QUERY_TOO_BROAD",
+    });
+  });
+
+  it("words a partial failure's warning with the error's actionable message", async () => {
+    const limited: DatabaseAdapter = {
+      id: "europepmc",
+      name: "Europe PMC",
+      search: async () => {
+        throw errors.rateLimit(30, "Europe PMC");
+      },
+      fetch: async () => [],
+    };
+    const out = await searchLiterature({ query: "x", database: "all" }, new LRUBackend(), [
+      fakeAdapter("pubmed", [pubmedMeta]),
+      limited,
+    ]);
+    expect(out.articles.map((a) => a.pmid)).toEqual(["1"]);
+    expect(out.warnings).toContain("Europe PMC search failed: Too many requests to Europe PMC. Wait 30s and try again.");
+  });
+
+  it("counts a PMCID as found when Europe PMC returns the record under its PMID", async () => {
+    const epmc: DatabaseAdapter = {
+      id: "europepmc",
+      name: "Europe PMC",
+      search: async () => ({ count: 0, ids: [] }),
+      fetch: async () => [{ ...pubmedMeta, pmid: "36615805", pmcid: "PMC9824573", database: "europepmc" }],
+    };
+    const out = await fetchLiterature({ ids: ["pmc9824573"], database: "europepmc" }, new LRUBackend(), epmc);
+    expect(out.articles).toHaveLength(1);
+    expect(out.missing).toEqual([]);
+  });
+
+  it("merges a DOI-less record that two adapters returned from the same database", async () => {
+    const soviet: NcbiArticle = { ...pubmedMeta, pmid: "ru-196201.58177", doi: undefined, database: "russiarxiv", publicationTypes: [] };
+    // The chinaxiv adapter with language "ru" and the russiarxiv adapter search the same corpus.
+    const out = await searchLiterature({ query: "x", database: "all", language: "ru" }, new LRUBackend(), [
+      { ...fakeAdapter("chinaxiv", [soviet]), id: "chinaxiv" },
+      fakeAdapter("russiarxiv", [soviet]),
+    ]);
+    expect(out.articles.map((a) => a.pmid)).toEqual(["ru-196201.58177"]);
+  });
+
   it("returns a warning when no adapter matches the requested database", async () => {
     const out = await searchLiterature({ query: "x", database: "nope" }, new LRUBackend(), []);
     expect(out.articles).toHaveLength(0);
@@ -237,5 +292,31 @@ describe("DOI helpers", () => {
   it("doiKey lowercases for case-insensitive dedup", () => {
     expect(doiKey("10.1234/ABC")).toBe("10.1234/abc");
     expect(doiKey("10.1234/abc")).toBe(doiKey("https://doi.org/10.1234/ABC"));
+  });
+});
+
+describe("withoutPubMedTags", () => {
+  it("drops PubMed field tags that other databases would search as words", () => {
+    expect(withoutPubMedTags("creatine AND cognition[tiab]")).toBe("creatine AND cognition");
+    expect(withoutPubMedTags('"Creatine"[mesh] AND (memory[Title/Abstract] OR randomized controlled trial[pt])')).toBe(
+      '"Creatine" AND (memory OR randomized controlled trial)',
+    );
+    expect(withoutPubMedTags("Kreider R[au] creatine")).toBe("Kreider R creatine");
+  });
+
+  it("keeps bracketed chemistry such as radiotracers", () => {
+    expect(withoutPubMedTags("[18F]FDG PET AND [Ca2+] signalling")).toBe("[18F]FDG PET AND [Ca2+] signalling");
+  });
+});
+
+describe("isoDateBound", () => {
+  it("turns a year or month into the first or last day, and refuses non-dates", () => {
+    expect(isoDateBound("2020", "from")).toBe("2020-01-01");
+    expect(isoDateBound("2020", "to")).toBe("2020-12-31");
+    expect(isoDateBound("2024-02", "to")).toBe("2024-02-29");
+    expect(isoDateBound("2023/5/7", "from")).toBe("2023-05-07");
+    expect(isoDateBound("2023-02-30", "from")).toBeUndefined();
+    expect(isoDateBound("last year", "from")).toBeUndefined();
+    expect(isoDateBound(undefined, "to")).toBeUndefined();
   });
 });
