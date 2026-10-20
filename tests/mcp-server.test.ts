@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { LRUBackend } from "../src/core/index.js";
-import { createServer } from "../src/mcp/server.js";
+import { LRUBackend, PROJECT_CONTACT_EMAIL } from "../src/core/index.js";
+import { contactEmailWarning, createServer } from "../src/mcp/server.js";
 
 async function connect() {
   const server = createServer({ cache: new LRUBackend() });
@@ -53,5 +53,18 @@ describe("createServer", () => {
 
   it("builds independent servers per call", () => {
     expect(createServer({ cache: new LRUBackend() })).not.toBe(createServer({ cache: new LRUBackend() }));
+  });
+});
+
+describe("contactEmailWarning", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("names every service that carries the project's address", () => {
+    for (const name of ["NCBI_EMAIL", "MED_RESEARCH_UNPAYWALL_EMAIL", "MED_RESEARCH_UNPAYWALL"]) vi.stubEnv(name, "");
+    expect(contactEmailWarning()).toContain(`PubMed and Unpaywall requests carry the project's contact address (${PROJECT_CONTACT_EMAIL})`);
+    vi.stubEnv("MED_RESEARCH_UNPAYWALL_EMAIL", "oa@example.com");
+    expect(contactEmailWarning()).toContain("so PubMed requests carry");
+    vi.stubEnv("NCBI_EMAIL", "user@example.com");
+    expect(contactEmailWarning()).toBeUndefined();
   });
 });

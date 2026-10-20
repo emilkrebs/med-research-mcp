@@ -417,6 +417,19 @@ describe("NcbiClient contact email", () => {
     expect((await sentParams(new NcbiClient({ email: "app@example.com" }))).get("email")).toBe("app@example.com");
   });
 
+  it("sends no email when code passes a blank one", async () => {
+    vi.stubEnv("NCBI_EMAIL", "user@example.com");
+    expect((await sentParams(new NcbiClient({ email: "" }))).has("email")).toBe(false);
+  });
+
+  it("treats placeholders the MCP host left unfilled as unset", async () => {
+    vi.stubEnv("NCBI_EMAIL", "${user_config.ncbiEmail}");
+    vi.stubEnv("NCBI_API_KEY", "${user_config.ncbiApiKey}");
+    const params = await sentParams(new NcbiClient());
+    expect(params.get("email")).toBe(PROJECT_CONTACT_EMAIL);
+    expect(params.has("api_key")).toBe(false);
+  });
+
   it("sends no stand-in email with another tool name, since NCBI registers tool and email as a pair", async () => {
     vi.stubEnv("NCBI_EMAIL", undefined);
     const params = await sentParams(new NcbiClient({ tool: "other-app" }));

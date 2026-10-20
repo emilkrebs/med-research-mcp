@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultJatsToMarkdown, fetchFulltext, type FetchedResource, type FulltextDeps } from "../src/core/fulltext";
-import { UnpaywallClient, type UnpaywallResult } from "../src/core/unpaywall";
+import { UnpaywallClient, type UnpaywallLookup, type UnpaywallResult } from "../src/core/unpaywall";
 import { FULLTEXT_TTL_MS, LRUBackend } from "../src/core/cache";
 import { NcbiClient } from "../src/core/pubmed";
 import { PROJECT_CONTACT_EMAIL } from "../src/core/version";
@@ -26,9 +26,10 @@ const LONG_MARKDOWN = "# Methods\n\n" + "word ".repeat(600);
 
 /** A stand-in NCBI client. esummary/efetch are the only methods fetchFulltext touches. */
 function fakeClient(
-  opts: { summary?: Article | null; abstract?: string; onEsummary?: () => void } = {},
+  opts: { summary?: Article | null; abstract?: string; onEsummary?: () => void; tool?: string } = {},
 ): NcbiClient {
   return {
+    tool: opts.tool ?? "med-research-mcp",
     esummary: async (pmids: string[]) => {
       opts.onEsummary?.();
       const m = new Map<string, Article>();
@@ -44,7 +45,11 @@ function fakeClient(
 }
 
 function fakeUnpaywall(result: UnpaywallResult | null): UnpaywallClient {
-  return { resolve: async () => result } as unknown as UnpaywallClient;
+  return answeringUnpaywall(result ? { status: "found", result } : { status: "none" });
+}
+
+function answeringUnpaywall(answer: UnpaywallLookup, sharedContact = false): UnpaywallClient {
+  return { lookup: async () => answer, sharedContact } as unknown as UnpaywallClient;
 }
 
 function htmlResource(text: string, url = "https://oa.example/article"): FetchedResource {
@@ -304,14 +309,14 @@ describe("fetchFulltext resolution strategy", () => {
   });
 
   it("normalizes a DOI passed as a URL before resolving", async () => {
-    const resolve = vi.fn(async () => ({ doi: DOI, isOa: true, urls: ["https://oa.example/u"] }));
+    const lookup = vi.fn(async (): Promise<UnpaywallLookup> => ({ status: "found", result: { doi: DOI, isOa: true, urls: ["https://oa.example/u"] } }));
     const deps: FulltextDeps = {
-      unpaywall: { resolve } as unknown as UnpaywallClient,
+      unpaywall: { lookup } as unknown as UnpaywallClient,
       fetchUrl: async () => htmlResource("<x/>"),
       htmlToMarkdown: async () => LONG_MARKDOWN,
     };
     await fetchFulltext({ id: "12345678", doi: "https://doi.org/10.1000/xyz123" }, new LRUBackend(), fakeClient(), deps);
-    expect(resolve).toHaveBeenCalledWith(DOI);
+    expect(lookup).toHaveBeenCalledWith(DOI);
   });
 
   it("throws NOT_FOUND for a non-numeric id", async () => {
@@ -420,17 +425,17 @@ describe("fetchFulltext — Europe PMC by PMCID", () => {
   it("reads a record with a PMCID from Europe PMC first, without asking Unpaywall, and caches it", async () => {
     const cache = new LRUBackend();
     cache.setSummary("12345678", { ...ARTICLE, pmcid: "PMC7654321" });
-    const resolve = vi.fn();
+    const lookup = vi.fn();
     const fetchUrl = vi.fn(async (url: string) => jats(url));
     const deps: FulltextDeps = {
-      unpaywall: { resolve } as unknown as UnpaywallClient,
+      unpaywall: { lookup } as unknown as UnpaywallClient,
       fetchUrl,
       jatsToMarkdown: async () => LONG_MARKDOWN,
     };
     const out = await fetchFulltext({ id: "12345678" }, cache, fakeClient(), deps);
     expect(out).toMatchObject({ source: "europepmc", doi: DOI, format: "markdown" });
     expect(fetchUrl.mock.calls.map(([url]) => url)).toEqual([PMC_URL]);
-    expect(resolve).not.toHaveBeenCalled();
+    expect(lookup).not.toHaveBeenCalled();
     expect((await fetchFulltext({ id: "12345678" }, cache, fakeClient(), deps)).source).toBe("europepmc");
     expect(fetchUrl).toHaveBeenCalledTimes(1);
   });
@@ -459,16 +464,23 @@ describe("fetchFulltext — Europe PMC by PMCID", () => {
     const cache = new LRUBackend();
     cache.setSummary("12345678", { ...ARTICLE, pmcid: "PMC7654321" });
     const fetchUrl = vi.fn(async () => paywalled());
-    await fetchFulltext({ id: "12345678" }, cache, fakeClient(), {
+    const out = await fetchFulltext({ id: "12345678" }, cache, fakeClient(), {
       unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://www.ncbi.nlm.nih.gov/pmc/articles/7654321"] }),
       fetchUrl,
     });
     expect(fetchUrl.mock.calls.map(([url]) => url)).toEqual([PMC_URL, "https://doi.org/10.1000/xyz123"]);
+    expect(out.warning).toContain("Unpaywall lists no other open-access copy.");
+    expect(out.warning).not.toContain("()");
   });
 });
 
 describe("fetchFulltext — why a full text wasn't found", () => {
   const status = (code: number, finalUrl: string): FetchedResource => ({ ok: false, status: code, contentType: "text/html", finalUrl });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
 
   it("names the site that refused the request, and the status", async () => {
     const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ abstract: "abs" }), {
@@ -491,6 +503,36 @@ describe("fetchFulltext — why a full text wasn't found", () => {
       code: "NOT_FOUND",
       message: expect.stringContaining("10.1000/xyz123"),
     });
+  });
+
+  it("says Unpaywall failed, not that it found nothing, and points a client error at the shared address", async () => {
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ abstract: "abs" }), {
+      unpaywall: answeringUnpaywall({ status: "failed", httpStatus: 429 }, true),
+      fetchUrl: async (url: string) => status(403, url),
+    });
+    expect(out.warning).toContain("Unpaywall rate-limited the lookup (HTTP 429), so open-access copies weren't looked up.");
+    expect(out.warning).toContain("set your own in NCBI_EMAIL or MED_RESEARCH_UNPAYWALL_EMAIL");
+    expect(out.warning).not.toContain("Unpaywall found no open-access copy");
+  });
+
+  it("says Unpaywall couldn't be reached, without blaming the address", async () => {
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ abstract: "abs" }), {
+      unpaywall: answeringUnpaywall({ status: "failed" }, true),
+      fetchUrl: async (url: string) => status(403, url),
+    });
+    expect(out.warning).toContain("Unpaywall couldn't be reached, so open-access copies weren't looked up.");
+    expect(out.warning).not.toContain("shared contact address");
+  });
+
+  it("doesn't lend the project's address to another tool's default Unpaywall client", async () => {
+    for (const name of ["MED_RESEARCH_UNPAYWALL", "MED_RESEARCH_UNPAYWALL_EMAIL", "NCBI_EMAIL"]) vi.stubEnv(name, "");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ abstract: "abs", tool: "other-app" }), {
+      fetchUrl: async (url: string) => status(403, url),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(out.warning).toContain("Open-access copies weren't looked up: Unpaywall is turned off (MED_RESEARCH_UNPAYWALL=0) or has no contact email.");
   });
 });
 
@@ -583,6 +625,65 @@ describe("UnpaywallClient", () => {
     );
     const client = new UnpaywallClient({ email: "a@b.com" });
     expect(await client.resolve("10.1/x")).toBeNull();
+  });
+
+  it("treats a placeholder the MCP host left unfilled as unset", async () => {
+    vi.stubEnv("MED_RESEARCH_UNPAYWALL_EMAIL", "${user_config.unpaywallEmail}");
+    vi.stubEnv("NCBI_EMAIL", "${user_config.ncbiEmail}");
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      urls.push(url);
+      return new Response(JSON.stringify({ doi: "10.1/x", is_oa: false, oa_locations: [] }), { status: 200 });
+    });
+    await new UnpaywallClient().resolve("10.1/x");
+    expect(urls[0]).toContain(`email=${encodeURIComponent(PROJECT_CONTACT_EMAIL)}`);
+  });
+
+  it("is off with MED_RESEARCH_UNPAYWALL=0 or a blank email in code, and sends nothing", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubEnv("MED_RESEARCH_UNPAYWALL", "0");
+    vi.stubEnv("NCBI_EMAIL", "ncbi@example.com");
+    const off = new UnpaywallClient();
+    expect(off.configured).toBe(false);
+    expect(await off.lookup("10.1/x")).toEqual({ status: "off" });
+    expect(await off.resolve("10.1/x")).toBeNull();
+    expect(new UnpaywallClient({ email: "" }).configured).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+    // An email passed in code turns the lookups back on.
+    expect(new UnpaywallClient({ email: "a@b.com" }).configured).toBe(true);
+  });
+
+  it("sends the project's address only for its own tool", () => {
+    vi.stubEnv("MED_RESEARCH_UNPAYWALL_EMAIL", "");
+    vi.stubEnv("NCBI_EMAIL", "");
+    expect(new UnpaywallClient().sharedContact).toBe(true);
+    expect(new UnpaywallClient({ tool: "other-app" }).configured).toBe(false);
+  });
+
+  it("tells a failed lookup apart from one without copies", async () => {
+    const client = new UnpaywallClient({ email: "a@b.com" });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("slow down", { status: 429 })));
+    expect(await client.lookup("10.1/x")).toEqual({ status: "failed", httpStatus: 429 });
+    vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("fetch failed"))));
+    expect(await client.lookup("10.1/x")).toEqual({ status: "failed" });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not found", { status: 404 })));
+    expect(await client.lookup("10.1/x")).toEqual({ status: "none" });
+  });
+
+  it("reuses an answer for the same DOI, but asks again after a failure", async () => {
+    const answering = vi.fn(async () => new Response(JSON.stringify({ doi: "10.1/x", is_oa: false, oa_locations: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", answering);
+    const client = new UnpaywallClient({ email: "a@b.com" });
+    await client.lookup("10.1/X");
+    await client.lookup("10.1/x");
+    expect(answering).toHaveBeenCalledTimes(1);
+
+    const failing = vi.fn(async () => new Response("", { status: 503 }));
+    vi.stubGlobal("fetch", failing);
+    await client.lookup("10.1/y");
+    await client.lookup("10.1/y");
+    expect(failing).toHaveBeenCalledTimes(2);
   });
 });
 

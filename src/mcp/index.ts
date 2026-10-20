@@ -12,14 +12,11 @@
  */
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { PROJECT_CONTACT_EMAIL, type Cache } from "../core/index.js";
-import { buildCache, createServer } from "./server.js";
+import type { Cache } from "../core/index.js";
+import { buildCache, contactEmailWarning, createServer } from "./server.js";
 
-if (!process.env.NCBI_EMAIL?.trim()) {
-  console.error(
-    `[med-research-mcp] NCBI_EMAIL is not set, so PubMed requests carry the project's contact address (${PROJECT_CONTACT_EMAIL}). Set your own so NCBI can reach you directly before blocking an IP that exceeds its limits.`,
-  );
-}
+const contactWarning = contactEmailWarning();
+if (contactWarning) console.error(contactWarning);
 
 // Built here (not inside createServer) so shutdown can close a persistent backend.
 const cache: Cache = buildCache();

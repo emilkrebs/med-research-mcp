@@ -26,6 +26,8 @@ export {
   createCache,
 } from "../../src/core/index.js";
 
+export { envSetting } from "../../src/core/version.js";
+
 export { createServer } from "../../src/mcp/server.js";
 
 // Page extraction shared with the web-search baseline's `web_fetch`, so both

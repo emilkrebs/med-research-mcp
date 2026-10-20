@@ -52,7 +52,7 @@
     "ncbiEmail": {
       "type": "string",
       "title": "NCBI contact email (optional)",
-      "description": "Your email, sent with every PubMed (NCBI E-utilities) request as NCBI's usage policy asks, so NCBI can contact you before blocking an IP that exceeds its limits. Also used for Unpaywall and ChinaRxiv. Leave blank to send the project's contact address instead.",
+      "description": "Your email, sent with every PubMed (NCBI E-utilities) request as NCBI's usage policy asks, so NCBI can contact you before blocking an IP that exceeds its limits. Also used for Unpaywall and ChinaRxiv. Left blank, PubMed and Unpaywall requests carry the project's contact address instead, and ChinaRxiv requests no email (30 instead of 300 requests per minute).",
       "required": false,
       "default": ""
     },
