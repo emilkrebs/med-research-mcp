@@ -140,7 +140,7 @@ The server runs on your machine and sends no telemetry. Your queries go to the d
 - **[Hosting](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/hosting.md)**: running the server over HTTP for a team.
 - **[Using the core library](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/library.md)**: the same functions without MCP.
 - **[Compliance](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/compliance.md)**: intended use, data flows, and the terms of the services it calls.
-- **[Development](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/development.md)** and **[publishing](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/publishing.md)**.
+- **[Development](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/development.md)**: building, testing and releasing.
 - **[Benchmark](https://github.com/emilkrebs/med-research-mcp/blob/main/benchmark/README.md)**: how well models answer biomedical questions with the server.
 - **[Changelog](https://github.com/emilkrebs/med-research-mcp/blob/main/CHANGELOG.md)**.
 

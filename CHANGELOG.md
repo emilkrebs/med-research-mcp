@@ -57,7 +57,7 @@ Changes since 0.5.0:
 
 ### Documentation
 
-- The README covers setup and the essentials; parameters, the library, development and publishing moved to [`docs/`](docs/). New: [tools.md](docs/tools.md), [library.md](docs/library.md), [development.md](docs/development.md), [compliance.md](docs/compliance.md), [publishing.md](docs/publishing.md).
+- The README covers setup and the essentials; parameters, the library, development and publishing moved to [`docs/`](docs/). New: [tools.md](docs/tools.md), [library.md](docs/library.md), [development.md](docs/development.md), [compliance.md](docs/compliance.md).
 - Installation runs from npm (`npx -y med-research-mcp`) instead of a clone.
 - The skills, tool descriptions and how-it-works now describe ChinaRxiv's machine-translated records, and the setup skill lists every environment variable.
 - The skills frame results as research findings, not advice about a person: doses are reported as what studies used, and applicability is judged against the population in the question.

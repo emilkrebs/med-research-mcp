@@ -2,8 +2,8 @@
 # (0.6.0-next.1) goes to the `next` dist-tag, any other to `latest`. npm trusted
 # publishing authenticates the job (OIDC, no token), and npm adds provenance.
 #
-# The first version was published by hand, since npm only takes a trusted
-# publisher for a package that exists: see docs/publishing.md.
+# npm only takes a trusted publisher for a package that exists, so the
+# package's first version was published by hand.
 
 name: Publish
 

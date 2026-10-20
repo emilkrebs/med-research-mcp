@@ -56,7 +56,7 @@ The [NCBI policies page](https://www.ncbi.nlm.nih.gov/home/about/policies/) and 
 | --- | --- |
 | "Make no more than 3 requests every 1 second", 10 with an API key; the limit applies per IP | `NcbiClient` queues and spaces requests to 3 per second, or 10 with `NCBI_API_KEY`, shared by every tool call in a process. Separate processes behind one IP share NCBI's limit |
 | `tool` and `email` on every request, "so that we can track your project and contact you if there is a problem" | Every request sends `tool=med-research-mcp` and `NCBI_EMAIL` |
-| "Merely providing values for tool and email in requests is not sufficient to comply with this policy; these values must be registered with NCBI" | **Open**: the maintainer registers `tool=med-research-mcp` by email to <eutilities@ncbi.nlm.nih.gov> ([publishing.md](publishing.md#1-before-the-first-release)) |
+| "Merely providing values for tool and email in requests is not sufficient to comply with this policy; these values must be registered with NCBI" | **Open**: the maintainer registers `tool=med-research-mcp` by email to <eutilities@ncbi.nlm.nih.gov> |
 | "NCBI's Disclaimer and Copyright notice must be evident to users of your service" | The README's [Data sources and copyright](../README.md#data-sources-and-copyright) section links it |
 | "Run retrieval scripts on weekends or between 9 pm and 5 am Eastern Time weekdays for any series of more than 100 requests" | Interactive use doesn't qualify; benchmark runs do, and its README says so |
 
@@ -94,10 +94,20 @@ So the project: fetches one paper at a user's request, never in bulk; caches onl
 Points that matter for a listing on ModelScope, which runs in mainland China:
 
 - **Generative AI rules.** The [Interim Measures for Generative AI Services](https://www.cac.gov.cn/2023-07/13/c_1690898327029107.htm) and the AI-generated content labelling measures apply to providers of generative AI services. The server makes no LLM calls, so it isn't one; the obligations fall on whoever runs the model. Keeping ChinaRxiv's `machine-generated-abstract` marking is in the spirit of the labelling rules.
-- **Ranking.** The [algorithm recommendation provisions](https://www.cac.gov.cn/2022-01/04/c_1642894606364259.htm) cover ranking and retrieval algorithms offered to the public and ask that their basic principles be explained. [How it works](how-it-works.md#ranking) explains the ranking; [publishing.md](publishing.md) suggests a Chinese summary for the listing. Whether the provisions reach an MCP tool is untested.
+- **Ranking.** The [algorithm recommendation provisions](https://www.cac.gov.cn/2022-01/04/c_1642894606364259.htm) cover ranking and retrieval algorithms offered to the public and ask that their basic principles be explained. [How it works](how-it-works.md#ranking) explains the ranking, and the listing carries the Chinese summary below. Whether the provisions reach an MCP tool is untested.
 - **Health-product advertising.** The tool makes no efficacy claims and isn't an advertisement; describe it as literature search on dietary supplements (膳食补充剂相关文献检索), never with treatment or efficacy claims.
 - **Cross-border personal information.** Queries without personal information raise no transfer issue under the PIPL; queries with it would. This is the strongest reason for the patient-data rule above.
-- **ModelScope's own terms:** see [publishing.md](publishing.md#5-modelscope-mcp-square).
+- **ModelScope's own terms** ([user agreement](https://www.modelscope.cn/docs/agreements/terms)). Content published there is reviewed for prohibited material (political, pornographic, violent, illegal, advertising or spam). Publishing grants ModelScope a worldwide, irrevocable, sublicensable licence to host and distribute it, and every user a perpetual, irrevocable licence to use, copy and adapt it through ModelScope (§3.2.1; compatible with the MIT license). The agreement is governed by Chinese law (§9.5), registration requires phone verification (§2.2.2), and the service "旨在供中华人民共和国内地用户使用" — is intended for users in mainland China, without a guarantee for anyone else (§10.2).
+
+The listing states the intended use and the ranking in Chinese, in its description or at the top of its Chinese README, since ModelScope machine-translates the README and medical wording suffers most in translation. The wording is still to be checked by a native speaker.
+
+Intended use, as [above](#intended-use):
+
+> 预期用途：本工具是面向科研与教育的学术文献检索工具，用于检索 PubMed、Europe PMC、ChinaRxiv 等数据库中已发表的科学文献，依据文献元数据标注研究设计类型，并获取可公开获取的全文，或在用户自行配置时经其所在机构获取的全文。本工具不用于任何疾病的诊断、预防、监护、治疗或者缓解，不提供用药指导或治疗建议，不用于针对具体患者的诊疗决策，不处理患者数据，不作为医疗器械使用。研究设计标注仅反映文献的索引信息，不代表研究结论可靠或适用于任何个人。如有健康问题，请咨询医生。
+
+Ranking, as in [how it works](how-it-works.md#ranking):
+
+> 排序说明：检索结果按研究设计等级排序（依据牛津循证医学中心 2011 年证据等级与美国国家医学图书馆的文献类型标注）：设计等级 5 至 2 级的文献依次排在最前，其次为未评级的文献，最后为 1 级和 0 级的文献；同一等级内保留各数据库的原始顺序。不使用个人数据，不做个性化推荐。
 
 ## Scientific standards
 
