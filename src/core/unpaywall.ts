@@ -3,9 +3,12 @@
  *
  * Unpaywall (https://unpaywall.org) aggregates OA copies from preprint servers
  * (arXiv, bioRxiv), institutional repositories, PubMed Central, and publisher-
- * hosted OA. It's free, needs no key, and asks only for a contact email
- * (politeness) on each request. Rate limit: 100K requests/day.
+ * hosted OA. It's free and needs no key, but "requests must include your email"
+ * and it asks users to "limit use to 100,000 calls per day"
+ * (https://unpaywall.org/products/api, checked 2026-10-19).
  */
+
+import { USER_AGENT } from "./version.js";
 
 const UNPAYWALL_BASE = "https://api.unpaywall.org/v2";
 
@@ -46,7 +49,13 @@ export class UnpaywallClient {
   private readonly timeoutMs: number;
 
   constructor(config: UnpaywallConfig = {}) {
-    this.email = config.email ?? process.env.MED_RESEARCH_UNPAYWALL_EMAIL ?? process.env.NCBI_EMAIL;
+    // `||`, not `??`: an empty variable (a blank .mcpb field, `MED_RESEARCH_UNPAYWALL_EMAIL=` in a
+    // .env file) must still fall back to NCBI_EMAIL, as chinaxivHeaders does.
+    this.email =
+      config.email?.trim() ||
+      process.env.MED_RESEARCH_UNPAYWALL_EMAIL?.trim() ||
+      process.env.NCBI_EMAIL?.trim() ||
+      undefined;
     this.timeoutMs = config.timeoutMs ?? 15_000;
   }
 
@@ -68,7 +77,7 @@ export class UnpaywallClient {
     const timer = setTimeout(() => ac.abort(), this.timeoutMs);
     let res: Response;
     try {
-      res = await fetch(url, { signal: ac.signal });
+      res = await fetch(url, { signal: ac.signal, headers: { "User-Agent": USER_AGENT } });
     } catch {
       return null;
     } finally {

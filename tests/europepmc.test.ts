@@ -98,6 +98,49 @@ describe("parseEuropePmc", () => {
   });
 });
 
+describe("parseEuropePmc — core results", () => {
+  it("reads the journal and date where core results put them, and a preprint's server", () => {
+    const { articles } = parseEuropePmc({
+      hitCount: 3,
+      resultList: {
+        result: [
+          {
+            id: "42668123",
+            source: "MED",
+            title: "The cognitive effects of creatine supplementation in older adults",
+            journalInfo: { journal: { title: "Ageing research reviews" }, dateOfPublication: "2026 Nov" },
+            pubYear: "2026",
+            firstPublicationDate: "2026-08-29",
+          },
+          {
+            id: "PPR1308156",
+            source: "PPR",
+            title: "A preprint",
+            bookOrReportDetails: { publisher: "medRxiv" },
+            pubYear: "2026",
+            firstPublicationDate: "2026-08-28",
+            pubTypeList: { pubType: ["Preprint"] },
+          },
+          {
+            // Recently added to PMC: no pubYear, a blank issue date.
+            id: "PMC13442150",
+            source: "PMC",
+            pmcid: "PMC13442150",
+            title: "A conference abstract",
+            journalInfo: { journal: { title: "European psychiatry" }, dateOfPublication: " " },
+            firstPublicationDate: "2026-09-04",
+          },
+        ],
+      },
+    } as Parameters<typeof parseEuropePmc>[0]);
+    expect(articles.map((a) => [a.journal, a.pubDate])).toEqual([
+      ["Ageing research reviews", "2026 Nov"],
+      ["medRxiv", "2026-08-28"],
+      ["European psychiatry", "2026-09-04"],
+    ]);
+  });
+});
+
 describe("EuropePmcAdapter", () => {
   it("search() returns ids and encodes the query; fetch() serves from the memo", async () => {
     const { http, urls } = recordingHttp(RESPONSE);
@@ -174,5 +217,18 @@ describe("Europe PMC ids", () => {
     const out = await fetchLiterature({ ids: ["ppr12345"], database: "europepmc" }, new LRUBackend(), new EuropePmcAdapter(http));
     expect(out.articles.map((a) => a.pmid)).toEqual(["PPR12345"]);
     expect(out.missing).toEqual([]);
+  });
+});
+
+describe("EuropePmcAdapter design filters", () => {
+  it("narrows the query with PUB_TYPE, and sends none when the filter can keep nothing", async () => {
+    const { http, urls } = recordingHttp({ hitCount: 0, resultList: { result: [] } });
+    const adapter = new EuropePmcAdapter(http);
+    await adapter.search({ query: "creatine[tiab]", minDesignTier: 4 });
+    expect(new URL(urls[0]!).searchParams.get("query")).toBe(
+      '(creatine) AND (PUB_TYPE:"Network Meta-Analysis" OR PUB_TYPE:"Randomized Controlled Trial" OR PUB_TYPE:"Equivalence Trial")',
+    );
+    expect(await adapter.search({ query: "x", studyTypes: ["in-vitro"] })).toEqual({ count: 0, ids: [] });
+    expect(urls).toHaveLength(1);
   });
 });

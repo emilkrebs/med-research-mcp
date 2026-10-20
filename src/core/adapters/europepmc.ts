@@ -10,7 +10,14 @@
  * PMC, CBA, …) and an `id`; we key on `id` and reconstruct the article URL from both.
  * MEDLINE records carry the same NLM PublicationType tags, MeSH headings and
  * retraction/correction links as PubMed, so they classify the same way;
- * preprints are tagged "Preprint".
+ * preprints are tagged "Preprint". A studyTypes or minDesignTier filter narrows
+ * the query with PUB_TYPE, as the PubMed client does with [pt].
+ *
+ * `core` results name the journal in `journalInfo.journal.title` and a preprint's
+ * server in `bookOrReportDetails.publisher`; `journalTitle` exists only in `lite`
+ * results. The date is the issue date (`journalInfo.dateOfPublication`, "2026
+ * Sep", like PubMed's), else the first publication date; recently added PMC
+ * records have neither `pubYear` nor an issue date.
  *
  * Ids are only unique within a source: non-PubMed sources such as CBA (Chinese
  * Biological Abstracts) reuse plain numbers that collide with PMIDs, so those
@@ -21,7 +28,8 @@
 
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { cleanDoi, first, splitAuthors, strArray, toIso1 } from "./util.js";
+import { cleanDoi, first, isoDateBound, splitAuthors, strArray, toIso1, withoutPubMedTags } from "./util.js";
+import { designPublicationTypes } from "../grader.js";
 import type { Article, Correction, CorrectionType, SearchInput } from "../types.js";
 
 const BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest/search";
@@ -31,11 +39,17 @@ interface EpmcResult {
   id?: string;
   source?: string;
   pmid?: string;
+  pmcid?: string;
   doi?: string;
   title?: string;
   authorString?: string;
+  /** `lite` results only. */
   journalTitle?: string;
+  journalInfo?: { journal?: { title?: string }; dateOfPublication?: string };
+  /** Preprints: the server, e.g. "medRxiv". */
+  bookOrReportDetails?: { publisher?: string };
   pubYear?: string;
+  firstPublicationDate?: string;
   abstractText?: string;
   language?: string;
   fullTextUrlList?: { fullTextUrl?: { url?: string }[] };
@@ -98,8 +112,9 @@ function toArticle(r: EpmcResult): Article | null {
     pmid: id,
     title: (first(r.title) ?? "").replace(/\.$/, ""),
     authors: splitAuthors(r.authorString),
-    journal: first(r.journalTitle) ?? "",
-    pubDate: first(r.pubYear) ?? "",
+    journal:
+      first(r.journalTitle) ?? first(r.journalInfo?.journal?.title) ?? first(r.bookOrReportDetails?.publisher) ?? "",
+    pubDate: first(r.journalInfo?.dateOfPublication) ?? first(r.firstPublicationDate) ?? first(r.pubYear) ?? "",
     publicationTypes: strArray(r.pubTypeList?.pubType),
     database: "europepmc",
     url,
@@ -108,6 +123,8 @@ function toArticle(r: EpmcResult): Article | null {
   const abstract = first(r.abstractText);
   if (abstract) article.abstract = abstract;
   if (doi) article.doi = doi;
+  const pmcid = first(r.pmcid);
+  if (pmcid && /^PMC\d+$/i.test(pmcid)) article.pmcid = pmcid.toUpperCase();
   const mesh = [r.meshHeadingList?.meshHeading ?? []].flat().map((h) => first(h?.descriptorName)).filter((m) => m != null);
   if (mesh.length > 0) article.meshHeadings = mesh;
   const corrections = toCorrections(r.commentCorrectionList);
@@ -131,14 +148,16 @@ export class EuropePmcAdapter extends RestAdapter {
   readonly id = "europepmc";
   readonly name = "Europe PMC";
 
-  constructor(http: AdapterHttp = defaultHttp()) {
+  constructor(http: AdapterHttp = defaultHttp({ source: "Europe PMC" })) {
     super(http);
   }
 
-  private buildQuery(input: SearchInput): string {
-    let query = input.query;
-    const from = input.dateRange?.from;
-    const to = input.dateRange?.to;
+  private buildQuery(input: SearchInput, types: string[] | null): string {
+    // PubMed field tags mean nothing here and would be searched as words.
+    let query = withoutPubMedTags(input.query);
+    if (types) query = `(${query}) AND (${types.map((t) => `PUB_TYPE:"${t}"`).join(" OR ")})`;
+    const from = isoDateBound(input.dateRange?.from, "from");
+    const to = isoDateBound(input.dateRange?.to, "to");
     if (from || to) {
       query += ` AND (FIRST_PDATE:[${from ?? "1900-01-01"} TO ${to ?? "3000-01-01"}])`;
     }
@@ -146,9 +165,11 @@ export class EuropePmcAdapter extends RestAdapter {
   }
 
   async search(input: SearchInput): Promise<{ count: number; ids: string[] }> {
+    const types = designPublicationTypes(input.studyTypes, input.minDesignTier);
+    if (types?.length === 0) return { count: 0, ids: [] };
     const pageSize = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
     const params = new URLSearchParams({
-      query: this.buildQuery(input),
+      query: this.buildQuery(input, types),
       format: "json",
       resultType: "core",
       pageSize: String(pageSize),

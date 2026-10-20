@@ -5,10 +5,12 @@
  */
 
 import { XMLParser } from "fast-xml-parser";
+import { LRUCache } from "lru-cache";
 import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors } from "./errors.js";
-import { classifyArticle, unclassifiedDroppedWarning } from "./grader.js";
+import { USER_AGENT } from "./version.js";
+import { classifyArticle, designPublicationTypes, unclassifiedDroppedWarning } from "./grader.js";
 import { CORRECTION_TYPES } from "./types.js";
 import type { Correction, CorrectionType, FetchInput, FetchOutput, GradedArticle, Article, SearchInput, SearchOutput, StudyType } from "./types.js";
 
@@ -18,6 +20,23 @@ const MAX_RESULTS_CAP = 50;
 const DEFAULT_BROAD_THRESHOLD = 100_000;
 /** Above this, still run but attach a warning. */
 const SOFT_BROAD_THRESHOLD = 10_000;
+/**
+ * Spacing between requests, as a multiple of 1/limit. NCBI counts requests as they
+ * arrive, and arrival times jitter: spaced exactly 1/3 s apart, 2 of 15 serialized
+ * requests drew a 429; spaced 400 ms apart, 1 of 15 (2026-10-20). The rest is left
+ * to retries.
+ */
+const SPACING_MARGIN = 1.2;
+/** 429s retried, after NCBI's Retry-After, before RATE_LIMIT reaches the caller. */
+const RATE_LIMIT_RETRIES = 2;
+/** The longest Retry-After waited out (NCBI sends 2 s); a longer one goes to the caller. */
+const MAX_RETRY_WAIT_S = 5;
+/**
+ * How long a search's PMIDs are reused. PubMed's relevance ranking varies between
+ * identical requests: five identical searches returned five different top-20 lists
+ * (2026-10-20), so within this window the same search returns the same papers.
+ */
+const DEFAULT_SEARCH_TTL_MS = 60 * 60 * 1000;
 
 export interface NcbiConfig {
   /** Contact email — NCBI asks for one on every request. Defaults to $NCBI_EMAIL. */
@@ -30,25 +49,33 @@ export interface NcbiConfig {
   broadThreshold?: number;
   /** Per-request timeout in ms. Default 15000. */
   timeoutMs?: number;
+  /** How long an identical search reuses its PMIDs, in ms. Default one hour; 0 disables. */
+  searchTtlMs?: number;
 }
 
-/** Serializes requests and spaces them to respect NCBI's rate limit. */
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Serializes requests and spaces them to respect NCBI's rate limit. A task runs
+ * once every earlier one has finished and calls `pace()` before each request it
+ * sends, so a task that waits out a 429 holds back the whole queue.
+ */
 class RateLimiter {
   private lastAt = 0;
   private tail: Promise<unknown> = Promise.resolve();
   private readonly gapMs: number;
 
   constructor(reqPerSec: number) {
-    this.gapMs = 1000 / reqPerSec;
+    this.gapMs = (1000 / reqPerSec) * SPACING_MARGIN;
   }
 
-  run<T>(fn: () => Promise<T>): Promise<T> {
-    const result = this.tail.then(async () => {
+  run<T>(task: (pace: () => Promise<void>) => Promise<T>): Promise<T> {
+    const pace = async (): Promise<void> => {
       const wait = this.lastAt + this.gapMs - Date.now();
-      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      if (wait > 0) await sleep(wait);
       this.lastAt = Date.now();
-      return fn();
-    });
+    };
+    const result = this.tail.then(() => task(pace));
     // Keep the queue flowing whether or not this request succeeded.
     this.tail = result.then(
       () => undefined,
@@ -93,6 +120,7 @@ export class NcbiClient {
   private readonly timeoutMs: number;
   private readonly limiter: RateLimiter;
   private readonly parser: XMLParser;
+  private readonly searches: LRUCache<string, { count: number; pmids: string[] }> | null;
 
   constructor(config: NcbiConfig = {}) {
     this.email = config.email ?? process.env.NCBI_EMAIL;
@@ -107,6 +135,8 @@ export class NcbiClient {
       textNodeName: "#text",
       trimValues: true,
     });
+    const searchTtl = config.searchTtlMs ?? DEFAULT_SEARCH_TTL_MS;
+    this.searches = searchTtl > 0 ? new LRUCache({ max: 200, ttl: searchTtl }) : null;
   }
 
   private commonParams(params: URLSearchParams): URLSearchParams {
@@ -118,34 +148,48 @@ export class NcbiClient {
 
   private async request(path: string, params: URLSearchParams): Promise<Response> {
     const url = `${EUTILS_BASE}/${path}?${this.commonParams(params).toString()}`;
-    return this.limiter.run(async () => {
-      const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), this.timeoutMs);
-      let res: Response;
-      try {
-        res = await fetch(url, { signal: ac.signal });
-      } catch (err) {
-        throw errors.network(err instanceof Error ? err.message : String(err));
-      } finally {
-        clearTimeout(timer);
+    return this.limiter.run(async (pace) => {
+      for (let attempt = 0; ; attempt += 1) {
+        await pace();
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), this.timeoutMs);
+        let res: Response;
+        try {
+          res = await fetch(url, { signal: ac.signal, headers: { "User-Agent": USER_AGENT } });
+        } catch (err) {
+          throw errors.network(err instanceof Error ? err.message : String(err));
+        } finally {
+          clearTimeout(timer);
+        }
+        if (res.status === 429) {
+          const retryAfter = Number(res.headers.get("retry-after")) || 1;
+          await res.body?.cancel();
+          if (attempt >= RATE_LIMIT_RETRIES || retryAfter > MAX_RETRY_WAIT_S) throw errors.rateLimit(retryAfter);
+          await sleep(retryAfter * 1000);
+          continue;
+        }
+        if (!res.ok) {
+          throw errors.network(`NCBI returned HTTP ${res.status}`);
+        }
+        return res;
       }
-      if (res.status === 429) {
-        const retryAfter = Number(res.headers.get("retry-after")) || 1;
-        throw errors.rateLimit(retryAfter);
-      }
-      if (!res.ok) {
-        throw errors.network(`NCBI returned HTTP ${res.status}`);
-      }
-      return res;
     });
   }
 
-  /** Returns matching PMIDs (already truncated to maxResults) and the total count. */
+  /**
+   * Returns matching PMIDs (already truncated to maxResults) and the total count. A
+   * studyTypes or minDesignTier filter narrows the query to the publication types it
+   * can keep (see designPublicationTypes), so the count is of candidates for it.
+   * An identical search within `searchTtlMs` returns the same PMIDs.
+   */
   async esearch(input: SearchInput): Promise<{ count: number; pmids: string[] }> {
     const maxResults = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
+    const types = designPublicationTypes(input.studyTypes, input.minDesignTier);
+    if (types?.length === 0) return { count: 0, pmids: [] };
+    const term = types ? `(${input.query}) AND (${types.map((t) => `"${t}"[pt]`).join(" OR ")})` : input.query;
     const params = new URLSearchParams({
       db: "pubmed",
-      term: input.query,
+      term,
       retmode: "json",
       retmax: String(maxResults),
       sort: input.sort === "date" ? "pub_date" : "relevance",
@@ -156,6 +200,15 @@ export class NcbiClient {
       if (input.dateRange.to) params.set("maxdate", input.dateRange.to.replace(/-/g, "/"));
     }
 
+    const key = params.toString();
+    const cached = this.searches?.get(key);
+    if (cached) return { count: cached.count, pmids: [...cached.pmids] };
+    const result = await this.runEsearch(params);
+    this.searches?.set(key, result);
+    return { count: result.count, pmids: [...result.pmids] };
+  }
+
+  private async runEsearch(params: URLSearchParams): Promise<{ count: number; pmids: string[] }> {
     const res = await this.request("esearch.fcgi", params);
     let data: { esearchresult?: { count?: string; idlist?: string[]; ERROR?: string }; ERROR?: string };
     try {
@@ -208,6 +261,7 @@ export class NcbiClient {
 
   private docToArticle(pmid: string, doc: EsummaryDoc): Article {
     const doi = doc.articleids?.find((a) => a.idtype === "doi")?.value;
+    const pmcid = doc.articleids?.find((a) => a.idtype === "pmc")?.value;
     const article: Article = {
       pmid,
       title: (doc.title ?? "").replace(/\.$/, ""),
@@ -219,6 +273,7 @@ export class NcbiClient {
       publicationTypes: toArray(doc.pubtype),
     };
     if (doi) article.doi = doi;
+    if (pmcid && /^PMC\d+$/i.test(pmcid)) article.pmcid = pmcid.toUpperCase();
     return article;
   }
 
@@ -424,7 +479,7 @@ export async function searchPubMed(
   }
 
   const minTier = input.minDesignTier ?? 0;
-  const typeFilter = input.studyTypes ? new Set<StudyType>(input.studyTypes) : null;
+  const typeFilter = input.studyTypes?.length ? new Set<StudyType>(input.studyTypes) : null;
 
   const articles: GradedArticle[] = [];
   let droppedUnclassified = 0;

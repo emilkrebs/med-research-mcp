@@ -13,15 +13,17 @@ import { isIPv4, isIPv6 } from "node:net";
 
 /**
  * The client IP for rate limiting: the socket address, or — only when the
- * operator has opted in with MED_RESEARCH_TRUST_PROXY=1 — the first
- * X-Forwarded-For entry set by the reverse proxy. Without that opt-in the
- * header is attacker-controlled and must not feed the bucket.
+ * operator has opted in with MED_RESEARCH_TRUST_PROXY=1 — the last
+ * X-Forwarded-For entry, the one the reverse proxy added. Earlier entries come
+ * from the client whenever the proxy appends to the header (nginx's
+ * $proxy_add_x_forwarded_for), so they must not feed the bucket; without the
+ * opt-in, the whole header is attacker-controlled.
  */
 export function clientIp(req: IncomingMessage, trustProxy: boolean): string {
   if (trustProxy) {
     const header = req.headers["x-forwarded-for"];
-    const first = Array.isArray(header) ? header[0] : header;
-    const entry = first?.split(",")[0]?.trim();
+    const joined = Array.isArray(header) ? header.join(",") : header;
+    const entry = joined?.split(",").at(-1)?.trim();
     if (entry) return entry;
   }
   return req.socket.remoteAddress ?? "unknown";

@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { classifyArticle, classifyDesign, DESIGN_TIER, mergeDuplicate, rankKey } from "../src/core/grader";
+import {
+  classifyArticle,
+  classifyDesign,
+  DESIGN_TIER,
+  designPublicationTypes,
+  mergeDuplicate,
+  rankKey,
+  unassignedStudyTypes,
+} from "../src/core/grader";
 import { STUDY_TYPES } from "../src/core/types";
 import type { Correction, NcbiArticle } from "../src/core/types";
 
@@ -196,6 +204,15 @@ describe("classifyDesign — integrity flags", () => {
     expect(pt("Preprint")).toMatchObject({ designTier: null, flags: ["preprint"] });
     expect(pt("Letter", "Randomized Controlled Trial")).toMatchObject({ designTier: 4, flags: ["letter"] });
   });
+
+  it("warns of machine-translated text and machine-written abstracts (ChinaRxiv records) without a tier", () => {
+    const record = { title: "T", publicationTypes: [], machineTranslated: true, machineGeneratedAbstract: true };
+    expect(classifyDesign(record)).toEqual({
+      studyType: "unknown",
+      designTier: null,
+      flags: ["machine-translated", "machine-generated-abstract"],
+    });
+  });
 });
 
 describe("classifyDesign — no metadata", () => {
@@ -269,5 +286,55 @@ describe("classifyArticle / rankKey / DESIGN_TIER", () => {
     const tiers = STUDY_TYPES.filter((t) => t !== "unknown").map((t) => DESIGN_TIER[t]);
     expect(tiers).toEqual([...tiers].sort((a, b) => b - a));
     for (const tier of tiers) expect(tier >= 0 && tier <= 5).toBe(true);
+  });
+});
+
+describe("designPublicationTypes — narrowing a query to what a design filter can keep", () => {
+  it("returns null without a filter, or when unlabeled records are wanted", () => {
+    expect(designPublicationTypes()).toBeNull();
+    expect(designPublicationTypes([])).toBeNull();
+    expect(designPublicationTypes(undefined, 0)).toBeNull();
+    expect(designPublicationTypes(["unknown", "randomized-controlled-trial"])).toBeNull();
+  });
+
+  it("names the tags each wanted design comes from", () => {
+    expect(designPublicationTypes(["randomized-controlled-trial"])).toEqual(["Randomized Controlled Trial", "Equivalence Trial"]);
+    expect(designPublicationTypes(["meta-analysis"])).toEqual(["Network Meta-Analysis", "Meta-Analysis"]);
+  });
+
+  it("keeps only the tags that can reach minDesignTier: unrated syntheses can't", () => {
+    expect(designPublicationTypes(undefined, 4)).toEqual(["Network Meta-Analysis", "Randomized Controlled Trial", "Equivalence Trial"]);
+    expect(designPublicationTypes(undefined, 5)).toEqual(["Network Meta-Analysis"]);
+    expect(designPublicationTypes(["systematic-review"], 1)).toEqual([]);
+    // A tier above 0 drops unrated records, so wanting `unknown` no longer prevents narrowing.
+    expect(designPublicationTypes(["unknown", "randomized-controlled-trial"], 2)).toEqual(["Randomized Controlled Trial", "Equivalence Trial"]);
+  });
+
+  it("returns an empty list for designs metadata never assigns", () => {
+    expect(designPublicationTypes(["cohort", "in-vitro"])).toEqual([]);
+    expect(unassignedStudyTypes(["cohort", "randomized-controlled-trial", "in-vitro"])).toEqual(["cohort", "in-vitro"]);
+  });
+
+  it("never narrows away a record the filter keeps (every pair of known tags)", () => {
+    const TAGS = [
+      "Network Meta-Analysis", "Meta-Analysis", "Systematic Review", "Randomized Controlled Trial", "Equivalence Trial",
+      "Controlled Clinical Trial", "Clinical Trial", "Clinical Trial, Phase I", "Clinical Trial, Phase II",
+      "Clinical Trial, Phase III", "Clinical Trial, Phase IV", "Adaptive Clinical Trial", "Human Challenge Trials",
+      "Pragmatic Clinical Trial", "Observational Study", "Case Reports", "Review", "Scoping Review",
+      "Clinical Trial, Veterinary", "Randomized Controlled Trial, Veterinary", "Observational Study, Veterinary",
+      "Retracted Publication", "Clinical Trial Protocol", "Comment", "Letter", "Preprint", "Journal Article",
+    ];
+    const carries = (list: string[] | null, tags: string[]): boolean =>
+      list === null || list.some((t) => tags.some((tag) => tag.toLowerCase() === t.toLowerCase()));
+    for (const a of TAGS) {
+      for (const b of TAGS) {
+        const tags = [a, b];
+        const { studyType, designTier } = classifyDesign({ title: "", publicationTypes: tags });
+        expect(carries(designPublicationTypes([studyType]), tags), `${tags} as ${studyType}`).toBe(true);
+        for (const tier of [1, 2, 3, 4, 5]) {
+          if ((designTier ?? 0) >= tier) expect(carries(designPublicationTypes(undefined, tier), tags), `${tags} at ${tier}`).toBe(true);
+        }
+      }
+    }
   });
 });

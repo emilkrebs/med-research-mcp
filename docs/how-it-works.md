@@ -1,6 +1,6 @@
 # How med-research-mcp works
 
-This document explains what happens inside the server: how a search travels through the databases, how each result gets its study-design label, how full texts are found, and how the benchmark grades answers. For installation and the tool reference, see the [README](../README.md).
+This document explains what happens inside the server: how a search travels through the databases, how each result gets its study-design label, how full texts are found, and how the benchmark grades answers. For installation, see the [README](../README.md); for parameters and results, the [tool reference](tools.md).
 
 Three different things in this repo grade something:
 
@@ -34,10 +34,13 @@ src/core/            plain TypeScript, no MCP dependency (published as med-resea
 ├─ adapters/         one file per database, plus registry.ts
 ├─ pubmed.ts         NcbiClient: esearch → esummary → efetch, with a rate limiter
 ├─ grader.ts         study-design labels, tiers and flags
-├─ fulltext.ts       DOI → Unpaywall → proxy → doi.org → abstract
+├─ fulltext.ts       PMCID → Europe PMC, DOI → Unpaywall → proxy → doi.org → abstract
+├─ public-fetch.ts   fetches full-text pages, refusing private addresses
 ├─ cache.ts          in-memory LRU or SQLite
 └─ errors.ts         typed errors
 ```
+
+The hosted entry, [`src/http/`](../src/http/), serves the same server over Streamable HTTP ([hosting.md](hosting.md)).
 
 Three principles shape the code:
 
@@ -49,30 +52,33 @@ Three principles shape the code:
 
 What `literature_search` (core: `searchLiterature` in [`literature.ts`](../src/core/literature.ts)) does with a request:
 
-1. **Validate.** zod checks the arguments. `maxResults` is clamped to 1–50 per database.
-2. **Pick the adapters.** `database` defaults to `pubmed`, and `"all"` selects every adapter. Unknown ids are dropped; if none are left, the result is empty with a warning. The server substitutes a PubMed adapter bound to its shared `NcbiClient`, so all tool calls go through one rate limiter.
-3. **Fan out.** The adapters run in parallel. `search` returns ids and a hit count, then `fetch` turns the first `maxResults` ids into records. When a database fails (a network error, a rate limit, a query too broad for PubMed), its failure becomes a warning (`"<database> search failed: …"`) and the other databases still return results.
+1. **Validate.** zod checks the arguments: `database` must name known databases and the query mustn't be empty. The core checks again, for library callers, and refuses dates that don't exist (`2020-13`, which PubMed would silently ignore) and a `from` after `to`, with `INVALID_INPUT`. `maxResults` is clamped to 1–50 per database.
+2. **Pick the adapters.** `database` defaults to `pubmed`, and `"all"` selects every adapter; ids are read case-insensitively, and an unknown one raises `INVALID_INPUT`, so a typo can't look like a search that found nothing. The server substitutes a PubMed adapter bound to its shared `NcbiClient`, so all tool calls go through one rate limiter.
+3. **Fan out.** The adapters run in parallel. `search` returns ids and a hit count, then `fetch` turns the first `maxResults` ids into records. With a design filter (`studyTypes`, `minDesignTier`), PubMed and Europe PMC are asked only for records carrying a publication type the filter can keep ([`designPublicationTypes`](../src/core/grader.ts), derived from the same tag lists as the classifier, so every record the filter keeps carries one), and the databases without design metadata, ChinaXiv and RussiaRxiv, aren't searched, with a warning. A filter only on designs metadata never assigns (`cohort`, …) searches nothing and says so. When a database fails (a network error, a rate limit, a query too broad for PubMed), its failure becomes a warning (`"<database> search failed: …"`, with the error's actionable message) and the other databases still return results. When every database searched fails, the search throws the first error instead: an outage must never look like an empty result, which a model could read as "no studies exist".
 4. **Classify.** Each record goes through `classifyArticle` ([next section](#the-grader-study-design-labels)), which adds `studyType`, `designTier` and `flags`. MeSH headings feed the classification and are then removed from search results to keep them compact.
-5. **De-duplicate by DOI.** DOIs are normalized (URL and `doi:` prefixes removed, compared case-insensitively). One record per DOI survives: the higher-ranked copy, placed where the DOI first appeared. It also takes the other copies' `retracted`, `expression-of-concern`, `corrected` and `updated` flags, since those describe the paper, not one database's record; a merged `retracted` sets its tier to 0. Records without a DOI are all kept.
-6. **Filter.** `minDesignTier` drops records below the given tier. A `null` tier counts as below any minimum; how many records were dropped that way is reported in a warning. `studyTypes` keeps only the listed types. Filtering runs after de-duplication, so a retracted copy the filter would drop still passes its flag to the copy that is kept.
+5. **De-duplicate by DOI.** DOIs are normalized (URL and `doi:` prefixes removed, compared case-insensitively). One record per DOI survives: the higher-ranked copy, placed where the DOI first appeared. It also takes the other copies' `retracted`, `expression-of-concern`, `corrected` and `updated` flags, since those describe the paper, not one database's record; a merged `retracted` sets its tier to 0. Records without a DOI are all kept, unless the same database returned the same id twice (the `chinaxiv` adapter with `language: "ru"` and the `russiarxiv` adapter search the same corpus).
+6. **Filter.** `minDesignTier` drops records below the given tier. A `null` tier counts as below any minimum; how many records were dropped that way is reported in a warning. `studyTypes` keeps only the listed types. This is the exact check the narrowed query in step 3 only approximates: a record tagged both `Randomized Controlled Trial` and `Observational Study` classifies as observational. Filtering runs after de-duplication, so a retracted copy the filter would drop still passes its flag to the copy that is kept.
 7. **Sort.** A stable sort by [rank](#ranking): tiers 5 to 2, then unknown tiers, then tiers 1 and 0. Records of equal rank keep their database's order (relevance or date), with databases in the order they were requested.
-8. **Return** `{ articles, total, query, warnings? }`, where `total` sums the hit counts each database reported before truncation.
+8. **Return** `{ articles, total, query, warnings? }`, where `total` sums the hit counts each database reported before truncation (for the narrowed query, with a design filter).
 
 ### The databases
 
 | | `pubmed` | `europepmc` | `chinaxiv` | `russiarxiv` |
 | --- | --- | --- | --- | --- |
-| API | NCBI E-utilities | Europe PMC REST | ChinaRxiv API | ChinaRxiv API, `source=russiarxiv` |
-| Query | PubMed syntax, including field tags | plain text | plain text | plain text |
-| `dateRange` | publication date | `FIRST_PDATE` | ignored | ignored |
+| API | NCBI E-utilities | Europe PMC REST | ChinaRxiv API, `source=chinaxiv` | ChinaRxiv API, `source=russiarxiv` |
+| Query | PubMed syntax, including field tags | plain text, PubMed field tags removed | plain text, field tags removed | plain text, field tags removed |
+| `dateRange` | publication date | `FIRST_PDATE` | `from_date` / `to_date` | `from_date` / `to_date` |
+
+Dates may be given as `YYYY-MM-DD`, `YYYY-MM` or `YYYY`; for Europe PMC and ChinaRxiv, which need full dates, a year or month becomes its first or last day.
 | `sort: "date"` | ✓ | ✓ | ignored | ignored |
 | Design metadata | publication types, MeSH, correction links | the same, for MEDLINE records | none | none |
+| Text provenance | authors' | authors' | mostly machine-translated | machine-translated; abstracts mostly machine-written |
 
 `language` is read only by the `chinaxiv` adapter, where `"ru"` switches the search to the RussiaRxiv corpus.
 
-- **PubMed** makes three E-utilities calls: `esearch` for the PMIDs, `esummary` for the bibliographic record, and `efetch` (XML) for the abstract, MeSH headings and CommentsCorrections links that `esummary` lacks. `efetch`'s publication types replace `esummary`'s when it has any. A fresh summary is cached only after `efetch` succeeds for it, so a failed `efetch` can't leave a record cached without its retraction links. A query matching more than 100,000 records is refused with `QUERY_TOO_BROAD`.
-- **Europe PMC** returns complete records (abstract, publication types, MeSH, correction links) from a single `resultType=core` search request. MEDLINE records keep their PMID as id. Numeric ids from other sources would collide with PMIDs, so they get a source prefix, e.g. `CBA:521529` (Chinese Biological Abstracts); `PPR…` preprint and `PMC…` ids stay as they are. Europe PMC's correction link names are mapped to PubMed's (`RetractionIn`, …), so these records classify exactly like PubMed's.
-- **ChinaXiv and RussiaRxiv** come from the same ChinaRxiv API. Records use the English title and abstract when available. Search results carry abstracts cut at 500 characters; `literature_fetch` loads the complete record. These records have no publication types, so they are always `unknown`.
+- **PubMed** makes three E-utilities calls: `esearch` for the PMIDs, `esummary` for the bibliographic record, and `efetch` (XML) for the abstract, MeSH headings and CommentsCorrections links that `esummary` lacks. `efetch`'s publication types replace `esummary`'s when it has any. A fresh summary is cached only after `efetch` succeeds for it, so a failed `efetch` can't leave a record cached without its retraction links. A query matching more than 100,000 records is refused with `QUERY_TOO_BROAD`. A design filter adds `AND ("Randomized Controlled Trial"[pt] OR …)` to the term. PubMed's relevance ranking varies between identical requests (five identical searches returned five different top-20 lists, 2026-10-20), so the client reuses a search's PMIDs for an hour (`searchTtlMs`): a repeated search returns the same papers. `esummary` also gives the record's PMCID, which `literature_fulltext` uses.
+- **Europe PMC** returns complete records (abstract, publication types, MeSH, correction links) from a single `resultType=core` search request. MEDLINE records keep their PMID as id. Numeric ids from other sources would collide with PMIDs, so they get a source prefix, e.g. `CBA:521529` (Chinese Biological Abstracts); `PPR…` preprint and `PMC…` ids stay as they are. Europe PMC's correction link names are mapped to PubMed's (`RetractionIn`, …), so these records classify exactly like PubMed's. In `core` results the journal is `journalInfo.journal.title` (a preprint's server is `bookOrReportDetails.publisher`), and the date is the issue date (`journalInfo.dateOfPublication`, e.g. "2026 Sep"), else the first publication date: records added to PMC recently have no `pubYear`. A design filter adds `AND (PUB_TYPE:"…" OR …)`.
+- **ChinaXiv and RussiaRxiv** come from the [ChinaRxiv API](https://chinarxiv.org/api/docs), an independent project, not ChinaXiv (the Chinese Academy of Sciences preprint platform, which publishes no API). One API serves both corpora, so every request sets `source`; without it, a `chinaxiv` search would mix in RussiaRxiv records and count them in `total`. Titles and abstracts are ChinaRxiv's English versions: "most records are machine-translated" (chinarxiv.org), and almost every RussiaRxiv abstract was written by ChinaRxiv rather than the authors (351 of 357 sampled search results, 2026-10-19). The adapter keeps both facts as `machineTranslated` (any original not detected as English) and `machineGeneratedAbstract`, which become [flags](#step-2-the-flags), and links the English page as `url` and the original record (ChinaXiv, Math-Net.Ru, …) as `originalUrl`. Search results carry abstracts cut at 500 characters; `literature_fetch` loads the complete record from `/papers/{id}`, by exact id. The records have no publication types, so they are always `unknown`, and no DOI, so DOI de-duplication and `literature_fulltext` don't apply to them. The API returns only records that contain every word of the query, in any order, and treats `AND` and `OR` as words ("gut microbiota", "microbiota gut" and "gut OR microbiota" each match 55 ChinaXiv records; "vitamin" 87, "depression" 229, "vitamin depression" none; 2026-10-20), so an empty result for a query of several words comes with a warning to use fewer words.
 
 The REST adapters (all but PubMed) keep the records they parse during `search` in a per-process memo of up to 1,000 entries, so the `fetch` that follows doesn't make a second request. They also write records through to the cache under `<database>:<id>`.
 
@@ -86,6 +92,7 @@ The REST adapters (all but PubMed) keep the records they parse during `search` i
 - **CommentsCorrections links** (retraction, expression of concern, erratum, newer version), for flags.
 - **The MeSH check tags `Animals` and `Humans`**, for one warning.
 - **The title**, only to catch a publisher's `RETRACTED` prefix.
+- **ChinaRxiv's `source_language` and `abstract_source` fields**, for two warnings about a record's text.
 
 No keyword or regex rule reads the title or abstract to guess a design. A record without publication types is `unknown`. That's common for recent papers, journals outside MEDLINE, and ChinaXiv / RussiaRxiv. Unknown means unlabeled, not weak: the model reads the design from the abstract, as the [`med-research`](../skills/med-research/SKILL.md) skill instructs.
 
@@ -117,7 +124,7 @@ A synthesis is labeled as a synthesis even when it also carries the tags of the 
 
 ### Step 2: the flags
 
-**`flags`** come from publication types, the CommentsCorrections links in PubMed and Europe PMC records, and MeSH check tags.
+**`flags`** come from publication types, the CommentsCorrections links in PubMed and Europe PMC records, MeSH check tags, and ChinaRxiv's provenance fields.
 
 | Flag | Source | Effect |
 | --- | --- | --- |
@@ -130,6 +137,8 @@ A synthesis is labeled as a synthesis even when it also carries the tags of the 
 | `updated` | an `UpdateIn` link: a newer version exists, e.g. an updated Cochrane review | warning |
 | `animals-not-humans` | MeSH `Animals` without `Humans`. Only a warning: automated indexing drops `Humans` from human trials often enough that this filter wrongly excluded human RCTs 7× as often as under manual indexing ([Askin 2025](https://pubmed.ncbi.nlm.nih.gov/39975499/)) | warning |
 | `preprint`, `letter` | `Preprint`, `Letter` (letters include research letters) | warning |
+| `machine-translated` | A ChinaXiv or RussiaRxiv record whose original ChinaRxiv didn't detect as English: the title and abstract are a machine translation. Check `originalUrl` before quoting a dose, population or outcome | warning |
+| `machine-generated-abstract` | ChinaRxiv's `abstract_source: "machine_generated"`: the abstract is ChinaRxiv's summary, not the authors' (almost all RussiaRxiv records) | warning |
 
 ### Step 3: the tier
 
@@ -175,7 +184,8 @@ What `classifyDesign` returns for some typical metadata:
 | `Randomized Controlled Trial` plus an `ErratumIn` link | `randomized-controlled-trial` | 4 | `corrected` |
 | `Clinical Trial Protocol` | `unknown` | 0 | `protocol` |
 | `Journal Article`, MeSH `Animals`, `Mice` | `unknown` | `null` | `animals-not-humans` |
-| A ChinaXiv record (no publication types) | `unknown` | `null` | |
+| A ChinaXiv record translated from Chinese (no publication types) | `unknown` | `null` | `machine-translated` |
+| A RussiaRxiv record | `unknown` | `null` | `machine-translated`, `machine-generated-abstract` |
 
 ### What the labels are not
 
@@ -214,29 +224,32 @@ Pure data: it returns the stored records, with publication types, MeSH headings 
 
 - **PubMed** runs `esummary` and `efetch`, as in search.
 - **Europe PMC** looks an id up by `EXT_ID` and `SRC` and accepts only an exact match. A bare number would run a full-text search and return unrelated papers.
-- **ChinaXiv** loads the complete record, since search results carry abstracts cut at 500 characters. If that request fails, it returns the preview from an earlier search.
+- **ChinaXiv and RussiaRxiv** load the complete record from `/papers/{id}` and accept only an exact id match, since search results carry abstracts cut at 500 characters. If that request fails, they return the preview from an earlier search.
 
 ### `literature_fulltext`
 
-[`fulltext.ts`](../src/core/fulltext.ts) needs a numeric PMID or a DOI; DOI-based resolution works for any database.
+[`fulltext.ts`](../src/core/fulltext.ts) needs a numeric PMID, a PMCID or Europe PMC preprint id, or a DOI. DOI-based resolution works for any database whose records carry DOIs; ChinaXiv and RussiaRxiv records have none, so for them the tool returns `NOT_FOUND` with a message pointing to the record's `url`.
 
-1. **Cache.** A full text resolved in the last 30 days is returned immediately.
-2. **Find the DOI**: from the argument, a cached record, or a fresh `esummary` call.
+1. **Cache.** An open-access full text resolved in the last 30 days is returned immediately.
+2. **Find the DOI and PMCID**: from the arguments, a cached record (`literature_search` caches PubMed records with their PMCID), or a fresh `esummary` call.
 3. **Try each source in order**, stopping at the first that yields text:
-   1. **Unpaywall**: every open-access location it knows for the DOI, the direct PDF link first, then the landing page. Needs a contact email (`MED_RESEARCH_UNPAYWALL_EMAIL`, or `NCBI_EMAIL`).
-   2. **Institutional proxy**: `MED_RESEARCH_PROXY_PREFIX` followed by the DOI, if configured.
-   3. **Direct**: `https://doi.org/<DOI>`, which works for open-access articles and on networks with IP-based access.
-4. **Fall back** to the abstract, with `source: "none"` and a warning that says what to do (for example, configure a proxy).
+   1. **Europe PMC**, when there is a PMCID (or the id is a `PMC…` or `PPR…` id): its full-text API, `/{PMCID}/fullTextXML`. It serves Europe PMC's open-access subset, needs no email, and its JATS XML keeps tables, which publisher pages often move to separate pages. It is tried first because it's the most complete open-access copy, and the only one the PMC and Europe PMC terms allow fetching automatically (see Unpaywall below).
+   2. **Unpaywall**: every open-access location it knows for the DOI, the direct PDF link first, then the landing page. Needs a contact email (`MED_RESEARCH_UNPAYWALL_EMAIL`, or `NCBI_EMAIL`). PubMed Central and Europe PMC allow automated downloading only through their APIs and bulk services, not their websites ([PMC](https://pmc.ncbi.nlm.nih.gov/about/copyright/), [Europe PMC](https://europepmc.org/Copyright)), so a location on either site is fetched from Europe PMC's full-text API by its PMCID or preprint id (`/{PMCID}/fullTextXML`; Unpaywall usually writes PMC links as `…/pmc/articles/<number>`), or, without one, skipped. The JATS XML becomes markdown: section headings, paragraphs, lists, tables row by row, one form per formula, figure captions, and the OCR text of scanned articles. An article whose body holds less than 500 characters, typically one Europe PMC has only as an abstract, doesn't count as full text.
+   3. **Institutional proxy**: `MED_RESEARCH_PROXY_PREFIX` followed by the DOI, if configured. The request carries no browser cookies, so it works only where the proxy admits the machine without a login (EZproxy's `AutoLoginIP`, typically on the campus network or VPN).
+   4. **Direct**: `https://doi.org/<DOI>`, which works for open-access articles and on networks with IP-based access.
+4. **Fall back** to the abstract, with `source: "none"` and a warning that says what each source answered and what to do: Unpaywall wasn't asked because no contact email is set, it knows no open-access copy, the publisher refused access (HTTP 401–403: paywalled, or blocking automated clients), its page held only the abstract, doi.org doesn't know the DOI, an address was refused, and so on. A DOI doi.org doesn't know (404) returns `NOT_FOUND` when there's no abstract to fall back on.
 
-Each URL is fetched with a 20-second timeout. The `Content-Type` header decides how a response is read, because publishers often serve an HTML paywall page from a `…/pdf` URL. HTML is reduced to the article body with [Readability](https://github.com/mozilla/readability) and converted to markdown with [turndown](https://github.com/mixmark-io/turndown); PDFs are converted to plain text with pdf-parse (`format: "pdf"`). A result shorter than 500 characters is treated as a paywall stub, and the next URL is tried.
+Each URL is fetched with a 20-second timeout by [`fetchPublic`](../src/core/public-fetch.ts). These URLs come from Unpaywall and from whoever registered the DOI, so it refuses any address that isn't publicly routable: loopback, private, link-local (including the cloud metadata endpoints `169.254.169.254` and `100.100.100.200`), CGNAT and reserved ranges. It checks IP-literal hosts before connecting and host names when the connection is made, so DNS rebinding can't slip past the check, follows at most 10 redirects (checking each hop), allows only `http:` and `https:`, and refuses bodies over 30 MB. A refused URL counts as "no text here" and the next one is tried; if the result falls back to the abstract, the warning mentions the refusal, because a fake-IP DNS proxy (Clash, Surge or sing-box in TUN mode) makes every host name resolve to a reserved address. `MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE=1` turns the address check off, for personal machines only. The `Content-Type` header decides how a response is read, because publishers often serve an HTML paywall page from a `…/pdf` URL. HTML is reduced to the article body with [Readability](https://github.com/mozilla/readability) and converted to markdown with [turndown](https://github.com/mixmark-io/turndown); PDFs are converted to plain text with pdf-parse (`format: "pdf"`). A result shorter than 500 characters is treated as a paywall stub, and the next URL is tried.
 
-The cache stores the full, untruncated text. The returned text is capped at `MED_RESEARCH_FULLTEXT_MAX_CHARS` (default 50,000), with `truncated: true` when it was cut.
+A web page must also hold the article, not just its landing page. A paywalled article's page shows the title, the abstract and often the keywords and reference list, which together pass any plain length check; arXiv's abstract page converted to 2,357 characters and came back as `source: "direct"` before this check (2026-10-20). So the markdown is split at its headings: sections that are never the article ("Similar content being viewed by others", "Cited by", recommended articles) are dropped from the text, and the abstract (an "Abstract" or "Summary" section, or a paragraph starting "Abstract:") and front and back matter (references, keywords, highlights, author information, …) are kept but not counted. The rest must reach 2,000 characters, about 300 words. When the page labels no abstract, the known abstract's length is taken off; an "Abstract" section longer than 3,000 characters is taken to hold the body nested under it. A very short article can fail this check; the warning then says the page "showed little beyond the abstract", and `https://doi.org/<DOI>` is the place to check.
+
+Only open-access (Europe PMC and Unpaywall) texts are cached: a text from the proxy or direct route may be licensed to this user alone, and the cache may be persistent or, on a hosted instance, shared. The cache stores the full, untruncated text. The returned text is capped at `MED_RESEARCH_FULLTEXT_MAX_CHARS` (default 50,000), with `truncated: true` when it was cut.
 
 ## Rate limits, errors and caching
 
-**Rate limits.** Each `NcbiClient` queues its requests and spaces them to 3 per second, or 10 with `NCBI_API_KEY`. The MCP server shares one client between all tools, so concurrent tool calls stay within NCBI's limit. Requests carry `NCBI_EMAIL`, as NCBI's usage policy asks. Every upstream request times out after 15 seconds (20 for full-text pages).
+**Rate limits.** Each `NcbiClient` queues its requests and spaces them to 3 per second, or 10 with `NCBI_API_KEY`, with a 20% margin: NCBI counts requests as they arrive, and arrival times jitter, so spaced exactly 1/3 s apart, 2 of 15 serialized requests drew a 429, and 400 ms apart, 1 of 15 (2026-10-20). A 429 is waited out (NCBI's `Retry-After`, 2 s) and retried up to twice, holding back the queue meanwhile, before `RATE_LIMIT` reaches the caller. The MCP server shares one client between all tools, so concurrent tool calls stay within NCBI's limit. The Europe PMC and ChinaRxiv adapters retry a 429 the same way when `Retry-After` is 5 seconds or less. Requests carry `NCBI_EMAIL`, as NCBI's usage policy asks. Every upstream request times out after 15 seconds (20 for full-text pages).
 
-**Errors.** Library functions throw `ResearchApiException` with a code (`RATE_LIMIT`, `QUERY_TOO_BROAD`, `PARSE_FAILURE`, `NETWORK_ERROR`, `NOT_FOUND`), a message for logs, a `userMessage` for the agent, and whether it is `recoverable`. An HTTP 429 becomes `RATE_LIMIT` with the server's `Retry-After`. The MCP tools return these as `isError` results. A multi-database search is the exception: one database failing becomes a warning, not an error.
+**Errors.** Library functions throw `ResearchApiException` with a code (`RATE_LIMIT`, `QUERY_TOO_BROAD`, `PARSE_FAILURE`, `NETWORK_ERROR`, `NOT_FOUND`, `INVALID_INPUT`), a message for logs, a `userMessage` for the agent, and whether it is `recoverable`. An HTTP 429 that retries don't clear becomes `RATE_LIMIT` with the server's `Retry-After`, naming the database that sent it. The MCP tools return these as `isError` results. A multi-database search is the exception while at least one database answers: each failing database becomes a warning, not an error.
 
 **Caching.** The cache holds three stores, each with its own lifetime:
 
@@ -244,7 +257,9 @@ The cache stores the full, untruncated text. The returned text is capped at `MED
 | --- | --- | --- |
 | Summaries (metadata) | 7 days | Metadata changes after publication: indexing adds publication types and MeSH, and retractions, expressions of concern and errata arrive at any time. A cached record must not hide a retraction for long |
 | Abstracts | never | Abstracts don't change |
-| Full texts | 30 days | The paper is stable, but resolved open-access URLs and proxy sessions rot |
+| Open-access full texts | 30 days | The paper is stable, but resolved open-access URLs rot. Proxy and direct texts are never cached |
+
+Apart from these, each `NcbiClient` keeps PubMed search results (PMIDs and count) in memory for an hour, so a repeated search returns the same papers (see [The databases](#the-databases)).
 
 The `memory` backend is an LRU of 200 entries per store that dies with the process. The `sqlite` backend persists to a WAL-mode database and loads its native binding (`better-sqlite3`, an optional dependency) lazily; if the binding is missing or fails to load, the server logs a warning and uses memory instead.
 

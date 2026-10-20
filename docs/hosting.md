@@ -12,6 +12,11 @@ buffer a stream), and is torn down with the response. What is shared between
 requests — built once at startup — is the cache and the `NcbiClient` rate
 limiter, so all requests together respect NCBI's limit.
 
+There is no public instance; this page is for running your own. A shared
+instance is convenient for a team, but it has no institutional proxy (see
+[below](#environment-variables)) and all its users share one set of upstream
+rate limits.
+
 ## Privacy
 
 The hosted endpoint is designed to know as little as possible:
@@ -28,6 +33,68 @@ The hosted endpoint is designed to know as little as possible:
   keyed by ID, never query text or client IPs, but the set of cached IDs does
   show which articles have been looked up. Leave it off on an instance where
   that matters.
+- **Queries leave the server.** Answering a tool call means sending its query
+  or ids to the databases: NCBI, EMBL-EBI (Europe PMC), ChinaRxiv, and for full
+  texts Unpaywall, doi.org and publishers; requests to NCBI, ChinaRxiv and
+  Unpaywall carry the operator's contact email.
+  Tell your users, and see [compliance.md](compliance.md#data-flows) for what
+  each service receives.
+
+### A privacy notice for your instance
+
+Whoever runs an instance decides why and how it processes requests, so under
+the GDPR (Art. 13) the operator owes its users a privacy notice. The project
+can't write it for you, because it depends on who you are, where you host and
+what your reverse proxy logs. This template covers what the server itself does;
+fill in the brackets and check it with your data-protection contact.
+
+> **Who is responsible:** [operator name, address, email].
+>
+> **What this server receives:** your tool calls (search text, article ids,
+> DOIs) and your IP address.
+>
+> **Why, and on what basis:** to answer your requests, and to protect the
+> service from abuse by rate-limiting per IP address (legitimate interest,
+> Art. 6(1)(f) GDPR).
+>
+> **How long:** query text and results are not logged or stored. Request logs
+> hold method, path, status, duration and your IP address shortened to /24
+> (IPv6: /48), kept for [N days]. Your full IP address is held in memory for
+> rate limiting only and dropped about one to two hours after your last
+> request. Cached article records hold no query text or IP addresses.
+>
+> **Who else receives your queries:** to answer a call, the server sends its
+> query or ids, from the server's IP address, to NCBI/NLM (USA; PubMed),
+> EMBL-EBI (UK; Europe PMC) and ChinaRxiv (chinarxiv.org), and for full texts
+> to Unpaywall/OpenAlex (USA), the doi.org resolver and the publisher or
+> repository sites it points to. Requests to NCBI, ChinaRxiv and Unpaywall
+> include the operator's contact email. Each handles
+> requests under its own privacy policy, and some are outside the EU/EEA. Our
+> hosting provider [name, country] processes connection data.
+>
+> **Your rights:** access, erasure and objection (Arts. 15–21 GDPR), and a
+> complaint to your supervisory authority.
+>
+> **Don't enter information that identifies a person.**
+
+## Security
+
+- **Authentication.** Set `MED_RESEARCH_HTTP_TOKEN` for anything but a quick
+  evaluation; without it, anyone who can reach the port can use the server and
+  its upstream rate limits.
+- **Full-text fetches can't reach your network** (never set
+  `MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE` on a shared server; it turns this off).
+  `literature_fulltext` fetches
+  URLs chosen by Unpaywall and by DOI registrants. It refuses loopback,
+  private, link-local, CGNAT and reserved addresses, including the cloud
+  metadata endpoints (`169.254.169.254`, Alibaba Cloud's `100.100.100.200`),
+  checks every redirect, checks host names at connect time so DNS rebinding
+  can't get around it, and refuses bodies over 30 MB
+  ([how-it-works.md](how-it-works.md#literature_fulltext)). As defense in depth,
+  restrict the host's outbound traffic to the public internet too, e.g. block
+  the metadata endpoint with a firewall rule or IMDSv2-only settings.
+- **Dependencies.** Rebuild the image when dependencies get security fixes;
+  `npm audit` lists known advisories.
 
 ## Endpoints
 
@@ -44,7 +111,7 @@ requires.
 
 ## Deploy
 
-Requires Node.js 22.22.2 or later (on Node 24, 24.15.0 or later).
+Requires Node.js 22.22.2 or later on 22, 24.15.0 or later on 24, or 26+.
 
 ```bash
 git clone https://github.com/emilkrebs/med-research-mcp.git
@@ -156,17 +223,22 @@ lists the rest):
 | `MED_RESEARCH_HTTP_BURST` | `20` | Extra tokens a client may spend immediately (see below). |
 | `MED_RESEARCH_HTTP_MAX_CONCURRENCY` | `8` | Requests being processed at once, process-wide. |
 | `MED_RESEARCH_HTTP_MAX_BODY_BYTES` | `1000000` | Maximum POST body size → 413 beyond. |
-| `MED_RESEARCH_TRUST_PROXY` | `0` | `1` = take the client IP from the first `X-Forwarded-For` entry (set only behind a proxy that appends a trusted header). Otherwise the socket address is used. |
+| `MED_RESEARCH_TRUST_PROXY` | `0` | `1` = take the client IP from the last `X-Forwarded-For` entry, the one your reverse proxy added (earlier entries can come from the client). Set it only when a reverse proxy always sits in front; otherwise the socket address is used. |
 | `MED_RESEARCH_ALLOWED_HOSTS` | unset | Comma-separated `Host` header allowlist; when set, DNS-rebinding protection is enabled. |
 
 Relevant non-HTTP variables, unchanged: `NCBI_EMAIL` (recommended),
-`NCBI_API_KEY`, `MED_RESEARCH_UNPAYWALL_EMAIL`, `MED_RESEARCH_CACHE_BACKEND`,
+`NCBI_API_KEY`, `MED_RESEARCH_UNPAYWALL_EMAIL`, `MED_RESEARCH_CHINAXIV_EMAIL`,
+`MED_RESEARCH_FULLTEXT_MAX_CHARS`, `MED_RESEARCH_CACHE_BACKEND`,
 `MED_RESEARCH_CACHE_PATH` (see [Persistent cache](#persistent-cache-sqlite)).
 
-**`MED_RESEARCH_PROXY_PREFIX` is not usable in a hosted setup.** The
-institutional-proxy route depends on the caller's own proxy session; a hosted
-server has no session with your institution, so full texts resolve only
-through open access (Unpaywall / direct DOI) there.
+**Leave `MED_RESEARCH_PROXY_PREFIX` unset on a hosted instance.** An
+institution's subscriptions are licensed to its members, not to everyone who
+can reach your server. For the same reason, **don't host on a network with
+IP-based subscription access** (a campus network, say): the direct route
+(`https://doi.org/<DOI>`) returns whatever publishers serve the server's IP
+address, and on such a network that includes licensed full texts. On an
+ordinary cloud host, full texts come from open-access copies and free-to-read
+publisher pages.
 
 ## Rate-limit model
 
@@ -174,8 +246,8 @@ through open access (Unpaywall / direct DOI) there.
   refilled continuously at `rate` per minute: a new client can fire
   60 + 20 = 80 requests immediately (with the defaults) and then sustains
   60/min. Rejections return **429** with a `Retry-After` header. The client IP
-  is the socket address, or the first `X-Forwarded-For` entry when
-  `MED_RESEARCH_TRUST_PROXY=1`. Buckets are in-memory and per-process; idle
+  is the socket address, or the last `X-Forwarded-For` entry (the one the
+  reverse proxy added) when `MED_RESEARCH_TRUST_PROXY=1`. Buckets are in-memory and per-process; idle
   entries are swept hourly.
 - **Global concurrency cap.** At most `MED_RESEARCH_HTTP_MAX_CONCURRENCY`
   requests (default 8) are processed at once, so upstream rate limits and

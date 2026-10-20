@@ -259,7 +259,7 @@ async function main(): Promise<void> {
   }
   if (!process.env.NCBI_EMAIL) {
     console.error(
-      "[med-research-mcp] NCBI_EMAIL is not set. NCBI asks for a contact email on every request; set it to avoid throttling.",
+      "[med-research-mcp] NCBI_EMAIL is not set. NCBI's usage policy asks every request to carry a contact email, so NCBI can reach you before blocking an IP that exceeds its limits.",
     );
   }
 

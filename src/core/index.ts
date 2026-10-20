@@ -10,7 +10,7 @@ export type { NcbiConfig } from "./pubmed.js";
 
 export { searchLiterature, fetchLiterature } from "./literature.js";
 
-export { ADAPTERS, getAdapters, getAdapter } from "./adapters/registry.js";
+export { ADAPTERS, adaptersFor, getAdapters, getAdapter } from "./adapters/registry.js";
 export type { DatabaseAdapter } from "./adapters/types.js";
 export { PubMedAdapter } from "./adapters/pubmed.js";
 export { EuropePmcAdapter, parseEuropePmc } from "./adapters/europepmc.js";
@@ -19,7 +19,7 @@ export { SovietRxivAdapter } from "./adapters/russiarxiv.js";
 export { defaultHttp } from "./adapters/http.js";
 export type { AdapterHttp, HttpOptions } from "./adapters/http.js";
 
-export { classifyArticle, classifyDesign, DESIGN_TIER } from "./grader.js";
+export { classifyArticle, classifyDesign, designPublicationTypes, DESIGN_TIER } from "./grader.js";
 export type { Classification } from "./grader.js";
 
 export { fetchFulltext } from "./fulltext.js";

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { anonymizeIp, ConcurrencyLimiter, TokenBucketLimiter } from "../src/http/limits.js";
+import type { IncomingMessage } from "node:http";
+import { anonymizeIp, clientIp, ConcurrencyLimiter, TokenBucketLimiter } from "../src/http/limits.js";
 
 describe("ConcurrencyLimiter", () => {
   it("never exceeds the cap when an acquire races a waiter being released", async () => {
@@ -58,6 +59,23 @@ describe("ConcurrencyLimiter", () => {
     expect(limiter.inFlight).toBe(1);
     second();
     expect(limiter.inFlight).toBe(0);
+  });
+});
+
+describe("clientIp", () => {
+  const req = (xff: string | string[] | undefined, remote = "10.0.0.1") =>
+    ({ headers: xff === undefined ? {} : { "x-forwarded-for": xff }, socket: { remoteAddress: remote } }) as unknown as IncomingMessage;
+
+  it("uses the socket address unless the operator trusts the proxy", () => {
+    expect(clientIp(req("203.0.113.9"), false)).toBe("10.0.0.1");
+  });
+
+  it("takes the entry the proxy appended, not one the client sent", () => {
+    // nginx with $proxy_add_x_forwarded_for: "<client-supplied>, <real client>"
+    expect(clientIp(req("1.2.3.4, 198.51.100.7"), true)).toBe("198.51.100.7");
+    expect(clientIp(req(["1.2.3.4", "198.51.100.7"]), true)).toBe("198.51.100.7");
+    expect(clientIp(req("198.51.100.7"), true)).toBe("198.51.100.7");
+    expect(clientIp(req(undefined), true)).toBe("10.0.0.1");
   });
 });
 

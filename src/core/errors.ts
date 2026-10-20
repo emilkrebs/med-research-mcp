@@ -8,7 +8,8 @@ export type ResearchErrorCode =
   | "QUERY_TOO_BROAD"
   | "PARSE_FAILURE"
   | "NETWORK_ERROR"
-  | "NOT_FOUND";
+  | "NOT_FOUND"
+  | "INVALID_INPUT";
 
 export interface ResearchError {
   code: ResearchErrorCode;
@@ -54,11 +55,13 @@ export function isMedResearchError(value: unknown): value is ResearchApiExceptio
 }
 
 export const errors = {
-  rateLimit(retryAfter = 1): ResearchApiException {
+  /** @param source the database that answered 429, named in the message. */
+  rateLimit(retryAfter = 1, source = "PubMed"): ResearchApiException {
+    const hint = source === "PubMed" ? " Set NCBI_API_KEY to raise the limit from 3 to 10 requests/second." : "";
     return new ResearchApiException({
       code: "RATE_LIMIT",
-      message: `Rate limit hit; retry after ${retryAfter}s`,
-      userMessage: `Too many requests to PubMed. Wait ${retryAfter}s and try again. Set an API-Key, like NCBI_API_KEY to raise the limit from 3 to 10 requests/second.`,
+      message: `${source} rate limit hit; retry after ${retryAfter}s`,
+      userMessage: `Too many requests to ${source}. Wait ${retryAfter}s and try again.${hint}`,
       recoverable: true,
       retryAfter,
     });
@@ -97,6 +100,39 @@ export const errors = {
       message: `PMID ${pmid} not found`,
       userMessage: `No PubMed article found for PMID ${pmid}. Check the identifier.`,
       recoverable: false,
+    });
+  },
+
+  /** A non-PubMed id reached a DOI-based lookup without a DOI. */
+  noDoi(id: string): ResearchApiException {
+    return new ResearchApiException({
+      code: "NOT_FOUND",
+      message: `No DOI for non-PubMed id ${id}`,
+      userMessage:
+        `"${id}" is not a PMID, PMCID or Europe PMC preprint id, and no DOI was given. Full text is found through the ` +
+        `DOI: pass the doi from the literature_search result. Records without one (all ChinaXiv and RussiaRxiv records, ` +
+        `some Europe PMC records) can't be resolved, unless they have a pmcid to pass as the id; open their url instead.`,
+      recoverable: false,
+    });
+  },
+
+  /** doi.org has no record of the DOI. */
+  doiNotFound(doi: string): ResearchApiException {
+    return new ResearchApiException({
+      code: "NOT_FOUND",
+      message: `DOI ${doi} not found at doi.org`,
+      userMessage: `doi.org has no record of DOI ${doi}. Check it: pass the doi exactly as literature_search returned it.`,
+      recoverable: false,
+    });
+  },
+
+  /** A parameter the caller can correct: an unknown database, an empty query, a date that doesn't exist. */
+  invalidInput(detail: string): ResearchApiException {
+    return new ResearchApiException({
+      code: "INVALID_INPUT",
+      message: `Invalid input: ${detail}`,
+      userMessage: detail,
+      recoverable: true,
     });
   },
 } as const;

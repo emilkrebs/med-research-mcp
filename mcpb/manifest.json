@@ -2,15 +2,37 @@
   "$schema": "https://raw.githubusercontent.com/anthropics/mcpb/main/schemas/mcpb-manifest-v0.4.schema.json",
   "manifest_version": "0.4",
   "name": "med-research-mcp",
-  "version": "0.5.0",
+  "display_name": "Med Research",
+  "version": "0.6.0",
   "description": "Evidence-graded scientific literature search for AI agents — multi-database (PubMed, Europe PMC, ChinaXiv, RussiaRxiv), built for medical, clinical and supplementation research.",
   "author": {
     "name": "Emil Krebs",
-     "email": "emil.krebs@outlook.de"
+    "email": "hello@emilkrebs.dev"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/emilkrebs/med-research-mcp.git"
+  },
+  "homepage": "https://github.com/emilkrebs/med-research-mcp",
+  "documentation": "https://github.com/emilkrebs/med-research-mcp/blob/main/docs/tools.md",
+  "support": "https://github.com/emilkrebs/med-research-mcp/issues",
   "license": "MIT",
-  "keywords": ["pubmed", "ncbi", "mcp", "evidence-grading", "supplements"],
+  "keywords": ["pubmed", "ncbi", "mcp", "evidence-grading", "evidence-based-medicine", "supplements"],
   "icon": "icon.png",
+  "tools": [
+    {
+      "name": "literature_search",
+      "description": "Search PubMed, Europe PMC, ChinaXiv and RussiaRxiv; each result is labeled with its study design, design tier and integrity flags."
+    },
+    {
+      "name": "literature_fetch",
+      "description": "Full metadata and abstracts for specific article ids."
+    },
+    {
+      "name": "literature_fulltext",
+      "description": "An article's full text as markdown via Unpaywall, an institutional proxy or the DOI, falling back to the abstract."
+    }
+  ],
   "server": {
     "type": "node",
     "entry_point": "server/index.js",
@@ -30,7 +52,7 @@
     "ncbiEmail": {
       "type": "string",
       "title": "NCBI contact email",
-      "description": "NCBI asks for a contact email on every E-utilities request. Recommended to avoid throttling.",
+      "description": "Your email, sent with every PubMed (NCBI E-utilities) request as NCBI's usage policy asks, so NCBI can contact you before blocking an IP that exceeds its limits. Also used for Unpaywall and ChinaRxiv.",
       "required": true
     },
     "ncbiApiKey": {
@@ -49,7 +71,7 @@
     "proxyPrefix": {
       "type": "string",
       "title": "Institutional proxy prefix (optional)",
-      "description": "EZproxy-style DOI prefix for off-campus access, e.g. https://doi-org.ezproxy.your-university.edu — literature_fulltext prepends it to the DOI. Requires an existing proxy session on the machine. Use only as your institution's and the publishers' terms allow.",
+      "description": "EZproxy-style DOI prefix, e.g. https://doi-org.ezproxy.your-university.edu — literature_fulltext prepends it to the DOI. Works only if the proxy lets this computer in without a login (campus network or VPN); a proxy login in your browser isn't used. Use only if your institution's licences allow it: many publishers forbid using subscription content with AI tools.",
       "required": false
     }
   },

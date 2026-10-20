@@ -3,7 +3,7 @@
  * Thin MCP adapter over the med-research-mcp core library.
  *
  * Exposes three stdio tools:
- *   - literature_search   — multi-database search + keyword classification (always cheap)
+ *   - literature_search   — multi-database search, study designs labeled from NLM metadata (no LLM calls)
  *   - literature_fetch    — fetch full metadata + abstracts for given ids (pure data)
  *   - literature_fulltext — resolve and return an article's full text as markdown
  *
@@ -17,7 +17,7 @@ import { buildCache, createServer } from "./server.js";
 
 if (!process.env.NCBI_EMAIL) {
   console.error(
-    "[med-research-mcp] NCBI_EMAIL is not set. NCBI asks for a contact email on every request; set it to avoid throttling.",
+    "[med-research-mcp] NCBI_EMAIL is not set. NCBI's usage policy asks every request to carry a contact email, so NCBI can reach you before blocking an IP that exceeds its limits.",
   );
 }
 

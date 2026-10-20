@@ -16,8 +16,17 @@ export interface DatabaseAdapter {
   id: string;
   /** Human-readable name for logs and tool descriptions. */
   name: string;
-  /** Execute a search and return matching ids + total count. */
-  search(input: SearchInput): Promise<{ count: number; ids: string[] }>;
+  /**
+   * False when the database's records never carry NLM publication types, so every
+   * one is `unknown` and a design filter (studyTypes, minDesignTier) keeps none of
+   * them. Absent means they can carry them.
+   */
+  designMetadata?: boolean;
+  /**
+   * Execute a search and return matching ids + total count, and a warning when the
+   * database's own query rules likely explain an empty result.
+   */
+  search(input: SearchInput): Promise<{ count: number; ids: string[]; warning?: string }>;
   /**
    * Fetch full metadata ({@link Article}[]) for one or more ids. Order is not
    * guaranteed; ids with no result are simply absent from the returned array.
