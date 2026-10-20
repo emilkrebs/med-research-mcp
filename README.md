@@ -142,7 +142,7 @@ The server runs on your machine and sends no telemetry. Your queries go to the d
 - **[Compliance](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/compliance.md)**: intended use, data flows, and the terms of the services it calls.
 - **[Development](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/development.md)**: building, testing and releasing.
 - **[Benchmark](https://github.com/emilkrebs/med-research-mcp/blob/main/benchmark/README.md)**: how well models answer biomedical questions with the server.
-- **[Changelog](https://github.com/emilkrebs/med-research-mcp/blob/main/CHANGELOG.md)**.
+- **[Releases](https://github.com/emilkrebs/med-research-mcp/releases)**: what changed in each version.
 
 ## Medical disclaimer
 
