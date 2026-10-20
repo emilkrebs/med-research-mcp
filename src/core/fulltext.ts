@@ -26,7 +26,7 @@
 import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors } from "./errors.js";
-import { fetchPublic } from "./public-fetch.js";
+import { BlockedUrlError, fetchPublic } from "./public-fetch.js";
 import { NcbiClient } from "./pubmed.js";
 import type { FulltextInput, FulltextOutput, FulltextSource, Article } from "./types.js";
 import { UnpaywallClient } from "./unpaywall.js";
@@ -104,9 +104,10 @@ export async function fetchFulltext(
   const maxChars = deps.maxChars ?? envMaxChars() ?? DEFAULT_MAX_CHARS;
   const now = deps.now ?? Date.now;
 
-  // 1. Cache hit — return immediately, re-clamped to the current limit.
+  // 1. Cache hit — return immediately, re-clamped to the current limit. Only open-access texts
+  // count: 0.5.0 also cached proxy and direct texts, which a persistent cache may still hold.
   const cached = cache.getFulltext(id);
-  if (cached) {
+  if (cached?.source === "unpaywall") {
     const { text, truncated } = clamp(cached.fulltext, maxChars);
     const knownDoi = normalizeDoi(input.doi) ?? normalizeDoi(cache.getSummary(id)?.doi);
     return {
@@ -151,11 +152,13 @@ export async function fetchFulltext(
   }
 
   // Fetch a URL and turn its body into text; null means "didn't yield usable full text".
+  let refusedAddress = false;
   const extract = async (url: string): Promise<Extracted | null> => {
     let res: FetchedResource;
     try {
       res = await fetchUrl(url, timeoutMs);
-    } catch {
+    } catch (err) {
+      if (err instanceof BlockedUrlError && err.reason === "address") refusedAddress = true;
       return null;
     }
     if (!res.ok) return null;
@@ -216,7 +219,7 @@ export async function fetchFulltext(
 
   // 4. Fallback — nothing resolved. Return the abstract with actionable guidance.
   const abstract = await resolveAbstract(id, article, cache, client);
-  return noneResult(id, doi, abstract, paywallWarning(Boolean(proxyPrefix)));
+  return noneResult(id, doi, abstract, paywallWarning(Boolean(proxyPrefix), refusedAddress));
 }
 
 // ─── Resolution helpers ─────────────────────────────────────────
@@ -241,13 +244,18 @@ function openAccessUrls(urls: string[]): string[] {
     } catch {
       continue;
     }
-    let target = url;
-    if (/(^|\.)(ncbi\.nlm\.nih\.gov|europepmc\.org)$/i.test(parsed.hostname)) {
-      const pmcid = /PMC\d+/i.exec(parsed.pathname + parsed.search)?.[0]?.toUpperCase();
-      if (!pmcid) continue;
-      target = `${EUROPE_PMC_FULLTEXT}${pmcid}/fullTextXML`;
+    const host = parsed.hostname.toLowerCase();
+    let target: string | null = url;
+    if (host === "pmc.ncbi.nlm.nih.gov" || (/(^|\.)ncbi\.nlm\.nih\.gov$/.test(host) && /^\/pmc\//i.test(parsed.pathname))) {
+      // Unpaywall's usual form is ".../pmc/articles/4974751", without the PMC prefix.
+      const number = /\/articles\/(?:PMC)?(\d+)/i.exec(parsed.pathname)?.[1] ?? /PMC(\d+)/i.exec(parsed.search)?.[1];
+      target = number ? `${EUROPE_PMC_FULLTEXT}PMC${number}/fullTextXML` : null;
+    } else if (/(^|\.)europepmc\.org$/.test(host)) {
+      // PMC articles and preprints (PPR…) have full text in the API; abstract pages don't.
+      const id = /\b(PMC\d+|PPR\d+)\b/i.exec(parsed.pathname + parsed.search)?.[1];
+      target = id ? `${EUROPE_PMC_FULLTEXT}${id.toUpperCase()}/fullTextXML` : null;
     }
-    if (!out.includes(target)) out.push(target);
+    if (target && !out.includes(target)) out.push(target);
   }
   return out;
 }
@@ -305,10 +313,16 @@ function noneResult(
   };
 }
 
-function paywallWarning(proxyConfigured: boolean): string {
-  return proxyConfigured
+function paywallWarning(proxyConfigured: boolean, refusedAddress: boolean): string {
+  const warning = proxyConfigured
     ? "Full text unavailable — no open-access copy and the configured proxy did not return the article. Returned the abstract only."
     : "Full text unavailable — paywalled. Consider adding an institutional proxy via MED_RESEARCH_PROXY_PREFIX. Returned the abstract only.";
+  if (!refusedAddress) return warning;
+  return (
+    `${warning} Some locations were refused because their host names resolve to private or reserved network addresses, ` +
+    "as they do behind a fake-IP DNS proxy (Clash, Surge or sing-box in TUN mode). On a personal machine, set " +
+    "MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE=1 to allow them; never on a shared server."
+  );
 }
 
 function clamp(text: string, maxChars: number): { text: string; truncated: boolean } {
@@ -336,9 +350,14 @@ function envMaxChars(): number | undefined {
 
 // ─── Default (network + library) implementations ────────────────
 
+/** Kept as one function so fetchPublic reuses a single agent for it. */
+const allowAnyAddress = (): boolean => true;
+
 async function defaultFetchUrl(url: string, timeoutMs: number): Promise<FetchedResource> {
   const res = await fetchPublic(url, {
     timeoutMs,
+    // Personal machines behind fake-IP DNS proxies or split-horizon DNS may opt out of the address check.
+    ...(process.env.MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE === "1" ? { isAllowedAddress: allowAnyAddress } : {}),
     headers: {
       "User-Agent": USER_AGENT,
       Accept: "text/html,application/xhtml+xml,application/pdf,*/*",
@@ -382,61 +401,190 @@ export async function defaultHtmlToMarkdown(html: string, url: string): Promise<
 /**
  * Convert a JATS XML article (as Europe PMC's full-text API returns it) to
  * markdown: title, abstract, then the body's sections as headings, paragraphs,
- * lists, and figure and table captions. Reference lists are left out.
+ * lists, tables (row by row), formulas (one readable form each), figure
+ * captions and scanned-article OCR text. Reference lists are left out.
+ *
+ * Returns "" when the body holds less than {@link MIN_FULLTEXT_CHARS}: an
+ * article Europe PMC has only as an abstract must not pass for full text.
  */
 export async function defaultJatsToMarkdown(xml: string): Promise<string> {
   const { JSDOM } = await import("jsdom");
   const doc = new JSDOM(xml, { contentType: "text/xml" }).window.document;
-  const text = (el: Element | null | undefined): string => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
+  const squash = (text: string): string => text.replace(/\s+/g, " ").trim();
   const child = (el: Element, name: string): Element | undefined => [...el.children].find((c) => c.localName === name);
-  const out: string[] = [];
 
-  const title = doc.querySelector("article-meta article-title");
-  if (title) out.push(`# ${text(title)}`);
-  for (const abstract of doc.querySelectorAll("article-meta abstract")) {
-    out.push("## Abstract");
-    const paragraphs = abstract.querySelectorAll("p");
-    if (paragraphs.length === 0) out.push(text(abstract));
-    for (const p of paragraphs) out.push(text(p));
-  }
-
-  const walk = (node: Element, depth: number): void => {
-    for (const el of node.children) {
-      switch (el.localName) {
-        case "sec": {
-          const heading = child(el, "title");
-          if (heading) out.push(`${"#".repeat(Math.min(depth, 6))} ${text(heading)}`);
-          walk(el, depth + 1);
-          break;
-        }
-        case "title":
-          break; // printed as its section's heading
-        case "p":
-          out.push(text(el));
-          break;
-        case "list":
-          for (const item of el.children) if (item.localName === "list-item") out.push(`- ${text(item)}`);
-          break;
-        case "fig":
-        case "table-wrap": {
-          const label = child(el, "label");
-          const caption = child(el, "caption");
-          if (caption) out.push(`*${label ? `${text(label)}. ` : ""}${text(caption)}*`);
-          break;
-        }
-        default:
-          walk(el, depth);
+  /** TeX source without the LaTeX document wrapper PMC puts around it. */
+  const tex = (el: Element): string => {
+    const source = el.textContent ?? "";
+    return (/\\begin\{document\}([\s\S]*?)\\end\{document\}/.exec(source)?.[1] ?? source).trim();
+  };
+  /** Text of inline content, with each formula in one form (TeX if present, else MathML text). */
+  const inline = (node: Node): string => {
+    if (node.nodeType === 3) return node.nodeValue ?? "";
+    if (node.nodeType !== 1) return "";
+    const el = node as Element;
+    switch (el.localName) {
+      case "alternatives": {
+        const preferred = child(el, "tex-math") ?? child(el, "math");
+        return preferred ? inline(preferred) : "";
       }
+      case "tex-math":
+        return ` ${tex(el)} `;
+      case "graphic":
+      case "inline-graphic":
+        return "";
+      default:
+        return [...el.childNodes].map(inline).join("");
     }
   };
-  const body = doc.querySelector("body");
-  if (body) walk(body, 2);
-  return out.filter(Boolean).join("\n\n");
+  /** "*Table 1. Caption*", without doubling a label's own period. */
+  const caption = (el: Element): string => {
+    const label = child(el, "label");
+    const text = child(el, "caption");
+    const parts = [label ? squash(inline(label)).replace(/[.:]$/, "") : "", text ? squash(inline(text)) : ""].filter(Boolean);
+    return parts.length > 0 ? `*${parts.join(". ")}*` : "";
+  };
+
+  /** Block-level elements: a paragraph that contains one is split around it. */
+  const BLOCKS = new Set(["sec", "p", "list", "table-wrap", "fig", "disp-formula", "preformat", "boxed-text", "disp-quote"]);
+  const render = (el: Element, depth: number, out: string[]): void => {
+    switch (el.localName) {
+      case "sec": {
+        const heading = child(el, "title");
+        if (heading) out.push(`${"#".repeat(Math.min(depth, 6))} ${squash(inline(heading))}`);
+        for (const c of el.children) if (c !== heading) render(c, depth + 1, out);
+        return;
+      }
+      case "title":
+      case "label":
+      case "caption":
+        return; // printed by their parent
+      case "p": {
+        let buffer = "";
+        const flush = (): void => {
+          if (squash(buffer)) out.push(squash(buffer));
+          buffer = "";
+        };
+        for (const node of el.childNodes) {
+          if (node.nodeType === 1 && BLOCKS.has((node as Element).localName)) {
+            flush();
+            render(node as Element, depth, out);
+          } else {
+            buffer += inline(node);
+          }
+        }
+        flush();
+        return;
+      }
+      case "list":
+        for (const item of el.children) if (item.localName === "list-item") out.push(`- ${squash(inline(item))}`);
+        return;
+      case "table-wrap": {
+        const head = caption(el);
+        if (head) out.push(head);
+        for (const table of el.querySelectorAll("table")) {
+          const rows = [...table.querySelectorAll("tr")].map((tr) =>
+            [...tr.children].filter((c) => c.localName === "td" || c.localName === "th").map((c) => squash(inline(c)).replace(/\|/g, "\\|")),
+          );
+          if (rows.length === 0) continue;
+          const lines = rows.map((cells) => `| ${cells.join(" | ")} |`);
+          lines.splice(1, 0, `|${" --- |".repeat(Math.max(1, rows[0]!.length))}`);
+          out.push(lines.join("\n"));
+        }
+        const foot = child(el, "table-wrap-foot");
+        if (foot && squash(inline(foot))) out.push(squash(inline(foot)));
+        return;
+      }
+      case "fig": {
+        const head = caption(el);
+        if (head) out.push(head);
+        return;
+      }
+      case "disp-formula":
+        if (squash(inline(el))) out.push(squash(inline(el)));
+        return;
+      case "preformat": {
+        // Scanned articles carry their OCR text here (preformat-type="pmc-ocr-text").
+        const text = (el.textContent ?? "").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+        if (text) out.push(text);
+        return;
+      }
+      default:
+        for (const c of el.children) render(c, depth, out);
+    }
+  };
+
+  const front: string[] = [];
+  const title = doc.querySelector("article-meta article-title");
+  if (title) front.push(`# ${squash(inline(title))}`);
+  for (const abstract of doc.querySelectorAll("article-meta abstract")) {
+    front.push("## Abstract");
+    const before = front.length;
+    for (const c of abstract.children) render(c, 3, front);
+    if (front.length === before && squash(inline(abstract))) front.push(squash(inline(abstract)));
+  }
+
+  const body: string[] = [];
+  const bodyEl = doc.querySelector("body");
+  if (bodyEl) render(bodyEl, 2, body);
+  if (body.join("\n\n").length < MIN_FULLTEXT_CHARS) return "";
+  return [...front, ...body].filter(Boolean).join("\n\n");
+}
+
+/**
+ * pdf.js's worker as a data URL, inlined by the .mcpb build (scripts/build-mcpb.mjs) only. A bundle
+ * can't load the worker from its own file, nor the native @napi-rs/canvas that pdf-parse uses to
+ * provide DOMMatrix, which pdf.js needs even to extract text.
+ */
+declare const __MED_RESEARCH_PDF_WORKER__: string | undefined;
+
+/** The 2D subset of DOMMatrix that pdf.js's text extraction touches. */
+function installDomMatrix(): void {
+  if (typeof (globalThis as { DOMMatrix?: unknown }).DOMMatrix !== "undefined") return;
+  class DOMMatrix {
+    a = 1;
+    b = 0;
+    c = 0;
+    d = 1;
+    e = 0;
+    f = 0;
+    constructor(init?: number[]) {
+      if (Array.isArray(init) && init.length === 6) [this.a, this.b, this.c, this.d, this.e, this.f] = init as [number, number, number, number, number, number];
+    }
+    multiplySelf(o: DOMMatrix): this {
+      const { a, b, c, d, e, f } = this;
+      [this.a, this.b, this.c, this.d] = [a * o.a + c * o.b, b * o.a + d * o.b, a * o.c + c * o.d, b * o.c + d * o.d];
+      [this.e, this.f] = [a * o.e + c * o.f + e, b * o.e + d * o.f + f];
+      return this;
+    }
+    preMultiplySelf(o: DOMMatrix): this {
+      const product = new DOMMatrix([o.a, o.b, o.c, o.d, o.e, o.f]).multiplySelf(this);
+      [this.a, this.b, this.c, this.d, this.e, this.f] = [product.a, product.b, product.c, product.d, product.e, product.f];
+      return this;
+    }
+    translate(x = 0, y = 0): DOMMatrix {
+      return new DOMMatrix([this.a, this.b, this.c, this.d, this.e, this.f]).multiplySelf(new DOMMatrix([1, 0, 0, 1, x, y]));
+    }
+    scale(x = 1, y = x): DOMMatrix {
+      return new DOMMatrix([this.a, this.b, this.c, this.d, this.e, this.f]).multiplySelf(new DOMMatrix([x, 0, 0, y, 0, 0]));
+    }
+    invertSelf(): this {
+      const { a, b, c, d, e, f } = this;
+      const det = a * d - b * c;
+      [this.a, this.b, this.c, this.d] = [d / det, -b / det, -c / det, a / det];
+      [this.e, this.f] = [(c * f - d * e) / det, (b * e - a * f) / det];
+      return this;
+    }
+  }
+  (globalThis as { DOMMatrix?: unknown }).DOMMatrix = DOMMatrix;
 }
 
 /** Extract plain text from PDF bytes. Exported for the benchmark's web baseline, like `defaultHtmlToMarkdown`. */
 export async function defaultPdfToText(bytes: Uint8Array): Promise<string> {
+  const bundledWorker = typeof __MED_RESEARCH_PDF_WORKER__ !== "undefined" ? __MED_RESEARCH_PDF_WORKER__ : undefined;
+  if (bundledWorker) installDomMatrix();
   const { PDFParse } = await import("pdf-parse");
+  if (bundledWorker) PDFParse.setWorker(bundledWorker);
   const parser = new PDFParse({ data: bytes });
   const result = await parser.getText();
   await parser.destroy();

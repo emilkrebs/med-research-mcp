@@ -53,17 +53,24 @@ for (const [network, prefix] of [
   ["203.0.113.0", 24], // documentation (TEST-NET-3)
   ["224.0.0.0", 4], // multicast
   ["240.0.0.0", 4], // reserved, incl. broadcast
+  ["168.63.129.16", 32], // Azure's platform endpoint (WireServer): public range, internal use
 ] as const) {
   NON_PUBLIC.addSubnet(network, prefix, "ipv4");
 }
 for (const [network, prefix] of [
   ["::", 96], // unspecified, loopback, deprecated IPv4-compatible
+  ["::ffff:0:0:0", 96], // IPv4-translated (SIIT)
   ["64:ff9b:1::", 48], // local-use IPv4/IPv6 translation
   ["100::", 64], // discard-only
+  ["100:0:0:1::", 64], // dummy prefix
+  ["2001::", 23], // IETF protocol assignments, incl. Teredo
   ["2001:db8::", 32], // documentation
   ["2002::", 16], // 6to4 (deprecated)
-  ["fc00::", 7], // unique local
+  ["3fff::", 20], // documentation
+  ["5f00::", 16], // segment routing (SRv6) SIDs
+  ["fc00::", 7], // unique local, incl. AWS's IPv6 metadata endpoint fd00:ec2::254
   ["fe80::", 10], // link-local
+  ["fec0::", 10], // site-local (deprecated)
   ["ff00::", 8], // multicast
 ] as const) {
   NON_PUBLIC.addSubnet(network, prefix, "ipv6");
@@ -106,9 +113,19 @@ export function isPublicAddress(address: string): boolean {
   return false;
 }
 
+/** Why a URL was refused: a non-public address, a non-HTTP scheme, a redirect loop, or an oversized body. */
+export type BlockedReason = "address" | "protocol" | "redirects" | "size";
+
 /** Thrown when a URL or its address is refused; the full-text resolver treats it as "no text here". */
 export class BlockedUrlError extends Error {
   override readonly name = "BlockedUrlError";
+
+  constructor(
+    message: string,
+    readonly reason: BlockedReason,
+  ) {
+    super(message);
+  }
 }
 
 /** DNS lookup that fails when any resolved address is refused. Handles `all: true` (Happy Eyeballs). */
@@ -119,7 +136,7 @@ function guardedLookup(isAllowed: (address: string) => boolean): LookupFunction 
       const refused = addresses.find((a) => !isAllowed(a.address));
       if (refused || addresses.length === 0) {
         const reason = refused ? `resolves to ${refused.address}, not a public address` : "has no address";
-        return callback(new BlockedUrlError(`Refusing to connect: ${hostname} ${reason}`), "", 0);
+        return callback(new BlockedUrlError(`Refusing to connect: ${hostname} ${reason}`, "address"), "", 0);
       }
       if (options.all) return callback(null, addresses);
       callback(null, addresses[0]!.address, addresses[0]!.family);
@@ -141,11 +158,11 @@ function agentFor(undici: typeof import("undici"), isAllowed: (address: string) 
 /** Refuse non-HTTP URLs and IP-literal hosts that aren't allowed (the lookup hook never sees those). */
 function checkUrl(url: URL, isAllowed: (address: string) => boolean): void {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new BlockedUrlError(`Refusing to fetch ${url.protocol} URL`);
+    throw new BlockedUrlError(`Refusing to fetch ${url.protocol} URL`, "protocol");
   }
   const host = url.hostname.replace(/^\[|\]$/g, "");
   if (isIP(host) && !isAllowed(host)) {
-    throw new BlockedUrlError(`Refusing to connect: ${host} is not a public address`);
+    throw new BlockedUrlError(`Refusing to connect: ${host} is not a public address`, "address");
   }
 }
 
@@ -197,7 +214,7 @@ export async function fetchPublic(url: string, options: PublicFetchOptions): Pro
       const location = res.headers.get("location");
       if (res.status >= 300 && res.status < 400 && location) {
         await res.body?.cancel();
-        if (hop >= MAX_REDIRECTS) throw new BlockedUrlError(`More than ${MAX_REDIRECTS} redirects`);
+        if (hop >= MAX_REDIRECTS) throw new BlockedUrlError(`More than ${MAX_REDIRECTS} redirects`, "redirects");
         current = new URL(location, current);
         continue;
       }
@@ -205,14 +222,14 @@ export async function fetchPublic(url: string, options: PublicFetchOptions): Pro
       const declared = Number(res.headers.get("content-length"));
       if (Number.isFinite(declared) && declared > maxBytes) {
         await res.body?.cancel();
-        throw new BlockedUrlError(`Response of ${declared} bytes exceeds the ${maxBytes}-byte cap`);
+        throw new BlockedUrlError(`Response of ${declared} bytes exceeds the ${maxBytes}-byte cap`, "size");
       }
       const chunks: Uint8Array[] = [];
       let received = 0;
       if (res.body) {
         for await (const chunk of res.body) {
           received += chunk.byteLength;
-          if (received > maxBytes) throw new BlockedUrlError(`Response exceeds the ${maxBytes}-byte cap`);
+          if (received > maxBytes) throw new BlockedUrlError(`Response exceeds the ${maxBytes}-byte cap`, "size");
           chunks.push(chunk);
         }
       }

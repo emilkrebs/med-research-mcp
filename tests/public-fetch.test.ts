@@ -35,6 +35,11 @@ describe("isPublicAddress", () => {
     "::ffff:169.254.169.254",
     "64:ff9b::7f00:1", // NAT64 for 127.0.0.1
     "64:ff9b::a9fe:a9fe", // NAT64 for 169.254.169.254
+    "168.63.129.16", // Azure platform endpoint
+    "::ffff:0:7f00:1", // IPv4-translated 127.0.0.1
+    "2001:0:4136:e378:8000:63bf:3fff:fdd2", // Teredo
+    "fec0::1", // site-local
+    "fd00:ec2::254", // AWS IPv6 metadata
     "not-an-ip",
   ])("refuses %s", (address) => {
     expect(isPublicAddress(address)).toBe(false);
@@ -93,6 +98,21 @@ describe("fetchPublic", () => {
     await expect(fetchPublic(`http://localhost:${port}/article`, { timeoutMs: 5_000 })).rejects.toBeInstanceOf(
       BlockedUrlError,
     );
+  });
+
+  it("connects to a host name through the lookup hook when its address is allowed", async () => {
+    const port = (server.address() as AddressInfo).port;
+    const res = await fetchPublic(`http://localhost:${port}/article`, {
+      timeoutMs: 5_000,
+      isAllowedAddress: (address) => address === "127.0.0.1" || address === "::1",
+    });
+    expect(res.ok).toBe(true);
+    expect(new TextDecoder().decode(res.body)).toContain("article");
+  });
+
+  it("names why a URL was refused", async () => {
+    await expect(fetchPublic(`${base}/article`, { timeoutMs: 5_000 })).rejects.toMatchObject({ reason: "address" });
+    await expect(fetchPublic("file:///etc/passwd", { timeoutMs: 5_000 })).rejects.toMatchObject({ reason: "protocol" });
   });
 
   it("refuses non-HTTP URLs", async () => {

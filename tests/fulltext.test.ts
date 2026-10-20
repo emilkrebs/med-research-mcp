@@ -4,6 +4,7 @@ import { UnpaywallClient, type UnpaywallResult } from "../src/core/unpaywall";
 import { FULLTEXT_TTL_MS, LRUBackend } from "../src/core/cache";
 import { NcbiClient } from "../src/core/pubmed";
 import { ResearchApiException } from "../src/core/errors";
+import { BlockedUrlError } from "../src/core/public-fetch";
 import type { Article } from "../src/core/types";
 
 const DOI = "10.1000/xyz123";
@@ -105,9 +106,11 @@ describe("fetchFulltext resolution strategy", () => {
         doi: DOI,
         isOa: true,
         urls: [
+          "https://www.ncbi.nlm.nih.gov/pmc/articles/1234567", // Unpaywall's usual form: no "PMC" prefix
           "https://pmc.ncbi.nlm.nih.gov/articles/PMC1234567/pdf/main.pdf",
           "https://europepmc.org/articles/pmc1234567",
-          "https://europepmc.org/abstract/MED/12345678", // no PMCID: a website page, dropped
+          "https://europepmc.org/abstract/MED/12345678", // an abstract page: dropped
+          "https://europepmc.org/article/PPR/PPR1318364", // a preprint: the API has its full text
           "https://oa.example/article",
         ],
       }),
@@ -120,6 +123,15 @@ describe("fetchFulltext resolution strategy", () => {
     expect(out.source).toBe("unpaywall");
     expect(fetchUrl.mock.calls.map(([url]) => url)).toEqual([
       "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1234567/fullTextXML",
+    ]);
+
+    // The full list, had the first API call failed: PMC copies deduplicated, the abstract page gone.
+    const all = vi.fn(async () => paywalled());
+    await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), { ...deps, fetchUrl: all });
+    expect(all.mock.calls.map(([url]) => url).slice(0, 3)).toEqual([
+      "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1234567/fullTextXML",
+      "https://www.ebi.ac.uk/europepmc/webservices/rest/PPR1318364/fullTextXML",
+      "https://oa.example/article",
     ]);
     expect(jatsToMarkdown).toHaveBeenCalledWith("<article/>");
     expect(htmlToMarkdown).not.toHaveBeenCalled();
@@ -142,6 +154,54 @@ describe("fetchFulltext resolution strategy", () => {
       "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC7654321/fullTextXML",
       "https://oa.example/article",
     ]);
+  });
+
+  it("recognizes a PMC copy in Unpaywall's usual form, without the PMC prefix", async () => {
+    const fetchUrl = vi.fn(async () => paywalled());
+    await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), {
+      unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://www.ncbi.nlm.nih.gov/pmc/articles/4974751"] }),
+      fetchUrl,
+    });
+    expect(fetchUrl.mock.calls[0]?.[0]).toBe("https://www.ebi.ac.uk/europepmc/webservices/rest/PMC4974751/fullTextXML");
+  });
+
+  it("leaves other NCBI pages, such as Bookshelf, to the regular fetch", async () => {
+    const fetchUrl = vi.fn(async (url: string) => htmlResource("<x/>", url));
+    const deps: FulltextDeps = {
+      unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://www.ncbi.nlm.nih.gov/books/NBK1234/"] }),
+      fetchUrl,
+      htmlToMarkdown: async () => LONG_MARKDOWN,
+    };
+    await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), deps);
+    expect(fetchUrl.mock.calls[0]?.[0]).toBe("https://www.ncbi.nlm.nih.gov/books/NBK1234/");
+  });
+
+  it("ignores a proxy or direct text cached by an older version", async () => {
+    const cache = new LRUBackend();
+    cache.setFulltext("12345678", { source: "proxy", fulltext: LONG_MARKDOWN, format: "markdown", fetchedAt: Date.now() });
+    const fetchUrl = vi.fn(async () => paywalled());
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, cache, fakeClient(), { unpaywall: fakeUnpaywall(null), fetchUrl });
+    expect(out.source).toBe("none");
+    expect(fetchUrl).toHaveBeenCalled();
+  });
+
+  it("says when a location was refused for its address, and how to allow it on a personal machine", async () => {
+    const deps: FulltextDeps = {
+      unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://oa.example/article"] }),
+      fetchUrl: async (url: string) => {
+        if (url.startsWith("https://oa.example")) throw new BlockedUrlError("Refusing to connect: oa.example resolves to 198.18.0.7", "address");
+        return paywalled();
+      },
+    };
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), deps);
+    expect(out.source).toBe("none");
+    expect(out.warning).toContain("MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE=1");
+
+    const plain = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), {
+      unpaywall: fakeUnpaywall(null),
+      fetchUrl: async () => paywalled(),
+    });
+    expect(plain.warning).not.toContain("MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE");
   });
 
   it("doesn't cache a proxy text, which may be licensed to this user alone", async () => {
@@ -379,34 +439,49 @@ describe("UnpaywallClient", () => {
 });
 
 describe("default extraction (real libraries)", () => {
-  it("converts a JATS article from Europe PMC to markdown, without the reference list", async () => {
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>
-      <article><front><article-meta>
+  it("converts a JATS article to markdown: sections, lists, tables row by row, one form per formula", async () => {
+    const filler = "Adults aged 18 to 65 were randomised to creatine or placebo and followed for six weeks. ".repeat(6);
+    const xml = String.raw`<?xml version="1.0" encoding="UTF-8"?>
+      <article xmlns:mml="http://www.w3.org/1998/Math/MathML"><front><article-meta>
         <title-group><article-title>Creatine and <italic>cognition</italic></article-title></title-group>
         <abstract><p>Background text.</p><p>Results: 38 participants.</p></abstract>
       </article-meta></front>
       <body>
-        <sec><title>Methods</title><p>We randomised 38 adults.</p>
+        <sec><title>Methods</title><p>We randomised 38 adults. ${filler}</p>
           <sec><title>Outcomes</title><list><list-item><p>Memory</p></list-item><list-item><p>Speed</p></list-item></list></sec>
-          <table-wrap><label>Table 1</label><caption><p>Baseline characteristics</p></caption><table><tr><td>42</td></tr></table></table-wrap>
+          <p>Doses are shown below.
+            <table-wrap><label>Table 1.</label><caption><p>Baseline characteristics</p></caption>
+              <table><thead><tr><th>Group</th><th>Age (yrs)</th></tr></thead>
+                <tbody><tr><td>Creatine</td><td>6–11</td></tr><tr><td>Placebo</td><td>97.2</td></tr></tbody></table>
+            </table-wrap>
+          </p>
+          <p>Power was <inline-formula><alternatives>
+            <tex-math>\documentclass[12pt]{minimal}\usepackage{amsmath}\begin{document}$1-\beta = 0.8$\end{document}</tex-math>
+            <mml:math><mml:mn>1</mml:mn><mml:mo>-</mml:mo><mml:mi>β</mml:mi></mml:math>
+          </alternatives></inline-formula> overall.</p>
         </sec>
       </body>
       <back><ref-list><ref><mixed-citation>Smith J. Not in the output.</mixed-citation></ref></ref-list></back></article>`;
     const md = await defaultJatsToMarkdown(xml);
-    expect(md).toBe(
-      [
-        "# Creatine and cognition",
-        "## Abstract",
-        "Background text.",
-        "Results: 38 participants.",
-        "## Methods",
-        "We randomised 38 adults.",
-        "### Outcomes",
-        "- Memory",
-        "- Speed",
-        "*Table 1. Baseline characteristics*",
-      ].join("\n\n"),
+    expect(md.startsWith("# Creatine and cognition\n\n## Abstract\n\nBackground text.\n\nResults: 38 participants.\n\n## Methods")).toBe(true);
+    expect(md).toContain("### Outcomes\n\n- Memory\n\n- Speed");
+    expect(md).toContain(
+      "Doses are shown below.\n\n*Table 1. Baseline characteristics*\n\n| Group | Age (yrs) |\n| --- | --- |\n| Creatine | 6–11 |\n| Placebo | 97.2 |",
     );
+    expect(md).toContain("Power was $1-\\beta = 0.8$ overall.");
+    expect(md).not.toContain("documentclass");
+    expect(md).not.toContain("Not in the output");
+  });
+
+  it("includes the OCR text of scanned articles, and returns nothing for an abstract-only article", async () => {
+    const meta = `<front><article-meta><title-group><article-title>A 1955 trial</article-title></title-group>
+      <abstract><p>${"An abstract long enough to pass for full text on its own. ".repeat(12)}</p></abstract></article-meta></front>`;
+    const ocr = "Thirty patients were given the drug for 14 days. ".repeat(12);
+    const scanned = await defaultJatsToMarkdown(
+      `<article>${meta}<body><preformat preformat-type="pmc-ocr-text">${ocr}</preformat></body></article>`,
+    );
+    expect(scanned).toContain("Thirty patients were given the drug for 14 days.");
+    expect(await defaultJatsToMarkdown(`<article>${meta}<body/></article>`)).toBe("");
   });
 
   it("reduces an HTML document to its article body and converts it to markdown", async () => {

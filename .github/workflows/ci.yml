@@ -37,14 +37,14 @@ jobs:
       - run: npm run build
       - run: npm run build:mcpb
 
-      # The .mcpb must start on its own, as Claude Desktop runs it: unpack it
-      # outside the repo and check it answers `initialize` with the right version.
+      # The .mcpb must work on its own, as Claude Desktop runs it: unpack it
+      # outside the repo, check it answers `initialize` with the right version,
+      # and resolve an HTML page and a PDF through it, which exercises the
+      # dependencies a bundle can break (jsdom, pdf.js and its worker).
       - name: Smoke-test the .mcpb bundle
         run: |
           dir="$RUNNER_TEMP/mcpb" && mkdir -p "$dir" && unzip -q dist/med-research-mcp.mcpb -d "$dir"
-          init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}'
-          expected="\"name\":\"med-research-mcp\",\"version\":\"$(node -p 'require("./package.json").version')\""
-          (echo "$init"; sleep 5) | timeout 30 node "$dir/server/index.js" | grep -qF "$expected"
+          node scripts/smoke-mcpb.mjs "$dir/server/index.js"
 
       # The harness imports ../src, so it runs after the root install.
       - name: Benchmark harness (offline tests)
