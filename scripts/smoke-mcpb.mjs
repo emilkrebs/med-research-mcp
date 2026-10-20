@@ -8,9 +8,11 @@
  * repository), checks `initialize` reports the package version, then resolves
  * an HTML page and a PDF through `literature_fulltext`'s proxy route from a
  * local server. That exercises the parts a bundle can break: jsdom and
- * Readability for HTML, pdf.js and its inlined worker for PDF. No network:
- * without a contact email the Unpaywall lookup is skipped, and the address
- * check is opted out for the local server with MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE.
+ * Readability for HTML, pdf.js and its inlined worker for PDF. The HTML page is
+ * laid out like an article (an abstract, then enough body to pass the
+ * landing-page check). No network: without a contact email the Unpaywall lookup
+ * is skipped, the ids aren't PMIDs so no abstract is looked up in PubMed, and the
+ * address check is opted out for the local server with MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE.
  */
 
 import { spawn } from "node:child_process";
@@ -26,9 +28,12 @@ const { version } = JSON.parse(readFileSync(path.join(root, "package.json"), "ut
 
 const SENTENCE = "Participants received 5 g of creatine daily for six weeks, and memory scores were measured at baseline and follow-up.";
 
+/** An article page: abstract plus about 2,800 characters of body, over the 2,000 the landing-page check needs. */
 const html = `<!doctype html><html><head><title>Smoke test</title></head><body><article>
 <h1>Creatine and memory: a randomised trial</h1>
-${Array.from({ length: 8 }, () => `<p>${SENTENCE}</p>`).join("\n")}
+<h2>Abstract</h2>
+<p>${SENTENCE}</p>
+${["Methods", "Results", "Discussion"].map((section) => `<h2>${section}</h2>\n${Array.from({ length: 8 }, () => `<p>${SENTENCE}</p>`).join("\n")}`).join("\n")}
 </article></body></html>`;
 
 /** A one-page PDF with enough text to pass the 500-character stub threshold. */
@@ -111,12 +116,18 @@ try {
   if (init.result?.serverInfo?.version !== version) failures.push(`initialize: version ${init.result?.serverInfo?.version}, expected ${version}`);
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
 
-  for (const [doi, format] of [
-    ["10.1000/smoke-html", "markdown"],
-    ["10.1000/smoke-pdf", "pdf"],
+  for (const [id, format] of [
+    ["smoke-html", "markdown"],
+    ["smoke-pdf", "pdf"],
   ]) {
-    const response = await request("tools/call", { name: "literature_fulltext", arguments: { id: "1", doi } });
-    const result = JSON.parse(response.result?.content?.[0]?.text ?? "{}");
+    const response = await request("tools/call", { name: "literature_fulltext", arguments: { id, doi: `10.1000/${id}` } });
+    const text = response.result?.content?.[0]?.text ?? "";
+    if (response.error || response.result?.isError) {
+      console.log(`FAIL ${format}: ${response.error?.message ?? text}`);
+      failures.push(`${format}: ${response.error?.message ?? text}`);
+      continue;
+    }
+    const result = JSON.parse(text);
     const ok = result.source === "proxy" && result.format === format && result.fulltext?.includes("5 g of creatine daily");
     console.log(`${ok ? "ok  " : "FAIL"} ${format}: source=${result.source} format=${result.format} chars=${result.fulltext?.length ?? 0}`);
     if (!ok) failures.push(`${format}: ${JSON.stringify(result).slice(0, 300)}`);
