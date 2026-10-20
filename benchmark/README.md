@@ -7,7 +7,7 @@ web-search) are available when you want to compare the MCP against general AI
 performance.
 
 | Condition | Tools | What it measures |
-|---|---|---|
+| --- | --- | --- |
 | **MCP** (default) | `literature_search`, `literature_fetch`, `literature_fulltext` | the real MCP server (`createServer()` from `../src/mcp/server.ts`), driven in-process over an MCP in-memory transport |
 | **closed-book** | none | the model from training data alone (optional baseline) |
 | **web-search** | `web_search` (Brave), `web_fetch` | a standalone web baseline: search plus opening result pages (optional baseline) |
@@ -85,7 +85,7 @@ Run from the repo root (paths in the output are written relative to it). Flags
 (`--help` lists them all):
 
 | Flag | Meaning |
-|---|---|
+| --- | --- |
 | `--runs <n>` | runs per query per model (default 3) |
 | `--models <list>` | model labels (default: every enabled model) |
 | `--conditions <list>` | `A\|B\|C\|D` or `closed-book\|web-search\|mcp\|mcp-skill` (default `mcp`) |
@@ -141,7 +141,7 @@ charts/*.svg               # 6 standalone figures
 **Run status.** Every row has a `status`:
 
 | Status | Meaning |
-|---|---|
+| --- | --- |
 | `ok` | answered and scored |
 | `provider-error` | the model call threw or timed out |
 | `truncated` | no final answer (empty text, e.g. step limit or timeout mid-tool-call) or context truncation detected |
@@ -257,7 +257,7 @@ npx tsx benchmark/grade.ts benchmark/results/2026-07-14-141739 --grader alice
 ```
 
 | Option | Meaning |
-|---|---|
+| --- | --- |
 | `--grader <id>` | grader id, written as `author` (default `$USER`, else `human`) |
 | `--seed <n>` | shuffle seed (default derived from the grader id; always printed) |
 | `--overrides <path>` | read/write this file instead of `<dir>/overrides.json` |

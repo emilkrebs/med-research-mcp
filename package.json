@@ -1,11 +1,11 @@
 {
   "name": "med-research-mcp",
-  "version": "0.6.0",
+  "version": "0.6.0-next.0",
   "description": "Evidence-graded scientific literature search for AI agents — multi-database (PubMed, Europe PMC, ChinaXiv, RussiaRxiv), built for medical, clinical and supplementation research.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/emilkrebs/med-research-mcp.git"
+    "url": "git+https://github.com/emilkrebs/med-research-mcp.git"
   },
   "homepage": "https://github.com/emilkrebs/med-research-mcp#readme",
   "bugs": {
@@ -29,7 +29,7 @@
     "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
   },
   "bin": {
-    "med-research-mcp": "./dist/mcp/index.js"
+    "med-research-mcp": "dist/mcp/index.js"
   },
   "exports": {
     "./core": {
