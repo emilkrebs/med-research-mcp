@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/emilkrebs/med-research-mcp/main/mcpb/icon.png" alt="med-research-mcp icon" width="120" height="120">
+  <img src="./mcpb/icon.png" alt="med-research-mcp icon" width="120" height="120">
 </p>
 
 <h1 align="center">med-research-mcp</h1>
