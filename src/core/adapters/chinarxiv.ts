@@ -25,6 +25,12 @@
  * which often drops the Results of a long abstract. Search keeps those previews
  * (one request per search); an explicit fetch (`fetchFull`) loads the complete
  * record from `/papers/{id}`.
+ *
+ * A search matches only records that contain every word of the query, in any
+ * order, and reads AND and OR as words: "gut microbiota", "microbiota gut" and
+ * "gut OR microbiota" each match 55 ChinaXiv records, "vitamin" 87 and
+ * "depression" 229, but "vitamin depression" none (2026-10-20). An empty result
+ * for a query of several words says so.
  */
 
 import { defaultHttp, type AdapterHttp } from "./http.js";
@@ -118,6 +124,8 @@ export function parsePapers(data: PaperResponse): { count: number; articles: Art
 /** One corpus of the ChinaRxiv API. Subclasses pick the corpus; everything else is shared. */
 export abstract class ChinaRxivApiAdapter extends RestAdapter {
   protected abstract readonly corpus: ChinaRxivCorpus;
+  /** Records carry no publication types: every one is `unknown`. */
+  readonly designMetadata = false;
 
   constructor(http: AdapterHttp = defaultHttp({ headers: chinaxivHeaders(), source: "ChinaRxiv" })) {
     super(http);
@@ -128,10 +136,11 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
     return this.corpus;
   }
 
-  async search(input: SearchInput): Promise<{ count: number; ids: string[] }> {
+  async search(input: SearchInput): Promise<{ count: number; ids: string[]; warning?: string }> {
     const limit = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
     // PubMed field tags mean nothing here and would be searched as words.
-    const params = new URLSearchParams({ q: withoutPubMedTags(input.query), limit: String(limit), source: this.sourceFor(input) });
+    const q = withoutPubMedTags(input.query);
+    const params = new URLSearchParams({ q, limit: String(limit), source: this.sourceFor(input) });
     const from = isoDateBound(input.dateRange?.from, "from");
     const to = isoDateBound(input.dateRange?.to, "to");
     if (from) params.set("from_date", from);
@@ -140,7 +149,17 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
     const data = await this.http.json<PaperResponse>(`${BASE}?${params.toString()}`);
     const parsed = parsePapers(data);
     this.remember(parsed.articles);
-    return { count: parsed.count, ids: parsed.articles.map((a) => a.pmid) };
+    const ids = parsed.articles.map((a) => a.pmid);
+    if (parsed.count === 0 && /\S\s+\S/.test(q)) {
+      return {
+        count: 0,
+        ids,
+        warning:
+          `${this.name} matched nothing: it returns only records containing every word of the query and treats ` +
+          `AND/OR as words. Try one or two key words.`,
+      };
+    }
+    return { count: parsed.count, ids };
   }
 
   /**

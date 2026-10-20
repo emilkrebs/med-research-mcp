@@ -21,6 +21,13 @@ Changes since 0.5.0:
 
 ### Fixed
 
+- Parallel tool calls drew `RATE_LIMIT` errors from PubMed although requests were queued: spaced exactly at NCBI's limit, they arrive closer together after network jitter (2 of 6 parallel searches failed). Requests are now spaced with a 20% margin, and a 429 is waited out (`Retry-After`, up to 5 s, twice) while the queue holds, before `RATE_LIMIT` reaches the caller. Europe PMC and ChinaRxiv requests retry a short `Retry-After` the same way.
+- `literature_fulltext` took any page over 500 characters as the full text, so a landing page showing only the abstract (arXiv's abstract page; a paywalled article's page) came back as `source: "direct"`. A page now needs 2,000 characters besides its abstract and front and back matter; sections that aren't the article ("Similar content being viewed by others", "Cited by") are removed from the text.
+- Every full-text failure was reported as "paywalled", with advice to configure a proxy, including a publisher blocking automated clients and a DOI that doesn't exist. The warning now says what each source answered (Unpaywall not asked because no email is set, HTTP 403 from the publisher, a page with only the abstract, …), and a DOI doi.org doesn't know returns `NOT_FOUND` when there's no abstract either.
+- `studyTypes` and `minDesignTier` filtered only the first `maxResults` records: 20 requested RCTs came back as 5, next to a `total` counting everything. PubMed (`[pt]`) and Europe PMC (`PUB_TYPE:`) are now queried for the publication types the filter can keep, and the labels are checked on every record as before; `chinaxiv` and `russiarxiv`, which have no design metadata, are skipped with a warning. An empty `studyTypes` list means no filter instead of keeping nothing.
+- Unknown database ids, including `"PubMed"`, returned an empty result with a warning, or were dropped silently next to known ones. The tool schema now lists the ids and refuses others, and the library raises the new `INVALID_INPUT` error. An empty query raises it too, instead of a `PARSE_FAILURE` promising partial results, and so do dates that don't exist (`2020-13`), which PubMed ignored, and a `from` after `to`.
+- Europe PMC records had an empty `journal`: it was read from a field only `lite` results have. It now comes from `journalInfo` (a preprint's server from `bookOrReportDetails`), and the date is the issue date, else the first publication date, so recently added PMC records no longer have an empty one.
+
 - In the Claude Desktop bundle (`.mcpb`), every HTML and PDF full text failed to extract and fell back to the abstract: jsdom and pdf-parse can't be bundled. jsdom now ships beside the bundle, pdf.js's worker is inlined, and CI resolves an HTML page and a PDF through the unpacked bundle.
 - With `database: "all"` and `language: "ru"`, RussiaRxiv records came back twice; repeated ids from the same database are now merged.
 - `literature_search` turned every failure into a warning, even when the only database searched failed, so a rate limit or an over-broad PubMed query came back as an empty result that reads as "no studies exist". When every database it searched fails, it now returns the error (`RATE_LIMIT` with `retryAfter`, `QUERY_TOO_BROAD`, …); partial failures stay warnings, worded with the error's actionable message.
@@ -39,6 +46,11 @@ Changes since 0.5.0:
 - The skills attributed "temporality is required" to Bradford Hill, who wrote that none of his considerations is a sine qua non; called placebo responses "real" where the cited review says placebo interventions "can influence" patient-reported outcomes; and quoted OCEBM's level 1 for treatment benefit in the wording OCEBM itself flags as ambiguous. Every citation in the skills, the grader and the docs was rechecked against its primary source ([compliance.md](docs/compliance.md#verification-of-2026-10-19)).
 
 ### Added
+
+- `literature_fulltext` reads articles with a PMCID from Europe PMC's full-text API first: open access, no email needed, and with tables, which publisher pages often keep on separate pages. It takes a PMCID or a Europe PMC preprint id as the `id`, so Europe PMC records without a DOI can be read too. PubMed records now carry `pmcid`.
+- An identical PubMed search within an hour returns the same papers: PubMed's relevance ranking varies between identical requests.
+- An empty ChinaXiv or RussiaRxiv result for a query of several words comes with a warning: ChinaRxiv matches only records containing every word.
+- The `INVALID_INPUT` error code.
 
 - Flags `machine-translated` and `machine-generated-abstract` on ChinaXiv and RussiaRxiv records, from ChinaRxiv's metadata: their English text is machine-translated, and almost every RussiaRxiv abstract was written by ChinaRxiv, not the authors. The records also carry `originalUrl`.
 - `dateRange` now filters `chinaxiv` and `russiarxiv` searches too, and accepts `YYYY` or `YYYY-MM` as well as `YYYY-MM-DD`.

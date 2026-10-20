@@ -8,7 +8,8 @@ export type ResearchErrorCode =
   | "QUERY_TOO_BROAD"
   | "PARSE_FAILURE"
   | "NETWORK_ERROR"
-  | "NOT_FOUND";
+  | "NOT_FOUND"
+  | "INVALID_INPUT";
 
 export interface ResearchError {
   code: ResearchErrorCode;
@@ -108,10 +109,30 @@ export const errors = {
       code: "NOT_FOUND",
       message: `No DOI for non-PubMed id ${id}`,
       userMessage:
-        `"${id}" is not a PMID, and no DOI was given. Full text is found through the DOI: pass the doi from the ` +
-        `literature_search result. Records without one (ChinaXiv and RussiaRxiv records have none) can't be resolved; ` +
-        `open their url instead.`,
+        `"${id}" is not a PMID, PMCID or Europe PMC preprint id, and no DOI was given. Full text is found through the ` +
+        `DOI: pass the doi from the literature_search result. Records without one (all ChinaXiv and RussiaRxiv records, ` +
+        `some Europe PMC records) can't be resolved, unless they have a pmcid to pass as the id; open their url instead.`,
       recoverable: false,
+    });
+  },
+
+  /** doi.org has no record of the DOI. */
+  doiNotFound(doi: string): ResearchApiException {
+    return new ResearchApiException({
+      code: "NOT_FOUND",
+      message: `DOI ${doi} not found at doi.org`,
+      userMessage: `doi.org has no record of DOI ${doi}. Check it: pass the doi exactly as literature_search returned it.`,
+      recoverable: false,
+    });
+  },
+
+  /** A parameter the caller can correct: an unknown database, an empty query, a date that doesn't exist. */
+  invalidInput(detail: string): ResearchApiException {
+    return new ResearchApiException({
+      code: "INVALID_INPUT",
+      message: `Invalid input: ${detail}`,
+      userMessage: detail,
+      recoverable: true,
     });
   },
 } as const;

@@ -107,9 +107,15 @@ export const DESIGN_TIER: Record<Design, number> = {
   "in-vitro": 0,
 };
 
-const tag = (...names: string[]): ((tags: ReadonlySet<string>) => boolean) => {
+/** Whether a record's (lower-cased) publication types include one of `names`. */
+interface Tag {
+  (tags: ReadonlySet<string>): boolean;
+  readonly names: readonly string[];
+}
+
+const tag = (...names: string[]): Tag => {
   const lower = names.map((n) => n.toLowerCase());
-  return (tags) => lower.some((n) => tags.has(n));
+  return Object.assign((tags: ReadonlySet<string>) => lower.some((n) => tags.has(n)), { names });
 };
 
 /** Veterinary publication types (D000077522, D000081262, D000078323). */
@@ -224,6 +230,51 @@ function designFromTags(tags: ReadonlySet<string>): { design: Design; tier?: num
   // A case report "with review of the literature" is handled above; a bare review last.
   if (REVIEW(tags)) return { design: "review" };
   return null;
+}
+
+/**
+ * The publication types each design comes from, with the highest tier they can give it
+ * (null: never rated), mirroring {@link designFromTags}: a record classified as a design
+ * always carries one of its tags.
+ */
+const DESIGN_TAGS: readonly { design: Design; tags: Tag; tier: number | null }[] = [
+  { design: "meta-analysis", tags: NETWORK_META_ANALYSIS, tier: DESIGN_TIER["meta-analysis"] },
+  { design: "meta-analysis", tags: META_ANALYSIS, tier: null },
+  { design: "systematic-review", tags: SYSTEMATIC_REVIEW, tier: null },
+  { design: "randomized-controlled-trial", tags: RANDOMIZED, tier: DESIGN_TIER["randomized-controlled-trial"] },
+  { design: "non-randomized-trial", tags: CONTROLLED_TRIAL, tier: DESIGN_TIER["non-randomized-trial"] },
+  { design: "clinical-trial", tags: OTHER_TRIAL, tier: DESIGN_TIER["clinical-trial"] },
+  { design: "observational", tags: OBSERVATIONAL, tier: DESIGN_TIER.observational },
+  { design: "case-report", tags: CASE_REPORT, tier: DESIGN_TIER["case-report"] },
+  { design: "review", tags: REVIEW, tier: DESIGN_TIER.review },
+  { design: "animal-study", tags: VETERINARY, tier: DESIGN_TIER["animal-study"] },
+];
+
+/**
+ * Publication types a database query can require so it returns only records a
+ * studyTypes / minDesignTier filter can keep: every record the filter keeps carries one
+ * of them. The classifier still decides, so a record with several tags (an RCT also
+ * tagged Observational Study classifies as observational) is filtered afterwards.
+ *
+ * Returns null when the filter keeps records without such tags (no filter, or `unknown`
+ * wanted at tier 0), and an empty list when it keeps nothing metadata can produce
+ * (only cohort, case-control, cross-sectional or in-vitro wanted).
+ */
+export function designPublicationTypes(studyTypes?: readonly StudyType[], minDesignTier?: number): string[] | null {
+  const minTier = minDesignTier ?? 0;
+  const wanted = studyTypes && studyTypes.length > 0 ? new Set(studyTypes) : null;
+  // A tier above 0 drops every unrated record, `unknown` ones included.
+  if (minTier <= 0 && (!wanted || wanted.has("unknown"))) return null;
+  const types = DESIGN_TAGS.filter(
+    (d) => (!wanted || wanted.has(d.design)) && (minTier <= 0 || (d.tier !== null && d.tier >= minTier)),
+  ).flatMap((d) => d.tags.names);
+  return [...new Set(types)];
+}
+
+/** Study types that NLM metadata never produces, so a studyTypes filter on them alone keeps nothing. */
+export function unassignedStudyTypes(studyTypes?: readonly StudyType[]): StudyType[] {
+  const assigned = new Set<StudyType>([...DESIGN_TAGS.map((d) => d.design), "unknown"]);
+  return (studyTypes ?? []).filter((t) => !assigned.has(t));
 }
 
 /** Classify a record from its metadata. Exposed for testing without constructing an Article. */

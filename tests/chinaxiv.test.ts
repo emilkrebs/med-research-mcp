@@ -295,8 +295,39 @@ describe("SovietRxivAdapter", () => {
   });
 });
 
+describe("ChinaRxiv query rules", () => {
+  it("explains an empty result for a query of several words, which must all match", async () => {
+    const { http } = fakeHttp({ total: 0, data: [] });
+    const adapter = new ChinaRXivAdapter(http);
+    expect((await adapter.search({ query: "vitamin D[tiab] AND depression" })).warning).toMatch(/every word of the query/);
+    expect((await adapter.search({ query: "microbiota" })).warning).toBeUndefined();
+  });
+
+  it("declares that its records carry no design metadata", () => {
+    expect(new ChinaRXivAdapter().designMetadata).toBe(false);
+    expect(new SovietRxivAdapter().designMetadata).toBe(false);
+  });
+});
+
 describe("rate limits", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("waits out a short Retry-After and retries", async () => {
+    vi.useFakeTimers();
+    const responses = [
+      new Response("", { status: 429, headers: { "retry-after": "1" } }),
+      new Response(JSON.stringify({ total: 0, data: [] }), { status: 200 }),
+    ];
+    const fetchMock = vi.fn(async () => responses.shift()!);
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = defaultHttp({ source: "ChinaRxiv" }).json("https://chinarxiv.org/api/v1/papers?q=x");
+    await vi.advanceTimersByTimeAsync(1500);
+    await expect(pending).resolves.toEqual({ total: 0, data: [] });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 
   it("names the database that answered 429, without PubMed's API-key advice", async () => {
     vi.stubGlobal("fetch", async () => new Response("", { status: 429, headers: { "retry-after": "30" } }));

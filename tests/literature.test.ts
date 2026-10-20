@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { searchLiterature, fetchLiterature } from "../src/core/literature";
+import { adaptersFor } from "../src/core/adapters/registry";
 import { cleanDoi, doiKey, isoDateBound, withoutPubMedTags } from "../src/core/adapters/util";
 import { errors } from "../src/core/errors";
 import { LRUBackend } from "../src/core/cache";
@@ -257,10 +258,87 @@ describe("searchLiterature fan-out", () => {
     expect(out.articles.map((a) => a.pmid)).toEqual(["ru-196201.58177"]);
   });
 
-  it("returns a warning when no adapter matches the requested database", async () => {
-    const out = await searchLiterature({ query: "x", database: "nope" }, new LRUBackend(), []);
-    expect(out.articles).toHaveLength(0);
-    expect(out.warnings?.[0]).toContain("No known database adapter");
+  it("raises INVALID_INPUT for an unknown database, so a typo can't pass for an empty result", async () => {
+    await expect(searchLiterature({ query: "x", database: "nope" })).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      userMessage: expect.stringContaining('Unknown database "nope"'),
+    });
+    await expect(searchLiterature({ query: "x", database: ["pubmed", "scopus"] })).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      userMessage: expect.stringContaining('"scopus"'),
+    });
+    await expect(searchLiterature({ query: "x" }, new LRUBackend(), [])).rejects.toMatchObject({ code: "INVALID_INPUT" });
+  });
+});
+
+describe("searchLiterature input and design filters", () => {
+  it("raises INVALID_INPUT for an empty query and for dates PubMed would silently ignore", async () => {
+    const adapters = [fakeAdapter("pubmed", [pubmedMeta])];
+    await expect(searchLiterature({ query: "  " }, new LRUBackend(), adapters)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    for (const dateRange of [{ from: "2020-13" }, { to: "2021-02-30" }, { from: "last year" }, { from: "2022", to: "2021" }]) {
+      await expect(searchLiterature({ query: "x", dateRange }, new LRUBackend(), adapters), JSON.stringify(dateRange)).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+      });
+    }
+    // The same year as both bounds is a valid range.
+    await expect(searchLiterature({ query: "x", dateRange: { from: "2021", to: "2021" } }, new LRUBackend(), adapters)).resolves.toBeDefined();
+  });
+
+  it("reads database ids case-insensitively", () => {
+    expect(adaptersFor("PubMed").map((a) => a.id)).toEqual(["pubmed"]);
+    expect(adaptersFor([" EuropePMC ", "pubmed", "pubmed"]).map((a) => a.id)).toEqual(["europepmc", "pubmed"]);
+    expect(adaptersFor(undefined).map((a) => a.id)).toEqual(["pubmed"]);
+    expect(adaptersFor([]).map((a) => a.id)).toEqual(["pubmed"]);
+    expect(adaptersFor("ALL")).toHaveLength(4);
+  });
+
+  it("doesn't search a database without design metadata under a design filter, and says so", async () => {
+    const search = vi.fn(async () => ({ count: 1, ids: ["C1"] }));
+    const china: DatabaseAdapter = { ...fakeAdapter("chinaxiv", [chinaxivRct]), name: "ChinaXiv", designMetadata: false, search };
+    const out = await searchLiterature(
+      { query: "x", database: "all", studyTypes: ["randomized-controlled-trial"] },
+      new LRUBackend(),
+      [fakeAdapter("europepmc", [epmcRct]), china],
+    );
+    expect(out.articles.map((a) => a.pmid)).toEqual(["E1"]);
+    expect(search).not.toHaveBeenCalled();
+    expect(out.warnings?.some((w) => w.startsWith("ChinaXiv not searched"))).toBe(true);
+
+    // Without a filter it is searched as usual.
+    await searchLiterature({ query: "x", database: "all" }, new LRUBackend(), [china]);
+    expect(search).toHaveBeenCalledTimes(1);
+  });
+
+  it("searches nothing for designs metadata never assigns, and says why", async () => {
+    const search = vi.fn(async () => ({ count: 1, ids: ["1"] }));
+    const out = await searchLiterature({ query: "x", studyTypes: ["cohort"] }, new LRUBackend(), [
+      { ...fakeAdapter("pubmed", [pubmedMeta]), search },
+    ]);
+    expect(out).toMatchObject({ articles: [], total: 0 });
+    expect(search).not.toHaveBeenCalled();
+    expect(out.warnings?.[0]).toContain("cohort");
+  });
+
+  it("explains a studyTypes filter that minDesignTier contradicts", async () => {
+    const out = await searchLiterature({ query: "x", studyTypes: ["systematic-review"], minDesignTier: 1 }, new LRUBackend(), [
+      fakeAdapter("pubmed", [pubmedMeta]),
+    ]);
+    expect(out.articles).toEqual([]);
+    expect(out.warnings?.[0]).toContain("can reach minDesignTier 1");
+  });
+
+  it("treats an empty studyTypes list as no filter", async () => {
+    const out = await searchLiterature({ query: "x", studyTypes: [] }, new LRUBackend(), [fakeAdapter("pubmed", [pubmedMeta])]);
+    expect(out.articles.map((a) => a.pmid)).toEqual(["1"]);
+  });
+
+  it("passes on a database's explanation of an empty result", async () => {
+    const quiet: DatabaseAdapter = {
+      ...fakeAdapter("chinaxiv", []),
+      search: async () => ({ count: 0, ids: [], warning: "ChinaXiv matched nothing: try fewer words." }),
+    };
+    const out = await searchLiterature({ query: "a b", database: "all" }, new LRUBackend(), [fakeAdapter("pubmed", [pubmedMeta]), quiet]);
+    expect(out.warnings).toContain("ChinaXiv matched nothing: try fewer words.");
   });
 });
 
@@ -273,11 +351,10 @@ describe("fetchLiterature", () => {
     expect(out.warnings?.[0]).toContain("1 id(s) could not be fetched");
   });
 
-  it("returns all ids as missing for an unknown database", async () => {
-    const out = await fetchLiterature({ ids: ["S1"], database: "unknown-db" }, new LRUBackend());
-    expect(out.articles).toHaveLength(0);
-    expect(out.missing).toEqual(["S1"]);
-    expect(out.warnings?.[0]).toContain("Unknown database");
+  it("raises INVALID_INPUT for an unknown database", async () => {
+    await expect(fetchLiterature({ ids: ["S1"], database: "unknown-db" }, new LRUBackend())).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+    });
   });
 });
 

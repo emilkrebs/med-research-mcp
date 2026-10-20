@@ -10,10 +10,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
+  adaptersFor,
   createCache,
   fetchFulltext,
   fetchLiterature,
-  getAdapters,
+  getAdapter,
   isMedResearchError,
   LRUBackend,
   NcbiClient,
@@ -52,6 +53,7 @@ export function buildCache(): Cache {
 }
 
 const DATABASES = ["pubmed", "europepmc", "chinaxiv", "russiarxiv"] as const;
+const DATABASE_OR_ALL = z.enum([...DATABASES, "all"]);
 
 /** A date as PubMed reads it; the other adapters expand a year or month to its first or last day. */
 const isoDate = z.string().regex(/^\d{4}(?:[-/]\d{1,2}(?:[-/]\d{1,2})?)?$/, "Use YYYY-MM-DD, YYYY-MM or YYYY.");
@@ -80,21 +82,15 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   // a second client).
   const ncbiAdapter = new PubMedAdapter(ncbi);
 
-  function toIdList(database?: string | string[]): string[] {
-    if (database == null) return ["pubmed"];
-    const list = Array.isArray(database) ? database : [database];
-    return list.length > 0 ? list : ["pubmed"];
-  }
-
-  /** Adapters for a search, with the shared-client PubMed adapter swapped in. */
+  /** Adapters for a search, with the shared-client PubMed adapter swapped in. Throws INVALID_INPUT for an unknown id. */
   function resolveAdapters(database?: string | string[]): DatabaseAdapter[] {
-    return getAdapters(toIdList(database)).map((a) => (a.id === "pubmed" ? ncbiAdapter : a));
+    return adaptersFor(database).map((a) => (a.id === "pubmed" ? ncbiAdapter : a));
   }
 
   /** Single adapter for a fetch, with the shared-client PubMed adapter swapped in. */
   function resolveAdapter(database: string): DatabaseAdapter | undefined {
-    if (database === "pubmed") return ncbiAdapter;
-    return getAdapters([database])[0];
+    const adapter = getAdapter(database);
+    return adapter?.id === "pubmed" ? ncbiAdapter : adapter;
   }
 
 
@@ -106,13 +102,17 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   const literatureSearchShape = {
     query: z
       .string()
+      .trim()
+      .min(1, "The query is empty.")
       .describe(
         "Search query. PubMed field tags ([tiab], [mesh], [au]) apply to the pubmed database; for other databases they are removed. " +
           "The query is sent to third-party databases: never include names, dates of birth, record numbers or other details that " +
           "identify a person; describe the condition or intervention instead.",
       ),
     database: z
-      .union([z.string(), z.array(z.string())])
+      .union([DATABASE_OR_ALL, z.array(DATABASE_OR_ALL)], {
+        error: `Unknown database. Use ${DATABASES.join(", ")} or "all" (lower case), or a list of them.`,
+      })
       .optional()
       .describe(
         'Database(s) to search: a single id, an array of ids, or "all". Default "pubmed". ' +
@@ -127,14 +127,17 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .optional()
       .describe(
         "Drop results below this design tier (0-5; 4 = RCTs). Results with designTier null — unclassified records and most " +
-          "meta-analyses/systematic reviews — are dropped too, with a warning. To keep reviews and trials, use studyTypes instead.",
+          "meta-analyses/systematic reviews — are dropped too, with a warning. To keep reviews and trials, use studyTypes instead. " +
+          "Narrows the query like studyTypes.",
       ),
     studyTypes: z
       .array(z.enum(STUDY_TYPES))
       .optional()
       .describe(
-        "Keep only these study types. cohort, case-control, cross-sectional and in-vitro are never assigned from " +
-          "metadata (tagged observational studies come back as observational), so filtering on them returns nothing.",
+        "Keep only these study types. PubMed and Europe PMC are queried for them, so maxResults counts matching " +
+          "records; chinaxiv and russiarxiv, which have no design metadata, are skipped. cohort, case-control, " +
+          "cross-sectional and in-vitro are never assigned from metadata (tagged observational studies come back as " +
+          "observational), so filtering on them returns nothing.",
       ),
     dateRange: z
       .object({ from: isoDate.optional(), to: isoDate.optional() })
@@ -202,9 +205,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         "Database-specific ids to fetch: PMIDs for pubmed; PMIDs or prefixed ids (e.g. CBA:521529, PPR… preprints) " +
           "for europepmc; the ids literature_search returned for chinaxiv and russiarxiv.",
       ),
-    database: z
-      .string()
-      .describe(`Which database the ids belong to: ${DATABASES.join(", ")}.`),
+    database: z.enum(DATABASES).describe(`Which database the ids belong to: ${DATABASES.join(", ")}.`),
   };
 
   server.registerTool(
@@ -244,11 +245,16 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   // ─── literature_fulltext ────────────────────────────────────────
 
   const literatureFulltextShape = {
-    id: z.string().describe("Article id — a PMID, or another database's id from literature_search. When the id is not a numeric PMID, a DOI is required below."),
+    id: z
+      .string()
+      .describe(
+        "Article id — a PMID, a PMCID (PMC…, a record's pmcid), a Europe PMC preprint id (PPR…), or another database's " +
+          "id from literature_search. For any other id, a DOI is required below.",
+      ),
     doi: z
       .string()
       .optional()
-      .describe("DOI — database-agnostic. Required when the id is not a numeric PMID; otherwise skips the id→DOI lookup."),
+      .describe("DOI — database-agnostic. Required when the id is not a PMID, PMCID or PPR id; otherwise skips the id→DOI lookup."),
   };
 
   server.registerTool(
@@ -256,11 +262,12 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     {
       title: "Fetch full text for a scientific article (multi-database)",
       description:
-        "Attempts to fetch an article's full text as markdown via Unpaywall (open access), institutional proxy " +
-        "(if configured), and direct DOI access; falls back to abstract-only if paywalled. DOI resolution is " +
-        "database-agnostic: for non-PubMed articles, pass the DOI from the literature_search result. Records without " +
-        "a DOI (all chinaxiv and russiarxiv records) can't be resolved; their url links the record. Use when the " +
-        "abstract isn't enough (verify dosage, sample sizes, methods).",
+        "Attempts to fetch an article's full text as markdown via Europe PMC (records with a PMCID), Unpaywall (open " +
+        "access), institutional proxy (if configured), and direct DOI access; falls back to the abstract, with a " +
+        "warning saying what each location answered. DOI resolution is database-agnostic: for non-PubMed articles, " +
+        "pass the DOI from the literature_search result. Records with neither DOI nor PMCID (all chinaxiv and " +
+        "russiarxiv records) can't be resolved; their url links the record. Use when the abstract isn't enough " +
+        "(verify dosage, sample sizes, methods).",
       inputSchema: literatureFulltextShape,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

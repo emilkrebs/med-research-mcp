@@ -31,6 +31,26 @@ describe("createServer", () => {
     await server.close();
   });
 
+  it("lists the databases a search and a fetch accept, and rejects others before searching", async () => {
+    const { client, server } = await connect();
+    const { tools } = await client.listTools();
+    const schema = (name: string) => JSON.stringify(tools.find((t) => t.name === name)!.inputSchema);
+    for (const id of ["pubmed", "europepmc", "chinaxiv", "russiarxiv", "all"]) expect(schema("literature_search")).toContain(`"${id}"`);
+    expect(schema("literature_fetch")).toContain('"russiarxiv"');
+
+    for (const args of [{ query: "x", database: "scopus" }, { query: "x", database: ["pubmed", "PubMed"] }, { query: "  " }]) {
+      const result = await client.callTool({ name: "literature_search", arguments: args });
+      expect(result.isError, JSON.stringify(args)).toBe(true);
+    }
+    // The message names the valid ids, so the caller can correct the call.
+    const unknown = await client.callTool({ name: "literature_search", arguments: { query: "x", database: "PubMed" } });
+    expect((unknown.content as { text: string }[])[0]!.text).toContain('Use pubmed, europepmc, chinaxiv, russiarxiv or "all"');
+    const fetched = await client.callTool({ name: "literature_fetch", arguments: { ids: ["1"], database: "scopus" } });
+    expect(fetched.isError).toBe(true);
+    await client.close();
+    await server.close();
+  });
+
   it("builds independent servers per call", () => {
     expect(createServer({ cache: new LRUBackend() })).not.toBe(createServer({ cache: new LRUBackend() }));
   });

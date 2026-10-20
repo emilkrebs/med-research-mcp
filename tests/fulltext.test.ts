@@ -20,8 +20,8 @@ const ARTICLE: Article = {
   abstract: "Short cached abstract.",
 };
 
-/** Long enough to clear MIN_FULLTEXT_CHARS (500). */
-const LONG_MARKDOWN = "# Methods\n\n" + "word ".repeat(300);
+/** Long enough to count as an article body (MIN_BODY_CHARS, 2000 characters besides the abstract). */
+const LONG_MARKDOWN = "# Methods\n\n" + "word ".repeat(600);
 
 /** A stand-in NCBI client. esummary/efetch are the only methods fetchFulltext touches. */
 function fakeClient(
@@ -346,6 +346,163 @@ describe("fetchFulltext resolution strategy", () => {
   });
 });
 
+describe("fetchFulltext — an article, not its landing page", () => {
+  const words = (n: number): string => "text ".repeat(n / 5).trim();
+  /** Shaped like arXiv's abstract page as turndown renders it: links, the abstract, metadata. */
+  const ARXIV_LIKE = [
+    "[View PDF](https://arxiv.org/pdf/0000.00000) [HTML (experimental)](https://arxiv.org/html/0000.00000v7)",
+    "> Abstract:" + words(1100),
+    "Comments: 15 pages, 5 figures",
+    "Subjects: Computation and Language (cs.CL); Machine Learning (cs.LG)",
+    "Cite as: arXiv:0000.00000 [cs.CL]",
+  ].join("\n\n");
+
+  const directOnly = (markdown: string, abstract?: string) => ({
+    deps: {
+      unpaywall: fakeUnpaywall(null),
+      fetchUrl: async (url: string) => htmlResource("<x/>", url),
+      htmlToMarkdown: async () => markdown,
+    } satisfies FulltextDeps,
+    client: fakeClient(abstract ? { abstract } : {}),
+  });
+
+  it("returns the abstract, with a reason, for a page that holds little more", async () => {
+    const { deps, client } = directOnly(ARXIV_LIKE, "The abstract.");
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), client, deps);
+    expect(out.source).toBe("none");
+    expect(out.fulltext).toBe("The abstract.");
+    expect(out.warning).toMatch(/little beyond the abstract/);
+  });
+
+  it("takes a known abstract off a page that doesn't label it", async () => {
+    const abstract = words(2500);
+    const landing = directOnly(`# Title\n\n${abstract}\n\nPurchase this article`, abstract);
+    expect((await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), landing.client, landing.deps)).source).toBe("none");
+    const article = directOnly(`# Title\n\n${abstract}\n\n## Methods\n\n${words(3000)}`, abstract);
+    expect((await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), article.client, article.deps)).source).toBe("direct");
+  });
+
+  it("doesn't count references or keywords as the article", async () => {
+    const { deps, client } = directOnly(`## Abstract\n\n${words(1200)}\n\n## Keywords\n\ncreatine\n\n## References\n\n${words(9000)}`);
+    expect((await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), client, deps)).source).toBe("none");
+  });
+
+  it("counts a body nested under the Abstract heading past an abstract's length", async () => {
+    const { deps, client } = directOnly(`## Abstract\n\n${words(1200)}\n\n### Introduction\n\n${words(5000)}`);
+    expect((await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), client, deps)).source).toBe("direct");
+  });
+
+  it("drops sections that are never the article, and keeps the rest", async () => {
+    const page = [
+      "## Abstract",
+      words(1000),
+      "### Similar content being viewed by others",
+      "![](https://media.example/fig1.png)",
+      "Another paper's title",
+      "## Background",
+      words(3000),
+      "## References",
+      "1. Doe J. A cited paper.",
+    ].join("\n\n");
+    const { deps, client } = directOnly(page);
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), client, deps);
+    expect(out.source).toBe("direct");
+    expect(out.fulltext).not.toMatch(/Similar content|Another paper|fig1\.png/);
+    expect(out.fulltext).toMatch(/## Background[\s\S]*## References/);
+  });
+});
+
+describe("fetchFulltext — Europe PMC by PMCID", () => {
+  const PMC_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC7654321/fullTextXML";
+  const jats = (url: string): FetchedResource => ({ ...htmlResource("<article/>", url), contentType: "application/xml" });
+
+  it("reads a record with a PMCID from Europe PMC first, without asking Unpaywall, and caches it", async () => {
+    const cache = new LRUBackend();
+    cache.setSummary("12345678", { ...ARTICLE, pmcid: "PMC7654321" });
+    const resolve = vi.fn();
+    const fetchUrl = vi.fn(async (url: string) => jats(url));
+    const deps: FulltextDeps = {
+      unpaywall: { configured: true, resolve } as unknown as UnpaywallClient,
+      fetchUrl,
+      jatsToMarkdown: async () => LONG_MARKDOWN,
+    };
+    const out = await fetchFulltext({ id: "12345678" }, cache, fakeClient(), deps);
+    expect(out).toMatchObject({ source: "europepmc", doi: DOI, format: "markdown" });
+    expect(fetchUrl.mock.calls.map(([url]) => url)).toEqual([PMC_URL]);
+    expect(resolve).not.toHaveBeenCalled();
+    expect((await fetchFulltext({ id: "12345678" }, cache, fakeClient(), deps)).source).toBe("europepmc");
+    expect(fetchUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes a PMCID as the id, without a DOI", async () => {
+    const fetchUrl = vi.fn(async (url: string) => jats(url));
+    const out = await fetchFulltext({ id: "pmc7654321" }, new LRUBackend(), fakeClient(), {
+      fetchUrl,
+      jatsToMarkdown: async () => LONG_MARKDOWN,
+    });
+    expect(out.source).toBe("europepmc");
+    expect(out.doi).toBeUndefined();
+    expect(fetchUrl).toHaveBeenCalledWith(PMC_URL, expect.any(Number));
+  });
+
+  it("says so when Europe PMC has no open-access text for a PMCID without a DOI", async () => {
+    const out = await fetchFulltext({ id: "PMC7654321" }, new LRUBackend(), fakeClient(), {
+      fetchUrl: async () => ({ ok: false, status: 404, contentType: "text/html", finalUrl: PMC_URL }),
+    });
+    expect(out.source).toBe("none");
+    expect(out.fulltext).toBeUndefined();
+    expect(out.warning).toContain("Europe PMC has no open-access full text for PMC7654321");
+  });
+
+  it("doesn't fetch the same Europe PMC text again when Unpaywall lists it too", async () => {
+    const cache = new LRUBackend();
+    cache.setSummary("12345678", { ...ARTICLE, pmcid: "PMC7654321" });
+    const fetchUrl = vi.fn(async () => paywalled());
+    await fetchFulltext({ id: "12345678" }, cache, fakeClient(), {
+      unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://www.ncbi.nlm.nih.gov/pmc/articles/7654321"] }),
+      fetchUrl,
+    });
+    expect(fetchUrl.mock.calls.map(([url]) => url)).toEqual([PMC_URL, "https://doi.org/10.1000/xyz123"]);
+  });
+});
+
+describe("fetchFulltext — why a full text wasn't found", () => {
+  const status = (code: number, finalUrl: string): FetchedResource => ({ ok: false, status: code, contentType: "text/html", finalUrl });
+
+  it("says Unpaywall wasn't asked when no contact email is set", async () => {
+    const resolve = vi.fn();
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ abstract: "abs" }), {
+      unpaywall: { configured: false, resolve } as unknown as UnpaywallClient,
+      fetchUrl: async () => paywalled(),
+    });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(out.warning).toMatch(/weren't looked up: set NCBI_EMAIL/);
+  });
+
+  it("names the site that refused the request, and the status", async () => {
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ abstract: "abs" }), {
+      unpaywall: fakeUnpaywall(null),
+      fetchUrl: async () => status(403, "https://www.publisher.example/article/1"),
+    });
+    expect(out.warning).toContain("The publisher's site (www.publisher.example) refused access (HTTP 403)");
+    expect(out.warning).toContain("https://doi.org/10.1000/xyz123");
+  });
+
+  it("says a DOI is unknown to doi.org instead of calling it paywalled", async () => {
+    const deps: FulltextDeps = { unpaywall: fakeUnpaywall(null), fetchUrl: async (url: string) => status(404, url) };
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ abstract: "abs" }), deps);
+    expect(out.source).toBe("none");
+    expect(out.warning).toContain("doi.org has no record of DOI 10.1000/xyz123");
+    expect(out.warning).not.toMatch(/paywalled|PROXY_PREFIX/);
+
+    // With no abstract to return either, the DOI is reported as not found.
+    await expect(fetchFulltext({ id: "CBA:1", doi: DOI }, new LRUBackend(), fakeClient(), deps)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: expect.stringContaining("10.1000/xyz123"),
+    });
+  });
+});
+
 describe("fulltext cache TTL", () => {
   it("returns fresh cached full text", () => {
     const cache = new LRUBackend();
@@ -487,7 +644,7 @@ describe("default extraction (real libraries)", () => {
   it("reduces an HTML document to its article body and converts it to markdown", async () => {
     const paragraph =
       "<p>Creatine improved memory in a randomized controlled trial with 40 healthy adults over 12 weeks.</p>";
-    const html = `<html><body><nav>menu</nav><article><h1>Study Title</h1>${paragraph.repeat(20)}</article><footer>ads</footer></body></html>`;
+    const html = `<html><body><nav>menu</nav><article><h1>Study Title</h1>${paragraph.repeat(40)}</article><footer>ads</footer></body></html>`;
 
     const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), {
       unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://oa.example/article"] }),

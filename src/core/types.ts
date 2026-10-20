@@ -101,7 +101,7 @@ export interface Article {
   url?: string;
   /** Language of the article (ISO 639-1). Treated as "en" when absent. */
   language?: string;
-  /** PubMed Central id (Europe PMC records that have one). */
+  /** PubMed Central id, for records that have one (PubMed, Europe PMC). `literature_fulltext` takes it as an id. */
   pmcid?: string;
   /** The record a translated copy was made from (ChinaXiv, Math-Net.Ru, …), for checking the original. */
   originalUrl?: string;
@@ -145,9 +145,12 @@ export interface SearchInput {
   database?: string | string[];
   /** Results to return. Default 10, hard cap 50. */
   maxResults?: number;
-  /** Drop results below this design tier (0–5). Results with an unknown tier are dropped too. Default: keep all. */
+  /** Drop results below this design tier (0–5). Results with an unknown tier are dropped too. Default: keep all. Narrows the query like `studyTypes`. */
   minDesignTier?: number;
-  /** Keep only these study types. Default: all. */
+  /**
+   * Keep only these study types. Default (or empty): all. PubMed and Europe PMC are
+   * queried for the publication types that can produce them, so `total` counts candidates.
+   */
   studyTypes?: StudyType[];
   dateRange?: DateRange;
   /** "relevance" (default) or "date". */
@@ -161,7 +164,7 @@ export interface SearchInput {
 
 export interface SearchOutput {
   articles: GradedArticle[];
-  /** Total hits reported by esearch (before maxResults truncation). */
+  /** Hits reported by the databases searched, summed, before maxResults truncation (of the narrowed query, with a design filter). */
   total: number;
   query: string;
   warnings?: string[];
@@ -186,11 +189,15 @@ export interface FetchOutput {
   warnings?: string[];
 }
 
-/** How a full text was obtained. `none` means only the abstract (or nothing) is available. */
-export type FulltextSource = "unpaywall" | "proxy" | "direct" | "none";
+/**
+ * How a full text was obtained: Europe PMC's full-text API by PMCID, an open-access copy
+ * Unpaywall located, the institutional proxy, or the DOI directly. `none` means only the
+ * abstract (or nothing) is available.
+ */
+export type FulltextSource = "europepmc" | "unpaywall" | "proxy" | "direct" | "none";
 
 export interface FulltextInput {
-  /** Article identifier from the source database. */
+  /** A PMID, a PMCID ("PMC…"), a Europe PMC preprint id ("PPR…"), or another database's id with `doi`. */
   id: string;
   /** DOI — if provided, skips the id→DOI lookup. */
   doi?: string;
@@ -205,7 +212,7 @@ export interface FulltextOutput {
   format: "markdown" | "pdf";
   /** True if the text was capped at the character limit. */
   truncated: boolean;
-  /** Set when the full text couldn't be retrieved, explaining why and what to do. */
+  /** Set when the full text couldn't be retrieved: what each location answered, and what to do. */
   warning?: string;
 }
 

@@ -32,7 +32,7 @@ Also exported:
 - `classifyDesign` and `classifyArticle`, to label your own records with the [grader](how-it-works.md#the-grader-study-design-labels).
 - `searchPubMed` and `fetchPubMed`, the PubMed-only pipeline without the multi-database merge (`searchPubMed` keeps PubMed's order instead of sorting by tier).
 - `NcbiClient`, with its rate limiter. Share one client between calls (pass it to `PubMedAdapter`, `searchPubMed` and `fetchFulltext`) so that concurrent requests stay within NCBI's limit.
-- The adapters (`PubMedAdapter`, `EuropePmcAdapter`, `ChinaRXivAdapter`, `SovietRxivAdapter`) and `getAdapters`, the types, and the constants `STUDY_TYPES`, `RECORD_FLAGS` and `DESIGN_TIER`.
+- The adapters (`PubMedAdapter`, `EuropePmcAdapter`, `ChinaRXivAdapter`, `SovietRxivAdapter`), `adaptersFor` (a `database` value to adapters, refusing unknown ids) and `getAdapters` (which drops them), `designPublicationTypes`, the types, and the constants `STUDY_TYPES`, `RECORD_FLAGS` and `DESIGN_TIER`.
 
 Configuration comes from the same environment variables as the server ([README](../README.md#configuration)), read when the module is imported: the default adapters are created then, so set the variables before importing (e.g. `node --env-file=.env app.js`). To configure in code instead, pass your own clients, e.g. `searchLiterature(input, cache, [new PubMedAdapter(new NcbiClient({ email, apiKey }))])`; `NcbiClient` and `UnpaywallClient` take their settings as constructor options.
 
@@ -47,4 +47,4 @@ Summaries expire after 7 days, because their metadata changes after publication 
 
 ## Errors
 
-Library functions throw a `ResearchApiException` (`isMedResearchError` tells it apart), whose `toJSON()` gives the payload described in the [tool reference](tools.md#errors). `searchLiterature` throws only when every database it searched failed; while one answers, each failure becomes an entry in `warnings` instead.
+Library functions throw a `ResearchApiException` (`isMedResearchError` tells it apart), whose `toJSON()` gives the payload described in the [tool reference](tools.md#errors). `searchLiterature` throws `INVALID_INPUT` for an unknown database, an empty query or a date that doesn't exist, and otherwise only when every database it searched failed; while one answers, each failure becomes an entry in `warnings` instead. `fetchLiterature` throws `INVALID_INPUT` for an unknown database.
