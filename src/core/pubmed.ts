@@ -15,6 +15,14 @@ import { CORRECTION_TYPES } from "./types.js";
 import type { Correction, CorrectionType, FetchInput, FetchOutput, GradedArticle, Article, SearchInput, SearchOutput, StudyType } from "./types.js";
 
 const EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
+/** The `tool` value this software sends to NCBI, registered there together with NCBI_DEVELOPER_EMAIL. */
+const NCBI_TOOL = "med-research-mcp";
+/**
+ * The developer contact the project registers with NCBI_TOOL: NCBI asks for "a complete and
+ * valid e-mail address of the software developer" (NBK25497) and contacts it before blocking an
+ * IP. Sent when the user sets no email of their own, so every request carries a contact.
+ */
+export const NCBI_DEVELOPER_EMAIL = "hello@emilkrebs.dev";
 const MAX_RESULTS_CAP = 50;
 /** Above this esearch count, refuse and ask the caller to narrow. */
 const DEFAULT_BROAD_THRESHOLD = 100_000;
@@ -39,11 +47,17 @@ const MAX_RETRY_WAIT_S = 5;
 const DEFAULT_SEARCH_TTL_MS = 60 * 60 * 1000;
 
 export interface NcbiConfig {
-  /** Contact email — NCBI asks for one on every request. Defaults to $NCBI_EMAIL. */
+  /**
+   * Contact email — NCBI asks for one on every request. Defaults to $NCBI_EMAIL, then, with the
+   * default `tool`, to NCBI_DEVELOPER_EMAIL.
+   */
   email?: string;
   /** API key raises the rate limit from 3 to 10 req/s. Defaults to $NCBI_API_KEY. */
   apiKey?: string;
-  /** Identifies the client to NCBI. */
+  /**
+   * Identifies the client to NCBI. Defaults to "med-research-mcp"; software built on this client
+   * should send its own, with its own `email`.
+   */
   tool?: string;
   /** esearch count above which QUERY_TOO_BROAD is thrown. */
   broadThreshold?: number;
@@ -123,9 +137,14 @@ export class NcbiClient {
   private readonly searches: LRUCache<string, { count: number; pmids: string[] }> | null;
 
   constructor(config: NcbiConfig = {}) {
-    this.email = config.email ?? process.env.NCBI_EMAIL;
+    this.tool = config.tool ?? NCBI_TOOL;
+    // `||`, not `??`: a blank NCBI_EMAIL (`NCBI_EMAIL=` in a .env file) counts as unset. Only the
+    // default tool falls back to the developer contact: NCBI registers tool and email as a pair.
+    this.email =
+      config.email?.trim() ||
+      process.env.NCBI_EMAIL?.trim() ||
+      (this.tool === NCBI_TOOL ? NCBI_DEVELOPER_EMAIL : undefined);
     this.apiKey = config.apiKey ?? process.env.NCBI_API_KEY;
-    this.tool = config.tool ?? "med-research-mcp";
     this.broadThreshold = config.broadThreshold ?? DEFAULT_BROAD_THRESHOLD;
     this.timeoutMs = config.timeoutMs ?? 15_000;
     this.limiter = new RateLimiter(this.apiKey ? 10 : 3);

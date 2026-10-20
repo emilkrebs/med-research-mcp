@@ -38,8 +38,9 @@ Keys are read from the environment. You only need the providers your selected
 models use (`openai`, `anthropic`, `deepseek`, `ollama`). `BRAVE_API_KEY` is
 required only when running the web-search baseline. `NCBI_EMAIL` is strongly
 recommended: NCBI's usage policy asks every request to carry a contact email, so
-NCBI can reach you before blocking your IP (`NCBI_API_KEY` raises the rate limit
-from 3 to 10 requests per second). A full run sends well over 100 NCBI requests,
+NCBI can reach you before blocking your IP. Without one, requests carry the
+project's contact address. `NCBI_API_KEY` raises the rate limit from 3 to 10
+requests per second. A full run sends well over 100 NCBI requests,
 so NCBI's [policy](https://www.ncbi.nlm.nih.gov/home/about/policies/) asks you to
 run it on weekends or between 9 pm and 5 am US Eastern time on weekdays.
 `BENCH_TIMEOUT_MS` caps one agent loop (default 300000). See `.env.example`.

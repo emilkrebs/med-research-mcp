@@ -16,7 +16,7 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer as createNodeHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { NcbiClient, type Cache } from "../core/index.js";
+import { NCBI_DEVELOPER_EMAIL, NcbiClient, type Cache } from "../core/index.js";
 import { buildCache, createServer, packageVersion } from "../mcp/server.js";
 import { handleMcpPost } from "./handler.js";
 import { anonymizeIp, clientIp, ConcurrencyLimiter, TokenBucketLimiter } from "./limits.js";
@@ -257,9 +257,9 @@ async function main(): Promise<void> {
         "This is acceptable for evaluation only; set a token or firewall the port for anything else.",
     );
   }
-  if (!process.env.NCBI_EMAIL) {
+  if (!process.env.NCBI_EMAIL?.trim()) {
     console.error(
-      "[med-research-mcp] NCBI_EMAIL is not set. NCBI's usage policy asks every request to carry a contact email, so NCBI can reach you before blocking an IP that exceeds its limits.",
+      `[med-research-mcp] NCBI_EMAIL is not set, so PubMed requests carry the project's contact address (${NCBI_DEVELOPER_EMAIL}). Set your own so NCBI can reach you directly before blocking an IP that exceeds its limits.`,
     );
   }
 

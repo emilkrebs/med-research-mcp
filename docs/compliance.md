@@ -31,7 +31,7 @@ The server sends no telemetry and has no accounts. A tool call sends data only t
 
 | Service | When | What it receives |
 | --- | --- | --- |
-| NCBI E-utilities (NLM, USA) | `pubmed` searches and fetches; the PMID-to-DOI lookup in `literature_fulltext` | The query or PMIDs, `tool=med-research-mcp`, `NCBI_EMAIL`, `NCBI_API_KEY`, and the machine's IP address. NLM's [privacy policy](https://www.nlm.nih.gov/web_policies.html) says it records search terms |
+| NCBI E-utilities (NLM, USA) | `pubmed` searches and fetches; the PMID-to-DOI lookup in `literature_fulltext` | The query or PMIDs, `tool=med-research-mcp`, `NCBI_EMAIL` (without it, the project's contact address), `NCBI_API_KEY`, and the machine's IP address. NLM's [privacy policy](https://www.nlm.nih.gov/web_policies.html) says it records search terms |
 | Europe PMC REST API (EMBL-EBI, UK) | `europepmc` searches and fetches; full texts of PubMed Central copies | The query or ids, and the IP address |
 | ChinaRxiv API | `chinaxiv` and `russiarxiv` searches and fetches | The query or ids, the IP address, and `MED_RESEARCH_CHINAXIV_EMAIL` (or `NCBI_EMAIL`) as `X-API-Email`; ChinaRxiv says it collects these emails "to understand who our API users are" |
 | Unpaywall (OurResearch/OpenAlex, USA) | `literature_fulltext` | The DOI and `MED_RESEARCH_UNPAYWALL_EMAIL` (or `NCBI_EMAIL`) |
@@ -55,12 +55,12 @@ The [NCBI policies page](https://www.ncbi.nlm.nih.gov/home/about/policies/) and 
 | Requirement | How it's met |
 | --- | --- |
 | "Make no more than 3 requests every 1 second", 10 with an API key; the limit applies per IP | `NcbiClient` queues and spaces requests to 3 per second, or 10 with `NCBI_API_KEY`, shared by every tool call in a process. Separate processes behind one IP share NCBI's limit |
-| `tool` and `email` on every request, "so that we can track your project and contact you if there is a problem" | Every request sends `tool=med-research-mcp` and `NCBI_EMAIL` |
-| "Merely providing values for tool and email in requests is not sufficient to comply with this policy; these values must be registered with NCBI" | **Open**: the maintainer registers `tool=med-research-mcp` by email to <eutilities@ncbi.nlm.nih.gov> |
+| `tool` and `email` on every request, "so that we can track your project and contact you if there is a problem" | Every request sends `tool=med-research-mcp` and an email: `NCBI_EMAIL`, or the project's contact address `hello@emilkrebs.dev` when it isn't set |
+| "Merely providing values for tool and email in requests is not sufficient to comply with this policy; these values must be registered with NCBI" | **Open**: the maintainer registers `tool=med-research-mcp` with `hello@emilkrebs.dev` by email to <eutilities@ncbi.nlm.nih.gov> |
 | "NCBI's Disclaimer and Copyright notice must be evident to users of your service" | The README's [Data sources and copyright](../README.md#data-sources-and-copyright) section links it |
 | "Run retrieval scripts on weekends or between 9 pm and 5 am Eastern Time weekdays for any series of more than 100 requests" | Interactive use doesn't qualify; benchmark runs do, and its README says so |
 
-NCBI's guidelines describe `email` both as the software developer's address, "not that of a third-party end user" (NBK25497), and as the "E-mail address of the E-utility user" (NBK25499). Each installation sends the email of whoever runs it, as Biopython and similar tools do, and the project registers its tool name. "NLM does not claim the copyright on the abstracts in PubMed; however, journal publishers or authors may": the tool returns abstracts to the person who searched, and redistributing them is up to that person.
+NCBI's guidelines describe `email` both as the software developer's address, "not that of a third-party end user" (NBK25497), and as the "E-mail address of the E-utility user" (NBK25499). Each installation sends the email of whoever runs it, as Biopython and similar tools do. When none is set, it sends the developer address the project registers with its tool name, so every request carries a contact NCBI can reach. The registration request asks NCBI which of the two it prefers. "NLM does not claim the copyright on the abstracts in PubMed; however, journal publishers or authors may": the tool returns abstracts to the person who searched, and redistributing them is up to that person.
 
 ### Europe PMC and PubMed Central
 

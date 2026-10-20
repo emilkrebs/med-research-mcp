@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { NcbiClient, searchPubMed, fetchPubMed } from "../src/core/pubmed";
+import { NcbiClient, NCBI_DEVELOPER_EMAIL, searchPubMed, fetchPubMed } from "../src/core/pubmed";
 import { LRUBackend } from "../src/core/cache";
 import type { NcbiArticle } from "../src/core/types";
 
@@ -380,5 +380,46 @@ describe("NcbiClient requests", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ result: { uids: ["37968687"], "37968687": doc } }), { status: 200 })));
     const out = await new NcbiClient({ email: "test@example.com" }).esummary(["37968687"]);
     expect(out.get("37968687")).toMatchObject({ pmcid: "PMC10647179", doi: "10.1186/s12916-023-03146-5" });
+  });
+});
+
+describe("NcbiClient contact email", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  /** The query parameters of the client's first request. */
+  const sentParams = async (client: NcbiClient): Promise<URLSearchParams> => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ esearchresult: { count: "0", idlist: [] } }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await client.esearch({ query: "x" });
+    return new URL(String((fetchMock.mock.calls[0] as unknown[])[0])).searchParams;
+  };
+
+  it("sends the user's NCBI_EMAIL with the tool name", async () => {
+    vi.stubEnv("NCBI_EMAIL", "user@example.com");
+    const params = await sentParams(new NcbiClient());
+    expect(params.get("tool")).toBe("med-research-mcp");
+    expect(params.get("email")).toBe("user@example.com");
+  });
+
+  it("sends the developer contact when NCBI_EMAIL is unset or blank", async () => {
+    for (const value of [undefined, "", "  "]) {
+      vi.stubEnv("NCBI_EMAIL", value);
+      expect((await sentParams(new NcbiClient())).get("email")).toBe(NCBI_DEVELOPER_EMAIL);
+    }
+  });
+
+  it("prefers an email passed in code over NCBI_EMAIL", async () => {
+    vi.stubEnv("NCBI_EMAIL", "user@example.com");
+    expect((await sentParams(new NcbiClient({ email: "app@example.com" }))).get("email")).toBe("app@example.com");
+  });
+
+  it("sends no stand-in email with another tool name, since NCBI registers tool and email as a pair", async () => {
+    vi.stubEnv("NCBI_EMAIL", undefined);
+    const params = await sentParams(new NcbiClient({ tool: "other-app" }));
+    expect(params.get("tool")).toBe("other-app");
+    expect(params.has("email")).toBe(false);
   });
 });

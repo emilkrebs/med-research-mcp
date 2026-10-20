@@ -91,7 +91,7 @@ Find the absolute path (`pwd`) and use `node <REPO>/dist/mcp/index.js` as the co
 
 | Var | Needed? | Purpose |
 |-----|---------|---------|
-| `NCBI_EMAIL` | recommended | Contact email NCBI's usage policy asks for, so NCBI can reach the user before blocking an IP. Also the fallback for the two emails below. |
+| `NCBI_EMAIL` | recommended | Contact email NCBI's usage policy asks for, so NCBI can reach the user before blocking an IP; without it, requests carry the project's contact address. Also the fallback for the two emails below. |
 | `NCBI_API_KEY` | optional | Raises the NCBI rate limit from 3 to 10 req/s |
 | `MED_RESEARCH_CHINAXIV_EMAIL` | optional | Contact email sent to ChinaRxiv (`chinaxiv`, `russiarxiv`); raises its limit from 30 to 300 requests/minute. Falls back to `NCBI_EMAIL`. |
 | `MED_RESEARCH_UNPAYWALL_EMAIL` | optional | Contact email for Unpaywall lookups (`literature_fulltext`). Falls back to `NCBI_EMAIL`. |

@@ -12,12 +12,12 @@
  */
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { Cache } from "../core/index.js";
+import { NCBI_DEVELOPER_EMAIL, type Cache } from "../core/index.js";
 import { buildCache, createServer } from "./server.js";
 
-if (!process.env.NCBI_EMAIL) {
+if (!process.env.NCBI_EMAIL?.trim()) {
   console.error(
-    "[med-research-mcp] NCBI_EMAIL is not set. NCBI's usage policy asks every request to carry a contact email, so NCBI can reach you before blocking an IP that exceeds its limits.",
+    `[med-research-mcp] NCBI_EMAIL is not set, so PubMed requests carry the project's contact address (${NCBI_DEVELOPER_EMAIL}). Set your own so NCBI can reach you directly before blocking an IP that exceeds its limits.`,
   );
 }
 

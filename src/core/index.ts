@@ -5,7 +5,7 @@
  * and re-exported through the thin MCP adapter in ../mcp.
  */
 
-export { searchPubMed, fetchPubMed, NcbiClient } from "./pubmed.js";
+export { searchPubMed, fetchPubMed, NcbiClient, NCBI_DEVELOPER_EMAIL } from "./pubmed.js";
 export type { NcbiConfig } from "./pubmed.js";
 
 export { searchLiterature, fetchLiterature } from "./literature.js";
