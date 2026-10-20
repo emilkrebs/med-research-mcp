@@ -3,6 +3,7 @@ import { defaultJatsToMarkdown, fetchFulltext, type FetchedResource, type Fullte
 import { UnpaywallClient, type UnpaywallResult } from "../src/core/unpaywall";
 import { FULLTEXT_TTL_MS, LRUBackend } from "../src/core/cache";
 import { NcbiClient } from "../src/core/pubmed";
+import { PROJECT_CONTACT_EMAIL } from "../src/core/version";
 import { ResearchApiException } from "../src/core/errors";
 import { BlockedUrlError } from "../src/core/public-fetch";
 import type { Article } from "../src/core/types";
@@ -43,7 +44,7 @@ function fakeClient(
 }
 
 function fakeUnpaywall(result: UnpaywallResult | null): UnpaywallClient {
-  return { configured: true, resolve: async () => result } as unknown as UnpaywallClient;
+  return { resolve: async () => result } as unknown as UnpaywallClient;
 }
 
 function htmlResource(text: string, url = "https://oa.example/article"): FetchedResource {
@@ -305,7 +306,7 @@ describe("fetchFulltext resolution strategy", () => {
   it("normalizes a DOI passed as a URL before resolving", async () => {
     const resolve = vi.fn(async () => ({ doi: DOI, isOa: true, urls: ["https://oa.example/u"] }));
     const deps: FulltextDeps = {
-      unpaywall: { configured: true, resolve } as unknown as UnpaywallClient,
+      unpaywall: { resolve } as unknown as UnpaywallClient,
       fetchUrl: async () => htmlResource("<x/>"),
       htmlToMarkdown: async () => LONG_MARKDOWN,
     };
@@ -422,7 +423,7 @@ describe("fetchFulltext — Europe PMC by PMCID", () => {
     const resolve = vi.fn();
     const fetchUrl = vi.fn(async (url: string) => jats(url));
     const deps: FulltextDeps = {
-      unpaywall: { configured: true, resolve } as unknown as UnpaywallClient,
+      unpaywall: { resolve } as unknown as UnpaywallClient,
       fetchUrl,
       jatsToMarkdown: async () => LONG_MARKDOWN,
     };
@@ -468,16 +469,6 @@ describe("fetchFulltext — Europe PMC by PMCID", () => {
 
 describe("fetchFulltext — why a full text wasn't found", () => {
   const status = (code: number, finalUrl: string): FetchedResource => ({ ok: false, status: code, contentType: "text/html", finalUrl });
-
-  it("says Unpaywall wasn't asked when no contact email is set", async () => {
-    const resolve = vi.fn();
-    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ abstract: "abs" }), {
-      unpaywall: { configured: false, resolve } as unknown as UnpaywallClient,
-      fetchUrl: async () => paywalled(),
-    });
-    expect(resolve).not.toHaveBeenCalled();
-    expect(out.warning).toMatch(/weren't looked up: set NCBI_EMAIL/);
-  });
 
   it("names the site that refused the request, and the status", async () => {
     const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ abstract: "abs" }), {
@@ -529,16 +520,17 @@ describe("UnpaywallClient", () => {
     vi.unstubAllEnvs();
   });
 
-  it("does not query without a contact email", async () => {
+  it("sends the project's contact address when no email is set", async () => {
     vi.stubEnv("MED_RESEARCH_UNPAYWALL_EMAIL", "");
     vi.stubEnv("NCBI_EMAIL", "");
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      urls.push(url);
+      return new Response(JSON.stringify({ doi: "10.1/x", is_oa: false, oa_locations: [] }), { status: 200 });
+    });
 
-    const client = new UnpaywallClient();
-    expect(client.configured).toBe(false);
-    expect(await client.resolve("10.1/x")).toBeNull();
-    expect(fetchSpy).not.toHaveBeenCalled();
+    await new UnpaywallClient().resolve("10.1/x");
+    expect(urls[0]).toContain(`email=${encodeURIComponent(PROJECT_CONTACT_EMAIL)}`);
   });
 
   it("falls back to NCBI_EMAIL when MED_RESEARCH_UNPAYWALL_EMAIL is empty (a blank .mcpb field)", async () => {
@@ -551,7 +543,6 @@ describe("UnpaywallClient", () => {
     });
 
     const client = new UnpaywallClient();
-    expect(client.configured).toBe(true);
     await client.resolve("10.1/x");
     expect(urls[0]).toContain("email=ncbi%40example.com");
   });

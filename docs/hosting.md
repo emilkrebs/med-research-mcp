@@ -36,7 +36,8 @@ The hosted endpoint is designed to know as little as possible:
 - **Queries leave the server.** Answering a tool call means sending its query
   or ids to the databases: NCBI, EMBL-EBI (Europe PMC), ChinaRxiv, and for full
   texts Unpaywall, doi.org and publishers; requests to NCBI, ChinaRxiv and
-  Unpaywall carry the operator's contact email.
+  Unpaywall carry the operator's contact email if one is set, and those to NCBI
+  and Unpaywall otherwise the project's.
   Tell your users, and see [compliance.md](compliance.md#data-flows) for what
   each service receives.
 

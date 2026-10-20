@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { NcbiClient, NCBI_DEVELOPER_EMAIL, searchPubMed, fetchPubMed } from "../src/core/pubmed";
+import { NcbiClient, searchPubMed, fetchPubMed } from "../src/core/pubmed";
+import { PROJECT_CONTACT_EMAIL } from "../src/core/version";
 import { LRUBackend } from "../src/core/cache";
 import type { NcbiArticle } from "../src/core/types";
 
@@ -407,7 +408,7 @@ describe("NcbiClient contact email", () => {
   it("sends the developer contact when NCBI_EMAIL is unset or blank", async () => {
     for (const value of [undefined, "", "  "]) {
       vi.stubEnv("NCBI_EMAIL", value);
-      expect((await sentParams(new NcbiClient())).get("email")).toBe(NCBI_DEVELOPER_EMAIL);
+      expect((await sentParams(new NcbiClient())).get("email")).toBe(PROJECT_CONTACT_EMAIL);
     }
   });
 

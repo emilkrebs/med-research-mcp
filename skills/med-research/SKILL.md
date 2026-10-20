@@ -75,7 +75,7 @@ Apply these to every answer, not only pivotal ones.
 ## Tools, limits, errors
 
 - `literature_fetch({ids:["39123456","38987654"], database:"pubmed"})` — full abstracts + publication types + MeSH + retraction/correction links + metadata, no `studyType` (1–50 ids).
-- `literature_fulltext({id:"39123456", doi:"10.1234/x"})` — article body as markdown via Europe PMC (records with a `pmcid`) → Unpaywall → proxy → DOI; otherwise the abstract, and `warning` says why (no email set, paywalled, landing page only, unknown DOI). Non-PubMed ids need their DOI, or pass the record's `pmcid` as the id; ChinaXiv/RussiaRxiv records have neither, so open their `url` instead.
+- `literature_fulltext({id:"39123456", doi:"10.1234/x"})` — article body as markdown via Europe PMC (records with a `pmcid`) → Unpaywall → proxy → DOI; otherwise the abstract, and `warning` says why (paywalled, landing page only, unknown DOI). Non-PubMed ids need their DOI, or pass the record's `pmcid` as the id; ChinaXiv/RussiaRxiv records have neither, so open their `url` instead.
 - NCBI client is shared and serialized (3 req/s anonymous, 10 with `NCBI_API_KEY`): parallel calls are **safe** but don't run faster. Prefer a few precise queries.
 - Errors: `QUERY_TOO_BROAD` (narrow + retry); `RATE_LIMIT` (the server already retried; wait `retryAfter`); `NETWORK_ERROR`/`PARSE_FAILURE` (retry once, then say the DB is unreachable); `INVALID_INPUT` and schema errors (fix the parameter named: database ids are lower case, dates must exist). In a multi-database search, a database that fails while others answer shows up only in `warnings` (`<database> search failed: …`) — say which database is missing; never report its absence as "no studies found".
 

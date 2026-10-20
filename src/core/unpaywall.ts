@@ -8,7 +8,7 @@
  * (https://unpaywall.org/products/api, checked 2026-10-19).
  */
 
-import { USER_AGENT } from "./version.js";
+import { PROJECT_CONTACT_EMAIL, USER_AGENT } from "./version.js";
 
 const UNPAYWALL_BASE = "https://api.unpaywall.org/v2";
 
@@ -38,40 +38,37 @@ export interface UnpaywallResult {
 }
 
 export interface UnpaywallConfig {
-  /** Contact email required by Unpaywall. Defaults to $MED_RESEARCH_UNPAYWALL_EMAIL, then $NCBI_EMAIL. */
+  /**
+   * Contact email required by Unpaywall. Defaults to $MED_RESEARCH_UNPAYWALL_EMAIL, then
+   * $NCBI_EMAIL, then PROJECT_CONTACT_EMAIL.
+   */
   email?: string;
   /** Per-request timeout in ms. Default 15000. */
   timeoutMs?: number;
 }
 
 export class UnpaywallClient {
-  private readonly email: string | undefined;
+  private readonly email: string;
   private readonly timeoutMs: number;
 
   constructor(config: UnpaywallConfig = {}) {
     // `||`, not `??`: an empty variable (a blank .mcpb field, `MED_RESEARCH_UNPAYWALL_EMAIL=` in a
-    // .env file) must still fall back to NCBI_EMAIL, as chinaxivHeaders does.
+    // .env file) must still fall back to NCBI_EMAIL, as chinaxivHeaders does, and then to the
+    // project's contact address, so every request carries the email Unpaywall requires.
     this.email =
       config.email?.trim() ||
       process.env.MED_RESEARCH_UNPAYWALL_EMAIL?.trim() ||
       process.env.NCBI_EMAIL?.trim() ||
-      undefined;
+      PROJECT_CONTACT_EMAIL;
     this.timeoutMs = config.timeoutMs ?? 15_000;
-  }
-
-  /** Whether the client can make requests (Unpaywall requires an email). */
-  get configured(): boolean {
-    return Boolean(this.email);
   }
 
   /**
    * Resolve a DOI to its open-access URLs. Returns `null` when Unpaywall has no
-   * record, no OA copy, or the client has no email configured. Network/parse
-   * failures also return `null` — the caller falls through to the next strategy.
+   * record or no OA copy. Network/parse failures also return `null` — the caller
+   * falls through to the next strategy.
    */
   async resolve(doi: string): Promise<UnpaywallResult | null> {
-    if (!this.email) return null;
-
     const url = `${UNPAYWALL_BASE}/${encodeURIComponent(doi)}?email=${encodeURIComponent(this.email)}`;
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), this.timeoutMs);

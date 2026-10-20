@@ -45,7 +45,7 @@ claude mcp add med-research-mcp -s user \
 
 ### Claude Desktop
 
-Download `med-research-mcp.mcpb` from the [latest release](https://github.com/emilkrebs/med-research-mcp/releases/latest) and drag it onto Claude Desktop. The installer asks for your email and a few optional settings; there's no JSON to edit.
+Download `med-research-mcp.mcpb` from the [latest release](https://github.com/emilkrebs/med-research-mcp/releases/latest) and drag it onto Claude Desktop. The installer offers a few optional settings, such as your email; there's no JSON to edit.
 
 ### Cursor, Windsurf, Cline and other clients
 
@@ -82,7 +82,7 @@ Set these in the `env` block of your MCP client's configuration. All are optiona
 
 | Variable | What it does |
 | --- | --- |
-| `NCBI_EMAIL` | Your contact email, sent with every NCBI (PubMed) request as its usage policy asks, so NCBI can reach you before blocking an IP that exceeds its limits. Without it, requests carry the project's contact address instead. Also used for Unpaywall and ChinaRxiv when their own emails aren't set. |
+| `NCBI_EMAIL` | Your contact email, sent with every NCBI (PubMed) request as its usage policy asks, so NCBI can reach you before blocking an IP that exceeds its limits. Also used for Unpaywall and ChinaRxiv when their own emails aren't set. Without one, NCBI and Unpaywall requests carry the project's contact address instead. |
 | `NCBI_API_KEY` | Raises the PubMed rate limit from 3 to 10 requests per second. Get one in your [NCBI account settings](https://www.ncbi.nlm.nih.gov/account/settings/). |
 | `MED_RESEARCH_UNPAYWALL_EMAIL` | Contact email for Unpaywall, which finds open-access full texts. |
 | `MED_RESEARCH_CHINAXIV_EMAIL` | Contact email for ChinaRxiv, which serves the `chinaxiv` and `russiarxiv` sources; raises its rate limit from 30 to 300 requests per minute. |

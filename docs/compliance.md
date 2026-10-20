@@ -34,7 +34,7 @@ The server sends no telemetry and has no accounts. A tool call sends data only t
 | NCBI E-utilities (NLM, USA) | `pubmed` searches and fetches; the PMID-to-DOI lookup in `literature_fulltext` | The query or PMIDs, `tool=med-research-mcp`, `NCBI_EMAIL` (without it, the project's contact address), `NCBI_API_KEY`, and the machine's IP address. NLM's [privacy policy](https://www.nlm.nih.gov/web_policies.html) says it records search terms |
 | Europe PMC REST API (EMBL-EBI, UK) | `europepmc` searches and fetches; full texts of PubMed Central copies | The query or ids, and the IP address |
 | ChinaRxiv API | `chinaxiv` and `russiarxiv` searches and fetches | The query or ids, the IP address, and `MED_RESEARCH_CHINAXIV_EMAIL` (or `NCBI_EMAIL`) as `X-API-Email`; ChinaRxiv says it collects these emails "to understand who our API users are" |
-| Unpaywall (OurResearch/OpenAlex, USA) | `literature_fulltext` | The DOI and `MED_RESEARCH_UNPAYWALL_EMAIL` (or `NCBI_EMAIL`) |
+| Unpaywall (OurResearch/OpenAlex, USA) | `literature_fulltext` | The DOI and `MED_RESEARCH_UNPAYWALL_EMAIL` (or `NCBI_EMAIL`, or the project's contact address) |
 | doi.org, publishers and repositories | `literature_fulltext` | Requests for the DOI's pages, from the IP address, with the server's User-Agent |
 | Your institution's proxy | `literature_fulltext`, if configured | Requests for the DOI, from the IP address |
 
@@ -69,7 +69,7 @@ NCBI's guidelines describe `email` both as the software developer's address, "no
 
 ### Unpaywall
 
-"Requests must include your email", and users should "limit use to 100,000 calls per day" ([API page](https://unpaywall.org/products/api)). The client sends the email on every request and skips Unpaywall without one; one call per `literature_fulltext` keeps an installation far below the daily figure.
+"Requests must include your email", and users should "limit use to 100,000 calls per day" ([API page](https://unpaywall.org/products/api)). The client sends an email on every request: the user's, or, for an installation without one, the project's contact address, as it does for NCBI. One call per `literature_fulltext` keeps an installation far below the daily figure; installations without an email of their own share the figure under the project's address.
 
 ### ChinaRxiv
 

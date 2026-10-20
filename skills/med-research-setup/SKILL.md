@@ -32,7 +32,7 @@ claude mcp get med-research-mcp      # expect: Status ✓ Connected
 Tools appear in **new** Claude Code sessions.
 
 ### Claude Desktop (.mcpb — easiest for non-technical users)
-Download `med-research-mcp.mcpb` from the repository's latest GitHub release (or build it: `npm run build:mcpb` in a clone writes `dist/med-research-mcp.mcpb`) and drag it onto Claude Desktop. The installer prompts for the NCBI contact email (required) plus optional NCBI API key, Unpaywall email, and institutional proxy prefix — no JSON editing. Note: `.mcpb` installs do **not** load the companion skills; see Step 3.
+Download `med-research-mcp.mcpb` from the repository's latest GitHub release (or build it: `npm run build:mcpb` in a clone writes `dist/med-research-mcp.mcpb`) and drag it onto Claude Desktop. The installer offers optional fields for the NCBI contact email, an NCBI API key, an Unpaywall email and an institutional proxy prefix — no JSON editing. Note: `.mcpb` installs do **not** load the companion skills; see Step 3.
 
 ### Cursor and other JSON configs (`mcpServers`)
 ```json
@@ -94,7 +94,7 @@ Find the absolute path (`pwd`) and use `node <REPO>/dist/mcp/index.js` as the co
 | `NCBI_EMAIL` | recommended | Contact email NCBI's usage policy asks for, so NCBI can reach the user before blocking an IP; without it, requests carry the project's contact address. Also the fallback for the two emails below. |
 | `NCBI_API_KEY` | optional | Raises the NCBI rate limit from 3 to 10 req/s |
 | `MED_RESEARCH_CHINAXIV_EMAIL` | optional | Contact email sent to ChinaRxiv (`chinaxiv`, `russiarxiv`); raises its limit from 30 to 300 requests/minute. Falls back to `NCBI_EMAIL`. |
-| `MED_RESEARCH_UNPAYWALL_EMAIL` | optional | Contact email for Unpaywall lookups (`literature_fulltext`). Falls back to `NCBI_EMAIL`. |
+| `MED_RESEARCH_UNPAYWALL_EMAIL` | optional | Contact email for Unpaywall lookups (`literature_fulltext`). Falls back to `NCBI_EMAIL`, then to the project's contact address. |
 | `MED_RESEARCH_PROXY_PREFIX` | optional | EZproxy-style DOI prefix for off-campus full text — `literature_fulltext` prepends it to the DOI, e.g. `https://doi-org.ezproxy.your-university.edu`. Works only if the proxy lets the machine in without a login (campus network or VPN); a proxy login in the browser isn't used. Use only if the institution's licences allow it: many publishers forbid using subscription content with AI tools. |
 | `MED_RESEARCH_CACHE_BACKEND` | optional | `memory` (default) or `sqlite` (persistent, survives restarts). `sqlite` needs `better-sqlite3`, an optional native dependency; if it isn't installed or fails to load, the server warns and uses `memory`. `.mcpb` installs always use `memory`. |
 | `MED_RESEARCH_CACHE_PATH` | optional | SQLite file path when the backend is `sqlite` (default `./pubmed-cache.db`, relative to the directory the client starts the server in, so use an absolute path; `:memory:` for ephemeral). |
@@ -122,5 +122,5 @@ Start a new session with the client and run a `literature_search` for `creatine 
 - **Tools don't show up** → MCP servers load at client startup; restart the session.
 - **Throttling / RATE_LIMIT** → the error names the database that throttled; wait `retryAfter` seconds. For PubMed, add `NCBI_API_KEY` (10 instead of 3 requests per second), and set `NCBI_EMAIL` so NCBI can reach the user before blocking an IP.
 - **`QUERY_TOO_BROAD`** → the query is too generic; add `[tiab]`/`[mesh]` field tags or `AND` clauses.
-- **Full text always falls back to the abstract** → the `warning` says what each source answered. Many papers are paywalled; if it says open-access copies weren't looked up, set an email (Unpaywall needs one). If the warning says locations were refused for their addresses and the user runs a fake-IP DNS proxy (Clash, Surge, sing-box TUN mode), set `MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE=1` on their personal machine. Otherwise, or, where the user's institution licenses this use, configure `MED_RESEARCH_PROXY_PREFIX` (it works only if the proxy lets the machine in without a login, e.g. on the campus network or VPN).
+- **Full text always falls back to the abstract** → the `warning` says what each source answered. Many papers are paywalled. If the warning says locations were refused for their addresses and the user runs a fake-IP DNS proxy (Clash, Surge, sing-box TUN mode), set `MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE=1` on their personal machine. Otherwise, or, where the user's institution licenses this use, configure `MED_RESEARCH_PROXY_PREFIX` (it works only if the proxy lets the machine in without a login, e.g. on the campus network or VPN).
 - **Connection check** (Claude Code): `claude mcp get med-research-mcp`. Remove with `claude mcp remove med-research-mcp -s user`.

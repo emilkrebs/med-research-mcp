@@ -10,9 +10,12 @@
  * local server. That exercises the parts a bundle can break: jsdom and
  * Readability for HTML, pdf.js and its inlined worker for PDF. The HTML page is
  * laid out like an article (an abstract, then enough body to pass the
- * landing-page check). No network: without a contact email the Unpaywall lookup
- * is skipped, the ids aren't PMIDs so no abstract is looked up in PubMed, and the
- * address check is opted out for the local server with MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE.
+ * landing-page check). The only request that leaves the machine is the Unpaywall
+ * lookup, sent with the project's contact address since no email is set: it finds
+ * nothing for the made-up DOIs, and offline it fails and falls through to the
+ * proxy all the same. The ids aren't PMIDs, so no abstract is looked up in PubMed,
+ * and the address check is opted out for the local server with
+ * MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE.
  */
 
 import { spawn } from "node:child_process";

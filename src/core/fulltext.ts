@@ -245,17 +245,13 @@ export async function fetchFulltext(
     if (out) return out;
   }
   const unpaywall = deps.unpaywall ?? new UnpaywallClient();
-  let unpaywallState: "unconfigured" | "none" | "found" | "skipped" = "skipped";
+  let unpaywallState: "none" | "found" | "skipped" = "skipped";
   if (doi) {
-    if (!unpaywall.configured) {
-      unpaywallState = "unconfigured";
-    } else {
-      const oa = await safeUnpaywall(unpaywall, doi);
-      const urls = oa ? openAccessUrls(oa.urls) : [];
-      unpaywallState = urls.length > 0 ? "found" : "none";
-      const out = await attempt("unpaywall", urls);
-      if (out) return out;
-    }
+    const oa = await safeUnpaywall(unpaywall, doi);
+    const urls = oa ? openAccessUrls(oa.urls) : [];
+    unpaywallState = urls.length > 0 ? "found" : "none";
+    const unpaywallOut = await attempt("unpaywall", urls);
+    if (unpaywallOut) return unpaywallOut;
     if (proxyPrefix) {
       const out = await attempt("proxy", [proxyUrl(proxyPrefix, doi)]);
       if (out) return out;
@@ -405,7 +401,7 @@ function fallbackWarning(ctx: {
   doi: string | undefined;
   pmcid: string | undefined;
   abstract: boolean;
-  unpaywall: "unconfigured" | "none" | "found" | "skipped";
+  unpaywall: "none" | "found" | "skipped";
   proxyConfigured: boolean;
   misses: Miss[];
 }): string {
@@ -420,9 +416,7 @@ function fallbackWarning(ctx: {
         : `Europe PMC's full text for ${ctx.pmcid} ${describeMiss(europePmc)}.`,
     );
   }
-  if (ctx.unpaywall === "unconfigured") {
-    parts.push("Open-access copies weren't looked up: set NCBI_EMAIL (or MED_RESEARCH_UNPAYWALL_EMAIL) so Unpaywall can find them.");
-  } else if (ctx.unpaywall === "none") {
+  if (ctx.unpaywall === "none") {
     parts.push("Unpaywall found no open-access copy.");
   } else if (ctx.unpaywall === "found") {
     const reasons = [...new Set(of("unpaywall").map(describeMiss))];

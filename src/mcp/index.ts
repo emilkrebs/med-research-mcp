@@ -12,18 +12,12 @@
  */
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { NCBI_DEVELOPER_EMAIL, type Cache } from "../core/index.js";
+import { PROJECT_CONTACT_EMAIL, type Cache } from "../core/index.js";
 import { buildCache, createServer } from "./server.js";
 
 if (!process.env.NCBI_EMAIL?.trim()) {
   console.error(
-    `[med-research-mcp] NCBI_EMAIL is not set, so PubMed requests carry the project's contact address (${NCBI_DEVELOPER_EMAIL}). Set your own so NCBI can reach you directly before blocking an IP that exceeds its limits.`,
-  );
-}
-
-if (!process.env.MED_RESEARCH_UNPAYWALL_EMAIL && !process.env.NCBI_EMAIL) {
-  console.error(
-    "[med-research-mcp] Neither MED_RESEARCH_UNPAYWALL_EMAIL nor NCBI_EMAIL is set. literature_fulltext needs a contact email to query Unpaywall for open-access copies; without one it can only try the institutional proxy and direct DOI access.",
+    `[med-research-mcp] NCBI_EMAIL is not set, so PubMed requests carry the project's contact address (${PROJECT_CONTACT_EMAIL}). Set your own so NCBI can reach you directly before blocking an IP that exceeds its limits.`,
   );
 }
 
