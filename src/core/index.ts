@@ -6,6 +6,7 @@
  */
 
 export { searchPubMed, fetchPubMed, NcbiClient } from "./pubmed.js";
+export { PROJECT_CONTACT_EMAIL } from "./version.js";
 export type { NcbiConfig } from "./pubmed.js";
 
 export { searchLiterature, fetchLiterature } from "./literature.js";
@@ -26,7 +27,7 @@ export { fetchFulltext } from "./fulltext.js";
 export type { FulltextDeps, FetchedResource } from "./fulltext.js";
 
 export { UnpaywallClient } from "./unpaywall.js";
-export type { UnpaywallConfig, UnpaywallResult } from "./unpaywall.js";
+export type { UnpaywallConfig, UnpaywallLookup, UnpaywallResult } from "./unpaywall.js";
 
 export { createCache, LRUBackend, NullCache, SQLiteBackend, FULLTEXT_TTL_MS, SUMMARY_TTL_MS } from "./cache.js";
 export type { Cache, CacheBackend, CacheOptions } from "./cache.js";

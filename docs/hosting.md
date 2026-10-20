@@ -36,7 +36,9 @@ The hosted endpoint is designed to know as little as possible:
 - **Queries leave the server.** Answering a tool call means sending its query
   or ids to the databases: NCBI, EMBL-EBI (Europe PMC), ChinaRxiv, and for full
   texts Unpaywall, doi.org and publishers; requests to NCBI, ChinaRxiv and
-  Unpaywall carry the operator's contact email.
+  Unpaywall carry the operator's contact email if one is set, and those to NCBI
+  and Unpaywall otherwise the project's. `MED_RESEARCH_UNPAYWALL=0` keeps DOIs
+  from Unpaywall, at the cost of the open-access copies only it knows.
   Tell your users, and see [compliance.md](compliance.md#data-flows) for what
   each service receives.
 
@@ -66,9 +68,11 @@ fill in the brackets and check it with your data-protection contact.
 > **Who else receives your queries:** to answer a call, the server sends its
 > query or ids, from the server's IP address, to NCBI/NLM (USA; PubMed),
 > EMBL-EBI (UK; Europe PMC) and ChinaRxiv (chinarxiv.org), and for full texts
-> to Unpaywall/OpenAlex (USA), the doi.org resolver and the publisher or
-> repository sites it points to. Requests to NCBI, ChinaRxiv and Unpaywall
-> include the operator's contact email. Each handles
+> to Unpaywall/OpenAlex (USA) [drop if `MED_RESEARCH_UNPAYWALL=0`], the doi.org
+> resolver and the publisher or repository sites it points to. [With
+> `NCBI_EMAIL` set:] Requests to NCBI, ChinaRxiv and Unpaywall include our
+> contact email. [Without it:] Requests to NCBI and Unpaywall include the
+> med-research-mcp project's contact address. Each handles
 > requests under its own privacy policy, and some are outside the EU/EEA. Our
 > hosting provider [name, country] processes connection data.
 >
@@ -227,7 +231,8 @@ lists the rest):
 | `MED_RESEARCH_ALLOWED_HOSTS` | unset | Comma-separated `Host` header allowlist; when set, DNS-rebinding protection is enabled. |
 
 Relevant non-HTTP variables, unchanged: `NCBI_EMAIL` (recommended),
-`NCBI_API_KEY`, `MED_RESEARCH_UNPAYWALL_EMAIL`, `MED_RESEARCH_CHINAXIV_EMAIL`,
+`NCBI_API_KEY`, `MED_RESEARCH_UNPAYWALL_EMAIL`, `MED_RESEARCH_UNPAYWALL` (`0`
+turns Unpaywall off), `MED_RESEARCH_CHINAXIV_EMAIL`,
 `MED_RESEARCH_FULLTEXT_MAX_CHARS`, `MED_RESEARCH_CACHE_BACKEND`,
 `MED_RESEARCH_CACHE_PATH` (see [Persistent cache](#persistent-cache-sqlite)).
 

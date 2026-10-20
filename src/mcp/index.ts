@@ -13,19 +13,10 @@
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { Cache } from "../core/index.js";
-import { buildCache, createServer } from "./server.js";
+import { buildCache, contactEmailWarning, createServer } from "./server.js";
 
-if (!process.env.NCBI_EMAIL) {
-  console.error(
-    "[med-research-mcp] NCBI_EMAIL is not set. NCBI's usage policy asks every request to carry a contact email, so NCBI can reach you before blocking an IP that exceeds its limits.",
-  );
-}
-
-if (!process.env.MED_RESEARCH_UNPAYWALL_EMAIL && !process.env.NCBI_EMAIL) {
-  console.error(
-    "[med-research-mcp] Neither MED_RESEARCH_UNPAYWALL_EMAIL nor NCBI_EMAIL is set. literature_fulltext needs a contact email to query Unpaywall for open-access copies; without one it can only try the institutional proxy and direct DOI access.",
-  );
-}
+const contactWarning = contactEmailWarning();
+if (contactWarning) console.error(contactWarning);
 
 // Built here (not inside createServer) so shutdown can close a persistent backend.
 const cache: Cache = buildCache();

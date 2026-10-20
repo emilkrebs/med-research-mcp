@@ -18,14 +18,16 @@ import {
   isMedResearchError,
   LRUBackend,
   NcbiClient,
+  PROJECT_CONTACT_EMAIL,
   PubMedAdapter,
   searchLiterature,
   STUDY_TYPES,
   type Cache,
   type CacheBackend,
   type DatabaseAdapter,
+  UnpaywallClient,
 } from "../core/index.js";
-import { packageVersion } from "../core/version.js";
+import { envSetting, packageVersion } from "../core/version.js";
 
 /** Re-exported for the HTTP entry and tests, which import it from here. */
 export { packageVersion };
@@ -33,6 +35,16 @@ export { packageVersion };
 function formatError(payload: { code: string; message: string; recoverable?: boolean }): string {
   const recoverable = payload.recoverable === true ? "yes" : "no";
   return `Error: ${payload.message} (${payload.code})\n\nDetails:\n${JSON.stringify(payload, null, 2)}\n\nRecoverable: ${recoverable}`;
+}
+
+/**
+ * The startup warning for an installation without its own contact email, whose PubMed (and
+ * Unpaywall) requests carry the project's address; undefined when NCBI_EMAIL is set.
+ */
+export function contactEmailWarning(): string | undefined {
+  if (envSetting("NCBI_EMAIL")) return undefined;
+  const services = new UnpaywallClient().sharedContact ? "PubMed and Unpaywall" : "PubMed";
+  return `[med-research-mcp] NCBI_EMAIL is not set, so ${services} requests carry the project's contact address (${PROJECT_CONTACT_EMAIL}). Set your own so NCBI can reach you directly before blocking an IP that exceeds its limits.`;
 }
 
 /** Cache from the MED_RESEARCH_CACHE_* env vars; falls back to in-memory if the backend is unavailable. */
@@ -63,6 +75,8 @@ export interface CreateServerOptions {
   cache?: Cache;
   /** NCBI client shared by the server's tools. Defaults to a new client. */
   ncbi?: NcbiClient;
+  /** Unpaywall client for literature_fulltext; sharing one reuses its answers. Defaults to a new client. */
+  unpaywall?: UnpaywallClient;
 }
 
 /**
@@ -76,6 +90,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   // One NCBI client shared across tool calls — its rate limiter serializes and
   // spaces *every* request so concurrent tool calls don't blow past NCBI's limit.
   const ncbi = options.ncbi ?? new NcbiClient();
+  const unpaywall = options.unpaywall ?? new UnpaywallClient({ tool: ncbi.tool });
 
   // NCBI adapter bound to the shared NcbiClient so all literature_* tools reuse
   // the same rate limiter (the registry's default adapter would otherwise create
@@ -273,7 +288,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     },
     async (args) => {
       try {
-        const result = await fetchFulltext({ id: args.id, ...(args.doi ? { doi: args.doi } : {}) }, cache, ncbi);
+        const result = await fetchFulltext({ id: args.id, ...(args.doi ? { doi: args.doi } : {}) }, cache, ncbi, { unpaywall });
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };

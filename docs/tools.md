@@ -57,7 +57,7 @@ Tries, in order: Europe PMC's full-text API, when the record has a PMCID (no ema
 
 A web page counts as the full text only if it holds at least 2,000 characters besides its abstract, keywords, references and similar front and back matter. A paywalled article's page shows the abstract and little else, and so does arXiv's abstract page; those fall through to the next route. Sections a publisher's page adds that aren't the article, such as "Similar content being viewed by others" or "Cited by", are removed from the text.
 
-When it falls back, `warning` says what each route answered: Unpaywall not asked because no contact email is set, no open-access copy, the publisher refused access (HTTP 403, paywalled or blocking automated clients), the page held only the abstract, doi.org doesn't know the DOI, and so on, with what to do about it. A DOI that doi.org doesn't know returns `NOT_FOUND` when there's no abstract to return either.
+When it falls back, `warning` says what each route answered: no open-access copy, Unpaywall couldn't be asked (an HTTP error, a timeout, or turned off), the publisher refused access (HTTP 403, paywalled or blocking automated clients), the page held only the abstract, doi.org doesn't know the DOI, and so on, with what to do about it. A DOI that doi.org doesn't know returns `NOT_FOUND` when there's no abstract to return either.
 
 ChinaXiv and RussiaRxiv records have neither DOI nor PMCID, so they can't be resolved; the tool says so, and their `url` links the record.
 

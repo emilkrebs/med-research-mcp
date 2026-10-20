@@ -36,8 +36,8 @@ import { BlockedUrlError, fetchPublic } from "./public-fetch.js";
 import { NcbiClient } from "./pubmed.js";
 import type { FulltextInput, FulltextOutput, FulltextSource, Article } from "./types.js";
 import { UnpaywallClient } from "./unpaywall.js";
-import type { UnpaywallResult } from "./unpaywall.js";
-import { USER_AGENT } from "./version.js";
+import type { UnpaywallLookup } from "./unpaywall.js";
+import { envSetting, USER_AGENT } from "./version.js";
 
 const DEFAULT_MAX_CHARS = 50_000;
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -73,7 +73,7 @@ export interface FetchedResource {
 
 /** Injectable seams. Defaults hit the network and load the extraction libraries. */
 export interface FulltextDeps {
-  /** Unpaywall client. Defaults to one configured from env. */
+  /** Unpaywall client. Defaults to one configured from env, for the NCBI client's `tool`. */
   unpaywall?: UnpaywallClient;
   /** Fetch a URL, classifying the body as HTML text or PDF bytes. */
   fetchUrl?: (url: string, timeoutMs: number) => Promise<FetchedResource>;
@@ -179,7 +179,7 @@ export async function fetchFulltext(
     );
   }
 
-  const proxyPrefix = (deps.proxyPrefix ?? process.env.MED_RESEARCH_PROXY_PREFIX)?.trim() || undefined;
+  const proxyPrefix = deps.proxyPrefix === undefined ? envSetting("MED_RESEARCH_PROXY_PREFIX") : deps.proxyPrefix.trim() || undefined;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const fetchUrl = deps.fetchUrl ?? defaultFetchUrl;
   const htmlToMarkdown = deps.htmlToMarkdown ?? defaultHtmlToMarkdown;
@@ -244,18 +244,13 @@ export async function fetchFulltext(
     const out = await attempt("europepmc", [`${EUROPE_PMC_FULLTEXT}${pmcid}/fullTextXML`]);
     if (out) return out;
   }
-  const unpaywall = deps.unpaywall ?? new UnpaywallClient();
-  let unpaywallState: "unconfigured" | "none" | "found" | "skipped" = "skipped";
+  const unpaywall = deps.unpaywall ?? new UnpaywallClient({ tool: client.tool });
+  let unpaywallAnswer: UnpaywallLookup | undefined;
   if (doi) {
-    if (!unpaywall.configured) {
-      unpaywallState = "unconfigured";
-    } else {
-      const oa = await safeUnpaywall(unpaywall, doi);
-      const urls = oa ? openAccessUrls(oa.urls) : [];
-      unpaywallState = urls.length > 0 ? "found" : "none";
-      const out = await attempt("unpaywall", urls);
-      if (out) return out;
-    }
+    unpaywallAnswer = await safeLookup(unpaywall, doi);
+    const urls = unpaywallAnswer.status === "found" ? openAccessUrls(unpaywallAnswer.result.urls) : [];
+    const unpaywallOut = await attempt("unpaywall", urls);
+    if (unpaywallOut) return unpaywallOut;
     if (proxyPrefix) {
       const out = await attempt("proxy", [proxyUrl(proxyPrefix, doi)]);
       if (out) return out;
@@ -272,7 +267,15 @@ export async function fetchFulltext(
     id,
     doi,
     text,
-    fallbackWarning({ doi, pmcid, abstract: Boolean(text), unpaywall: unpaywallState, proxyConfigured: Boolean(proxyPrefix), misses }),
+    fallbackWarning({
+      doi,
+      pmcid,
+      abstract: Boolean(text),
+      unpaywall: unpaywallAnswer,
+      unpaywallSharedContact: unpaywall.sharedContact,
+      proxyConfigured: Boolean(proxyPrefix),
+      misses,
+    }),
   );
 }
 
@@ -314,11 +317,12 @@ function openAccessUrls(urls: string[]): string[] {
   return out;
 }
 
-async function safeUnpaywall(client: UnpaywallClient, doi: string): Promise<UnpaywallResult | null> {
+/** The client's answer; an injected client that throws counts as a failed lookup. */
+async function safeLookup(client: UnpaywallClient, doi: string): Promise<UnpaywallLookup> {
   try {
-    return await client.resolve(doi);
+    return await client.lookup(doi);
   } catch {
-    return null;
+    return { status: "failed" };
   }
 }
 
@@ -405,7 +409,10 @@ function fallbackWarning(ctx: {
   doi: string | undefined;
   pmcid: string | undefined;
   abstract: boolean;
-  unpaywall: "unconfigured" | "none" | "found" | "skipped";
+  /** What Unpaywall answered; undefined when there was no DOI to ask about. */
+  unpaywall: UnpaywallLookup | undefined;
+  /** Whether Unpaywall requests carry the project's shared contact address. */
+  unpaywallSharedContact: boolean;
   proxyConfigured: boolean;
   misses: Miss[];
 }): string {
@@ -420,13 +427,25 @@ function fallbackWarning(ctx: {
         : `Europe PMC's full text for ${ctx.pmcid} ${describeMiss(europePmc)}.`,
     );
   }
-  if (ctx.unpaywall === "unconfigured") {
-    parts.push("Open-access copies weren't looked up: set NCBI_EMAIL (or MED_RESEARCH_UNPAYWALL_EMAIL) so Unpaywall can find them.");
-  } else if (ctx.unpaywall === "none") {
-    parts.push("Unpaywall found no open-access copy.");
-  } else if (ctx.unpaywall === "found") {
+  const unpaywall = ctx.unpaywall;
+  if (unpaywall?.status === "off") {
+    parts.push("Open-access copies weren't looked up: Unpaywall is turned off (MED_RESEARCH_UNPAYWALL=0) or has no contact email.");
+  } else if (unpaywall?.status === "failed") {
+    const status = unpaywall.httpStatus;
+    const answer = status === undefined ? "couldn't be reached" : status === 429 ? "rate-limited the lookup (HTTP 429)" : `answered HTTP ${status}`;
+    parts.push(`Unpaywall ${answer}, so open-access copies weren't looked up.`);
+    // A client error may be about the address, which every installation without its own shares.
+    if (ctx.unpaywallSharedContact && status !== undefined && status >= 400 && status < 500) {
+      parts.push("The lookup carried the project's shared contact address: set your own in NCBI_EMAIL or MED_RESEARCH_UNPAYWALL_EMAIL.");
+    }
+  } else if (unpaywall) {
     const reasons = [...new Set(of("unpaywall").map(describeMiss))];
-    parts.push(`None of Unpaywall's open-access copies yielded the text (${reasons.join("; ")}).`);
+    if (reasons.length > 0) {
+      parts.push(`None of Unpaywall's open-access copies yielded the text (${reasons.join("; ")}).`);
+    } else {
+      // "found" with nothing tried: its only copies were PMC's or Europe PMC's, already tried by PMCID or not fetchable.
+      parts.push(unpaywall.status === "found" && ctx.pmcid ? "Unpaywall lists no other open-access copy." : "Unpaywall found no open-access copy.");
+    }
   }
   const proxy = of("proxy")[0];
   if (proxy) parts.push(`The proxy ${describeMiss(proxy)}; it works only if it lets this machine in without a login.`);

@@ -11,7 +11,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import type { Cache, NcbiClient } from "../core/index.js";
+import type { Cache, NcbiClient, UnpaywallClient } from "../core/index.js";
 import { createServer } from "../mcp/server.js";
 
 export interface McpHandlerDeps {
@@ -19,6 +19,8 @@ export interface McpHandlerDeps {
   cache: Cache;
   /** Process-wide NCBI client, so all requests share one rate limiter. */
   ncbi: NcbiClient;
+  /** Process-wide Unpaywall client, so all requests reuse its answers. Defaults to a new one per request. */
+  unpaywall?: UnpaywallClient;
   /** Host header allowlist for DNS-rebinding protection; empty disables it. */
   allowedHosts: string[];
 }
@@ -40,9 +42,9 @@ export async function handleMcpPost(
     allowedHosts: deps.allowedHosts,
   });
 
-  // Shared state (cache, NCBI rate limiter) is injected; the server object
-  // itself is per-request and dies with the response.
-  const server = createServer({ cache: deps.cache, ncbi: deps.ncbi });
+  // Shared state (cache, NCBI rate limiter, Unpaywall answers) is injected; the
+  // server object itself is per-request and dies with the response.
+  const server = createServer({ cache: deps.cache, ncbi: deps.ncbi, unpaywall: deps.unpaywall });
 
   res.on("close", () => {
     void transport.close();

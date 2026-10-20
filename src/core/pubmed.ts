@@ -9,7 +9,7 @@ import { LRUCache } from "lru-cache";
 import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors } from "./errors.js";
-import { USER_AGENT } from "./version.js";
+import { contactEmail, envSetting, PROJECT_TOOL, USER_AGENT } from "./version.js";
 import { classifyArticle, designPublicationTypes, unclassifiedDroppedWarning } from "./grader.js";
 import { CORRECTION_TYPES } from "./types.js";
 import type { Correction, CorrectionType, FetchInput, FetchOutput, GradedArticle, Article, SearchInput, SearchOutput, StudyType } from "./types.js";
@@ -39,11 +39,17 @@ const MAX_RETRY_WAIT_S = 5;
 const DEFAULT_SEARCH_TTL_MS = 60 * 60 * 1000;
 
 export interface NcbiConfig {
-  /** Contact email — NCBI asks for one on every request. Defaults to $NCBI_EMAIL. */
+  /**
+   * Contact email — NCBI asks for one on every request. Defaults to $NCBI_EMAIL, then, with the
+   * default `tool`, to PROJECT_CONTACT_EMAIL. A blank email sends none.
+   */
   email?: string;
   /** API key raises the rate limit from 3 to 10 req/s. Defaults to $NCBI_API_KEY. */
   apiKey?: string;
-  /** Identifies the client to NCBI. */
+  /**
+   * Identifies the client to NCBI. Defaults to "med-research-mcp"; software built on this client
+   * should send its own, with its own `email`.
+   */
   tool?: string;
   /** esearch count above which QUERY_TOO_BROAD is thrown. */
   broadThreshold?: number;
@@ -115,7 +121,8 @@ function toArray<T>(value: T | T[] | undefined | null): T[] {
 export class NcbiClient {
   private readonly email: string | undefined;
   private readonly apiKey: string | undefined;
-  private readonly tool: string;
+  /** The `tool` name sent to NCBI; fetchFulltext gives it to its default UnpaywallClient. */
+  readonly tool: string;
   private readonly broadThreshold: number;
   private readonly timeoutMs: number;
   private readonly limiter: RateLimiter;
@@ -123,9 +130,10 @@ export class NcbiClient {
   private readonly searches: LRUCache<string, { count: number; pmids: string[] }> | null;
 
   constructor(config: NcbiConfig = {}) {
-    this.email = config.email ?? process.env.NCBI_EMAIL;
-    this.apiKey = config.apiKey ?? process.env.NCBI_API_KEY;
-    this.tool = config.tool ?? "med-research-mcp";
+    this.tool = config.tool ?? PROJECT_TOOL;
+    // Only the default tool falls back to the developer contact: NCBI registers tool and email as a pair.
+    this.email = contactEmail(config.email, ["NCBI_EMAIL"], this.tool);
+    this.apiKey = config.apiKey ?? envSetting("NCBI_API_KEY");
     this.broadThreshold = config.broadThreshold ?? DEFAULT_BROAD_THRESHOLD;
     this.timeoutMs = config.timeoutMs ?? 15_000;
     this.limiter = new RateLimiter(this.apiKey ? 10 : 3);

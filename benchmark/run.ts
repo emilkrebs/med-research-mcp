@@ -33,6 +33,7 @@ import { pathToFileURL } from "node:url";
 import { DEFAULTS, NORMALIZATION, WEIGHTS, missingKeyFor, type ModelSpec } from "./lib/config.js";
 import { QUERIES, queryById } from "./lib/queries.js";
 import { runOne } from "./lib/agent.js";
+import { envSetting } from "./lib/core.js";
 import { ProgressReporter } from "./lib/progress.js";
 import { colorEnabled, palette, type Palette } from "./lib/color.js";
 import { CliError, helpText, parseCli, type CliOptions } from "./lib/cli.js";
@@ -120,7 +121,7 @@ function preflight(models: ModelSpec[], conditions: ConditionId[]): string[] {
     if (missing) problems.push(`Missing ${missing} (model ${m.label})`);
   }
   if (conditions.includes("web-search") && !process.env.BRAVE_API_KEY) problems.push("Missing BRAVE_API_KEY (condition B)");
-  if ((conditions.includes("mcp") || conditions.includes("mcp-skill")) && !process.env.NCBI_EMAIL) console.warn("⚠️  NCBI_EMAIL not set — NCBI's usage policy asks for a contact email, so it can reach you before blocking your IP.");
+  if ((conditions.includes("mcp") || conditions.includes("mcp-skill")) && !envSetting("NCBI_EMAIL")) console.warn("⚠️  NCBI_EMAIL not set — PubMed requests carry the project's contact address instead. Set your own: a run sends over 100 requests, and NCBI contacts that address before blocking your IP.");
   return problems;
 }
 

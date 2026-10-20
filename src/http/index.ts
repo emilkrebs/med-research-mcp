@@ -16,8 +16,8 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer as createNodeHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { NcbiClient, type Cache } from "../core/index.js";
-import { buildCache, createServer, packageVersion } from "../mcp/server.js";
+import { NcbiClient, UnpaywallClient, type Cache } from "../core/index.js";
+import { buildCache, contactEmailWarning, createServer, packageVersion } from "../mcp/server.js";
 import { handleMcpPost } from "./handler.js";
 import { anonymizeIp, clientIp, ConcurrencyLimiter, TokenBucketLimiter } from "./limits.js";
 
@@ -125,6 +125,8 @@ export interface HttpServerDeps {
   cache: Cache;
   /** Process-wide NCBI client, so all requests share one rate limiter. */
   ncbi: NcbiClient;
+  /** Process-wide Unpaywall client, so all requests reuse its answers. Defaults to a new one per request. */
+  unpaywall?: UnpaywallClient;
   config: HttpConfig;
 }
 
@@ -218,7 +220,7 @@ export function createHttpServer(deps: HttpServerDeps): Server {
     try {
       // The transport writes its own response headers; pre-set CORS so browsers can read the result.
       for (const [name, value] of Object.entries(CORS_HEADERS)) res.setHeader(name, value);
-      await handleMcpPost(req, res, body.body, { cache: deps.cache, ncbi: deps.ncbi, allowedHosts: config.allowedHosts });
+      await handleMcpPost(req, res, body.body, { cache: deps.cache, ncbi: deps.ncbi, unpaywall: deps.unpaywall, allowedHosts: config.allowedHosts });
     } finally {
       release();
     }
@@ -257,16 +259,14 @@ async function main(): Promise<void> {
         "This is acceptable for evaluation only; set a token or firewall the port for anything else.",
     );
   }
-  if (!process.env.NCBI_EMAIL) {
-    console.error(
-      "[med-research-mcp] NCBI_EMAIL is not set. NCBI's usage policy asks every request to carry a contact email, so NCBI can reach you before blocking an IP that exceeds its limits.",
-    );
-  }
+  const contactWarning = contactEmailWarning();
+  if (contactWarning) console.error(contactWarning);
 
   // Built once and shared by every request — the whole point of the hosted entry.
   const cache: Cache = buildCache();
   const ncbi = new NcbiClient();
-  const server = createHttpServer({ cache, ncbi, config });
+  const unpaywall = new UnpaywallClient({ tool: ncbi.tool });
+  const server = createHttpServer({ cache, ncbi, unpaywall, config });
   scheduleVacuum(cache);
 
   function shutdown(signal: string): void {

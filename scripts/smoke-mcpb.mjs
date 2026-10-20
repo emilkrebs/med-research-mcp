@@ -10,9 +10,10 @@
  * local server. That exercises the parts a bundle can break: jsdom and
  * Readability for HTML, pdf.js and its inlined worker for PDF. The HTML page is
  * laid out like an article (an abstract, then enough body to pass the
- * landing-page check). No network: without a contact email the Unpaywall lookup
- * is skipped, the ids aren't PMIDs so no abstract is looked up in PubMed, and the
- * address check is opted out for the local server with MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE.
+ * landing-page check). No network: Unpaywall is turned off with
+ * MED_RESEARCH_UNPAYWALL=0, the ids aren't PMIDs so no abstract is looked up in
+ * PubMed, and the address check is opted out for the local server with
+ * MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE.
  */
 
 import { spawn } from "node:child_process";
@@ -78,6 +79,7 @@ const env = { ...process.env };
 for (const name of ["NCBI_EMAIL", "NCBI_API_KEY", "MED_RESEARCH_UNPAYWALL_EMAIL", "MED_RESEARCH_CHINAXIV_EMAIL"]) delete env[name];
 env.MED_RESEARCH_PROXY_PREFIX = `http://127.0.0.1:${port}/proxy`;
 env.MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE = "1";
+env.MED_RESEARCH_UNPAYWALL = "0";
 
 const child = spawn(process.execPath, [entry], { cwd: tmpdir(), env, stdio: ["pipe", "pipe", "inherit"] });
 const pending = new Map();

@@ -91,6 +91,12 @@ describe("chinaxivHeaders (X-API-Email)", () => {
     expect(chinaxivHeaders()).toEqual({ "X-API-Email": "ncbi@example.com" });
   });
 
+  it("treats a placeholder the MCP host left unfilled as unset", () => {
+    vi.stubEnv("MED_RESEARCH_CHINAXIV_EMAIL", "${user_config.chinaxivEmail}");
+    vi.stubEnv("NCBI_EMAIL", "ncbi@example.com");
+    expect(chinaxivHeaders()).toEqual({ "X-API-Email": "ncbi@example.com" });
+  });
+
   it("sends no X-API-Email when neither email is set", async () => {
     expect(chinaxivHeaders()).toEqual({});
     expect((await sentHeaders())["X-API-Email"]).toBeUndefined();
