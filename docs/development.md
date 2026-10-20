@@ -18,9 +18,11 @@ Requires Node.js 22.22.2 or later on 22, 24.15.0 or later on 24, or 26+ (the flo
 | `npm run start:http` | Run the built HTTP server (`node dist/http/index.js`); see [hosting.md](hosting.md). |
 | `npm test` | Run the test suite with [vitest](https://vitest.dev/). `npm run test:watch` re-runs on change. |
 | `npm run typecheck` | Type-check without emitting. |
-| `npm run build:mcpb` | Bundle the server with esbuild and pack `dist/med-research-mcp.mcpb` for Claude Desktop. |
+| `npm run build:mcpb` | Bundle the server with esbuild and pack `dist/med-research-mcp.mcpb` for Claude Desktop (see below). |
 
 The build uses tsup rather than plain `tsc` because it emits **both ESM and CommonJS** for every entry point (`dist/core/index.js` and `.cjs`, and so on). The MCP server runs as ESM, while CommonJS consumers `require()` `med-research-mcp/core` from the same package. A plain `tsc` build produces one module format and would break one side. Both builds inline the package version (`__MED_RESEARCH_VERSION__`, read by `src/core/version.ts`), because the `.mcpb` bundle ships without a `package.json`.
+
+The `.mcpb` is one esbuild bundle plus two exceptions ([`scripts/build-mcpb.mjs`](../scripts/build-mcpb.mjs)). jsdom reads its own files at runtime, so it stays outside the bundle and its dependency tree, plain JavaScript, is copied into `mcpb/server/node_modules`. pdf-parse loads pdf.js's worker from a file and gets `DOMMatrix` from a native module that can't ship in a cross-platform bundle, so the worker is inlined as a data URL and `src/core/fulltext.ts` installs a small `DOMMatrix` of its own. [`scripts/smoke-mcpb.mjs`](../scripts/smoke-mcpb.mjs) checks the result end to end.
 
 ## Layout
 
@@ -43,7 +45,7 @@ The build uses tsup rather than plain `tsc` because it emits **both ESM and Comm
 
 ## CI
 
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on every push to `main` and every pull request, on Node 22.22.2, 24 and 26: typecheck, tests, both builds, a smoke test that unpacks the `.mcpb` and checks it answers `initialize` with the package version, and the benchmark harness's offline tests.
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on every push to `main` and every pull request, on Node 22.22.2, 24 and 26: typecheck, tests, both builds, a smoke test that unpacks the `.mcpb`, checks it answers `initialize` with the package version and resolves an HTML page and a PDF through it from a local server, and the benchmark harness's offline tests.
 
 ## Releasing
 

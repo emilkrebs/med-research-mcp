@@ -10,17 +10,23 @@ Changes since 0.5.0:
 
 ### Security
 
-- `literature_fulltext` no longer fetches from loopback, private, link-local, CGNAT or reserved addresses. The URLs it follows come from Unpaywall and from DOI registrants; on a hosted deployment, a DOI redirecting to a cloud metadata endpoint could otherwise have exposed credentials. Every redirect is checked, host names are checked at connect time (no DNS rebinding), and bodies over 30 MB are refused.
+- `literature_fulltext` no longer fetches from loopback, private, link-local, CGNAT or reserved addresses. The URLs it follows come from Unpaywall and from DOI registrants; on a hosted deployment, a DOI redirecting to a cloud metadata endpoint could otherwise have exposed credentials. Every redirect is checked, host names are checked at connect time (no DNS rebinding), and bodies over 30 MB are refused. On a personal machine behind a fake-IP DNS proxy, `MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE=1` turns the address check off, and the warning says so when it applies.
 
 ### Compliance
 
-- Open-access copies hosted by PubMed Central or Europe PMC are fetched through Europe PMC's full-text API instead of their websites, whose terms forbid automated downloading.
+- Open-access copies that Unpaywall finds on PubMed Central or Europe PMC (articles and preprints) are fetched through Europe PMC's full-text API instead of their websites, whose terms forbid automated downloading. The JATS XML is converted to markdown with tables row by row, and an article Europe PMC has only as an abstract doesn't pass for full text.
 - Only open-access full texts are cached. Texts from the institutional proxy or the direct DOI route may be licensed to one user, and the cache can be persistent or shared.
 - The `literature_search` query description tells the model never to put details that identify a person into a query.
 - The README now carries NCBI's disclaimer and copyright notice, which NCBI requires to be "evident to users", and credits Europe PMC, Unpaywall and ChinaRxiv.
 
 ### Fixed
 
+- In the Claude Desktop bundle (`.mcpb`), every HTML and PDF full text failed to extract and fell back to the abstract: jsdom and pdf-parse can't be bundled. jsdom now ships beside the bundle, pdf.js's worker is inlined, and CI resolves an HTML page and a PDF through the unpacked bundle.
+- With `database: "all"` and `language: "ru"`, RussiaRxiv records came back twice; repeated ids from the same database are now merged.
+- `literature_search` turned every failure into a warning, even when the only database searched failed, so a rate limit or an over-broad PubMed query came back as an empty result that reads as "no studies exist". When every database it searched fails, it now returns the error (`RATE_LIMIT` with `retryAfter`, `QUERY_TOO_BROAD`, …); partial failures stay warnings, worded with the error's actionable message.
+- PubMed field tags reached Europe PMC and ChinaRxiv unchanged, where they're searched as words (Europe PMC: 16 records for `creatine AND cognition[tiab]`, 7,179 without the tag). They're now removed for those databases.
+- `literature_fetch` on `europepmc` with a `PMC…` id returned the record but also listed the id as missing; records now carry `pmcid`.
+- With `MED_RESEARCH_TRUST_PROXY=1`, the HTTP server rate-limited by the first `X-Forwarded-For` entry, which the client controls behind a proxy that appends to the header. It now uses the last entry, the one the proxy added.
 - `russiarxiv`: `literature_fetch` looked ids up with a text search and returned the first hit unchecked, which could be a different paper. It now uses the exact-id endpoint and returns the complete record, not the 500-character search preview.
 - `chinaxiv` searches mixed RussiaRxiv records into their results and counted them in `total`; each adapter now asks for its own corpus.
 - ChinaXiv and RussiaRxiv records linked a relative API path or a 404 page as their `url`; it is now the record's English page, and `originalUrl` links the original.
@@ -35,7 +41,7 @@ Changes since 0.5.0:
 ### Added
 
 - Flags `machine-translated` and `machine-generated-abstract` on ChinaXiv and RussiaRxiv records, from ChinaRxiv's metadata: their English text is machine-translated, and almost every RussiaRxiv abstract was written by ChinaRxiv, not the authors. The records also carry `originalUrl`.
-- `dateRange` now filters `chinaxiv` and `russiarxiv` searches too.
+- `dateRange` now filters `chinaxiv` and `russiarxiv` searches too, and accepts `YYYY` or `YYYY-MM` as well as `YYYY-MM-DD`.
 
 ### Documentation
 

@@ -1,6 +1,6 @@
 ---
 name: med-research-ebm
-description: Load ONLY when critically appraising a study or deciding whether a paper is trustworthy enough to drive a real decision — risk of bias (Cochrane RoB 2 / ROBINS-I / ROBINS-E), AMSTAR 2 / ROBIS for reviews, effect sizes / confidence intervals / NNT, heterogeneity (I²), prediction intervals and funnel-plot bias, Bradford Hill causation, applicability/external validity, funding and conflicts of interest, selective publication. Not needed for simple lookups or searches; load the `med-research` workflow skill for query patterns, the 0–5 design tiers and the ground rules of evidence.
+description: Load ONLY when critically appraising a study or deciding whether a paper is trustworthy enough to rely on — risk of bias (Cochrane RoB 2 / ROBINS-I / ROBINS-E), AMSTAR 2 / ROBIS for reviews, effect sizes / confidence intervals / NNT, heterogeneity (I²), prediction intervals and funnel-plot bias, Bradford Hill causation, applicability/external validity, funding and conflicts of interest, selective publication. Not needed for simple lookups or searches; load the `med-research` workflow skill for query patterns, the 0–5 design tiers and the ground rules of evidence.
 ---
 
 # EBM critical appraisal — the `med-research-ebm` reference
@@ -127,7 +127,7 @@ actual patients.
 > replicated by an independent non-conflicted group, and the benefit outweighs the
 > harms and costs in that context. Anything less is a graded hypothesis, not a fact.
 
-## Quality checklist (run when a paper might drive a decision)
+## Quality checklist (run when a conclusion will rest on a paper)
 
 1. **Design and flags.** `designTier` 4–5 is a strong *design*, nothing more. A `flags` entry of `retracted`, `notice`, `protocol` or `editorial` ends the appraisal: it is not evidence. `expression-of-concern`: don't rely on it alone. `updated`: appraise the newer version. `corrected`: check the erratum before quoting numbers. `animals-not-humans`: confirm whether humans were studied.
 2. **Confirm the design yourself.** `studyType` is NLM's label, often machine-assigned; `unknown` means there is none. `clinical-trial` and `observational` hide the specific design, an `RCT` label can be a secondary analysis, a `review` may be systematic, and an unrated meta-analysis needs its pooled designs read. Check the Methods.

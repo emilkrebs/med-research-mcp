@@ -15,7 +15,7 @@ What med-research-mcp is for, where its data goes, what the services it calls re
 
 ## Intended use
 
-> med-research-mcp is a literature search and retrieval tool for research and education. It finds published scientific records (PubMed, Europe PMC, ChinaXiv and RussiaRxiv), labels each with the study design recorded in its bibliographic metadata, and retrieves openly available full texts. It is not intended to diagnose, prevent, monitor, predict, treat or alleviate any disease, to provide dosing or treatment recommendations, or to inform decisions about the care of an individual patient, and it does not process patient data. It is not a medical device and has not been assessed by any regulator. Design labels describe how a study was indexed, not whether its results are valid or apply to anyone.
+> med-research-mcp is a literature search and retrieval tool for research and education. It finds published scientific records (PubMed, Europe PMC, ChinaXiv and RussiaRxiv), labels each with the study design recorded in its bibliographic metadata, and retrieves full texts that are openly available or, if the user configures it, available through their institution's access. It is not intended to diagnose, prevent, monitor, predict, treat or alleviate any disease, to provide dosing or treatment recommendations, or to inform decisions about the care of an individual patient, and it does not process patient data. It is not a medical device and has not been assessed by any regulator. Design labels describe how a study was indexed, not whether its results are valid or apply to anyone.
 
 Whether software is a medical device depends on its intended purpose, as the manufacturer states it in labelling, instructions and promotion (EU MDR 2017/745, Art. 2(12); for the US, 21 CFR 801.4). Retrieving and labelling literature falls outside the definitions as long as nothing turns it into advice about a specific patient:
 
@@ -65,7 +65,7 @@ NCBI's guidelines describe `email` both as the software developer's address, "no
 ### Europe PMC and PubMed Central
 
 - The REST API is the sanctioned route; [EMBL-EBI's terms of use](https://www.ebi.ac.uk/about/terms-of-use) expect attribution, which the README gives.
-- Neither site allows automated downloading of articles from its website. [PMC](https://pmc.ncbi.nlm.nih.gov/about/copyright/): "Do not use any other automated processes for downloading articles, even if you are only retrieving articles from the PMC Article Datasets (including the PMC Open Access Subset)". [Europe PMC](https://europepmc.org/Copyright) names its OAI, RESTful, SOAP and bulk services as the only ones for automated downloading. `literature_fulltext` therefore fetches PMC-hosted copies from Europe PMC's full-text API and never from either website ([how-it-works.md](how-it-works.md#literature_fulltext)).
+- Neither site allows automated downloading of articles from its website. [PMC](https://pmc.ncbi.nlm.nih.gov/about/copyright/): "Do not use any other automated processes for downloading articles, even if you are only retrieving articles from the PMC Article Datasets (including the PMC Open Access Subset)". [Europe PMC](https://europepmc.org/Copyright) names its OAI, RESTful, SOAP and bulk services as the only ones for automated downloading. `literature_fulltext` therefore fetches the PubMed Central and Europe PMC copies that Unpaywall lists from Europe PMC's full-text API instead of either website ([how-it-works.md](how-it-works.md#literature_fulltext)).
 
 ### Unpaywall
 

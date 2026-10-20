@@ -32,7 +32,7 @@ claude mcp get med-research-mcp      # expect: Status ✓ Connected
 Tools appear in **new** Claude Code sessions.
 
 ### Claude Desktop (.mcpb — easiest for non-technical users)
-Download `med-research-mcp.mcpb` from the repository's latest GitHub release (or build it: `npm run build:mcpb` in a clone writes `dist/med-research-mcp.mcpb`) and drag it onto Claude Desktop. The installer prompts for the NCBI contact email (required) plus optional NCBI API key, Unpaywall email, and institutional proxy prefix — no JSON editing. Note: `.mcpb` installs do **not** load the companion skills; install them in Step 3.
+Download `med-research-mcp.mcpb` from the repository's latest GitHub release (or build it: `npm run build:mcpb` in a clone writes `dist/med-research-mcp.mcpb`) and drag it onto Claude Desktop. The installer prompts for the NCBI contact email (required) plus optional NCBI API key, Unpaywall email, and institutional proxy prefix — no JSON editing. Note: `.mcpb` installs do **not** load the companion skills; see Step 3.
 
 ### Cursor and other JSON configs (`mcpServers`)
 ```json
@@ -97,8 +97,9 @@ Find the absolute path (`pwd`) and use `node <REPO>/dist/mcp/index.js` as the co
 | `MED_RESEARCH_UNPAYWALL_EMAIL` | optional | Contact email for Unpaywall lookups (`literature_fulltext`). Falls back to `NCBI_EMAIL`. |
 | `MED_RESEARCH_PROXY_PREFIX` | optional | EZproxy-style DOI prefix for off-campus full text — `literature_fulltext` prepends it to the DOI, e.g. `https://doi-org.ezproxy.your-university.edu`. Works only if the proxy lets the machine in without a login (campus network or VPN); a proxy login in the browser isn't used. Use only if the institution's licences allow it: many publishers forbid using subscription content with AI tools. |
 | `MED_RESEARCH_CACHE_BACKEND` | optional | `memory` (default) or `sqlite` (persistent, survives restarts). `sqlite` needs `better-sqlite3`, an optional native dependency; if it isn't installed or fails to load, the server warns and uses `memory`. `.mcpb` installs always use `memory`. |
-| `MED_RESEARCH_CACHE_PATH` | optional | SQLite file path when the backend is `sqlite` (default `./pubmed-cache.db`; `:memory:` for ephemeral). |
+| `MED_RESEARCH_CACHE_PATH` | optional | SQLite file path when the backend is `sqlite` (default `./pubmed-cache.db`, relative to the directory the client starts the server in, so use an absolute path; `:memory:` for ephemeral). |
 | `MED_RESEARCH_FULLTEXT_MAX_CHARS` | optional | Cap on returned full-text length. Default 50000; longer bodies are truncated (`truncated: true`). |
+| `MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE` | optional | `1` lets full-text fetches reach private or reserved addresses, refused by default. Only for a personal machine behind a fake-IP DNS proxy (Clash, Surge, sing-box TUN mode) or split-horizon DNS — never on a shared server. |
 
 ## Step 3 — Install the companion skills
 
@@ -107,6 +108,8 @@ So the AI actually uses the tools well, install the usage skill `med-research` a
 mkdir -p ~/.claude/skills && cp -r <REPO>/skills/med-research <REPO>/skills/med-research-ebm ~/.claude/skills/
 ```
 Without a clone, fetch them first: `git clone --depth 1 https://github.com/emilkrebs/med-research-mcp.git /tmp/med-research-mcp` and copy from `/tmp/med-research-mcp/skills/`. Use `.claude/skills/` instead of `~/.claude/skills/` for a single project. Skills load in new sessions.
+
+Claude Desktop (and claude.ai) don't read skills from a folder: zip each skill folder (`med-research`, `med-research-ebm`) and upload it under Customize → Skills → "+" → "Upload a skill". "Code execution and file creation" must be on under Settings → Capabilities.
 
 ## Step 4 — Verify
 
@@ -119,5 +122,5 @@ Start a new session with the client and run a `literature_search` for `creatine 
 - **Tools don't show up** → MCP servers load at client startup; restart the session.
 - **Throttling / RATE_LIMIT** → the error names the database that throttled; wait `retryAfter` seconds. For PubMed, add `NCBI_API_KEY` (10 instead of 3 requests per second), and set `NCBI_EMAIL` so NCBI can reach the user before blocking an IP.
 - **`QUERY_TOO_BROAD`** → the query is too generic; add `[tiab]`/`[mesh]` field tags or `AND` clauses.
-- **Full text always falls back to the abstract** → most papers are paywalled; check that an email is set (Unpaywall needs one), or configure `MED_RESEARCH_PROXY_PREFIX` with an active proxy session.
+- **Full text always falls back to the abstract** → most papers are paywalled; check that an email is set (Unpaywall needs one). If the warning says locations were refused for their addresses and the user runs a fake-IP DNS proxy (Clash, Surge, sing-box TUN mode), set `MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE=1` on their personal machine. Otherwise, or, where the user's institution licenses this use, configure `MED_RESEARCH_PROXY_PREFIX` (it works only if the proxy lets the machine in without a login, e.g. on the campus network or VPN).
 - **Connection check** (Claude Code): `claude mcp get med-research-mcp`. Remove with `claude mcp remove med-research-mcp -s user`.

@@ -88,8 +88,9 @@ Set these in the `env` block of your MCP client's configuration. All are optiona
 | `MED_RESEARCH_CHINAXIV_EMAIL` | Contact email for ChinaRxiv, which serves the `chinaxiv` and `russiarxiv` sources; raises its rate limit from 30 to 300 requests per minute. |
 | `MED_RESEARCH_PROXY_PREFIX` | Your institution's EZproxy host for doi.org, e.g. `https://doi-org.ezproxy.your-university.edu`, to read paywalled papers you have access to. It works only if the proxy lets this machine in without a login, e.g. on the campus network or VPN. Use it only if your institution's licences allow it: many publishers forbid using subscription content with AI tools. |
 | `MED_RESEARCH_FULLTEXT_MAX_CHARS` | Cap on the length of returned full texts. Default `50000`. |
+| `MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE` | `1` lets full-text fetches reach private or reserved network addresses, which the server otherwise refuses. Needed only on a personal machine behind a fake-IP DNS proxy (Clash, Surge or sing-box in TUN mode) or split-horizon DNS; never set it on a shared server. |
 | `MED_RESEARCH_CACHE_BACKEND` | `memory` (default) or `sqlite`, which keeps the cache across restarts. |
-| `MED_RESEARCH_CACHE_PATH` | The SQLite file for the `sqlite` backend. Default `./pubmed-cache.db`. |
+| `MED_RESEARCH_CACHE_PATH` | The SQLite file for the `sqlite` backend. Use an absolute path: the default, `./pubmed-cache.db`, is relative to the directory your client starts the server in. |
 
 [`.env.example`](https://github.com/emilkrebs/med-research-mcp/blob/main/.env.example) documents each one, plus the HTTP server's variables.
 
@@ -106,7 +107,7 @@ The assistant usually searches first, reads the promising abstracts, and fetches
 What the labels on each result mean:
 
 - **`studyType`** is the design as NLM indexed it: `meta-analysis`, `randomized-controlled-trial`, `case-report` and so on, or `unknown` when the record has no such metadata. **Unknown means unlabeled, not weak.** It's common for recent papers, journals outside MEDLINE, and the ChinaXiv and RussiaRxiv sources; the assistant reads those abstracts itself.
-- **`designTier`** ranks the design for "does this treatment work?", from 5 (a systematic review of randomized trials) down to 0 (animal and lab studies, retracted papers), following the [Oxford CEBM levels of evidence](https://www.cebm.ox.ac.uk/resources/levels-of-evidence/ocebm-levels-of-evidence). It ranks the design, not the quality of the study.
+- **`designTier`** ranks the design for "does this treatment work?", from 5 (a systematic review of randomized trials) down to 0 (animal and lab studies, retracted papers), following the [Oxford CEBM levels of evidence](https://www.cebm.ox.ac.uk/resources/levels-of-evidence/ocebm-levels-of-evidence). It ranks the design, not the quality of the study. It's `null` when the metadata can't place the design: unlabeled records, and most meta-analyses, which rank with the studies they pooled. Null means unrated, not weak.
 - **`flags`** warn about retractions, corrections, expressions of concern, preprints, and machine-translated text.
 
 ChinaXiv and RussiaRxiv records come from [ChinaRxiv](https://chinarxiv.org), an independent project not affiliated with the Chinese Academy of Sciences' ChinaXiv. Its English text is machine-translated, and it wrote most RussiaRxiv abstracts itself; check the original record before relying on a dose, population or outcome.
@@ -116,7 +117,7 @@ ChinaXiv and RussiaRxiv records come from [ChinaRxiv](https://chinarxiv.org), an
 Three [Agent Skills](https://github.com/emilkrebs/med-research-mcp/tree/main/skills) teach the assistant to use the tools well:
 
 - **[med-research](https://github.com/emilkrebs/med-research-mcp/blob/main/skills/med-research/SKILL.md)**: the workflow. Writing precise PubMed queries, reading the labels, classifying unlabeled papers, and reporting findings with how certain they are.
-- **[med-research-ebm](https://github.com/emilkrebs/med-research-mcp/blob/main/skills/med-research-ebm/SKILL.md)**: critical appraisal, loaded only when a paper is about to drive a real decision: risk of bias, effect sizes, heterogeneity, causation, applicability.
+- **[med-research-ebm](https://github.com/emilkrebs/med-research-mcp/blob/main/skills/med-research-ebm/SKILL.md)**: critical appraisal, loaded only when a conclusion will rest on one paper: risk of bias, effect sizes, heterogeneity, causation, applicability.
 - **[med-research-setup](https://github.com/emilkrebs/med-research-mcp/blob/main/skills/med-research-setup/SKILL.md)**: helps an assistant install and troubleshoot the server.
 
 To install them for Claude Code:
@@ -126,7 +127,7 @@ git clone --depth 1 https://github.com/emilkrebs/med-research-mcp.git
 mkdir -p ~/.claude/skills && cp -r med-research-mcp/skills/* ~/.claude/skills/
 ```
 
-Use `.claude/skills/` inside a project to install them for that project only. Skills take effect in new sessions. Claude Desktop doesn't load them from the `.mcpb`, so install them the same way.
+Use `.claude/skills/` inside a project to install them for that project only. Skills take effect in new sessions. Claude Desktop doesn't read skills from the `.mcpb` or from `~/.claude/skills/`: zip each skill folder and upload it under Customize → Skills → "+" → "Upload a skill", with "Code execution and file creation" turned on under Settings → Capabilities.
 
 ## Privacy
 

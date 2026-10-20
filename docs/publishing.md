@@ -72,12 +72,12 @@ ModelScope lists MCP servers at <https://www.modelscope.cn/mcp> and can host npm
 **After creating it, in Settings:**
 
 - **Server config.** ModelScope recommends the `@latest` suffix for hosted packages: `"args": ["-y", "med-research-mcp@latest"]`.
-- **Environment variables.** Make them all optional. A required variable needs a working test value on a hostable listing†, and **test values are public**† (they appear in the page's data), so never enter a real API key or a private email. List `NCBI_EMAIL`, `NCBI_API_KEY`, `MED_RESEARCH_UNPAYWALL_EMAIL` and `MED_RESEARCH_CHINAXIV_EMAIL` with a description and a "详细指引" (how to get it). Leave out `MED_RESEARCH_PROXY_PREFIX` and the cache variables: a hosted instance has no proxy session and no persistent disk.
+- **Environment variables.** Make them all optional. A required variable needs a working test value on a hostable listing†, and **test values are public**† (they appear in the page's data), so never enter a real API key or a private email. List `NCBI_EMAIL`, `NCBI_API_KEY`, `MED_RESEARCH_UNPAYWALL_EMAIL` and `MED_RESEARCH_CHINAXIV_EMAIL` with a description and a "详细指引" (how to get it). Leave out `MED_RESEARCH_PROXY_PREFIX` and the cache variables: an institution's subscriptions don't extend to ModelScope's users ([hosting.md](hosting.md#environment-variables)), and a hosted instance has no persistent disk.
 - **The AI-written description and categories.** Check them; quick create generates both.
 - **The Chinese translation of the README.** ModelScope machine-translates it ("翻译版本为平台自动完成，仅供参考"). Read the translated medical disclaimer, privacy note and label explanations, since medical wording suffers most in translation.
 - **The intended use, in Chinese,** in the description or at the top of the Chinese README, so the listing can't be read as a medical service ([compliance.md](compliance.md#intended-use)). Suggested wording, to be checked by a native speaker:
 
-  > 预期用途：本工具是面向科研与教育的学术文献检索工具，用于检索 PubMed、Europe PMC、ChinaRxiv 等数据库中已发表的科学文献，依据文献元数据标注研究设计类型，并获取可公开获取的全文。本工具不用于任何疾病的诊断、预防、监护、治疗或者缓解，不提供用药指导或治疗建议，不用于针对具体患者的诊疗决策，不处理患者数据，不作为医疗器械使用。研究设计标注仅反映文献的索引信息，不代表研究结论可靠或适用于任何个人。如有健康问题，请咨询医生。
+  > 预期用途：本工具是面向科研与教育的学术文献检索工具，用于检索 PubMed、Europe PMC、ChinaRxiv 等数据库中已发表的科学文献，依据文献元数据标注研究设计类型，并获取可公开获取的全文，或在用户自行配置时经其所在机构获取的全文。本工具不用于任何疾病的诊断、预防、监护、治疗或者缓解，不提供用药指导或治疗建议，不用于针对具体患者的诊疗决策，不处理患者数据，不作为医疗器械使用。研究设计标注仅反映文献的索引信息，不代表研究结论可靠或适用于任何个人。如有健康问题，请咨询医生。
 
 - **How results are ranked, in Chinese,** since China's algorithm-recommendation provisions ask services that rank results to explain the basic principles ([compliance.md](compliance.md#china-modelscope)). Suggested wording:
 

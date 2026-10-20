@@ -35,7 +35,8 @@ The hosted endpoint is designed to know as little as possible:
   that matters.
 - **Queries leave the server.** Answering a tool call means sending its query
   or ids to the databases: NCBI, EMBL-EBI (Europe PMC), ChinaRxiv, and for full
-  texts Unpaywall, doi.org and publishers, with the operator's contact emails.
+  texts Unpaywall, doi.org and publishers; requests to NCBI, ChinaRxiv and
+  Unpaywall carry the operator's contact email.
   Tell your users, and see [compliance.md](compliance.md#data-flows) for what
   each service receives.
 
@@ -63,10 +64,11 @@ fill in the brackets and check it with your data-protection contact.
 > request. Cached article records hold no query text or IP addresses.
 >
 > **Who else receives your queries:** to answer a call, the server sends its
-> query or ids, from the server's IP address and with the operator's contact
-> email, to NCBI/NLM (USA; PubMed), EMBL-EBI (UK; Europe PMC) and ChinaRxiv
-> (chinarxiv.org), and for full texts to Unpaywall/OpenAlex (USA), the doi.org
-> resolver and the publisher or repository sites it points to. Each handles
+> query or ids, from the server's IP address, to NCBI/NLM (USA; PubMed),
+> EMBL-EBI (UK; Europe PMC) and ChinaRxiv (chinarxiv.org), and for full texts
+> to Unpaywall/OpenAlex (USA), the doi.org resolver and the publisher or
+> repository sites it points to. Requests to NCBI, ChinaRxiv and Unpaywall
+> include the operator's contact email. Each handles
 > requests under its own privacy policy, and some are outside the EU/EEA. Our
 > hosting provider [name, country] processes connection data.
 >
@@ -80,7 +82,9 @@ fill in the brackets and check it with your data-protection contact.
 - **Authentication.** Set `MED_RESEARCH_HTTP_TOKEN` for anything but a quick
   evaluation; without it, anyone who can reach the port can use the server and
   its upstream rate limits.
-- **Full-text fetches can't reach your network.** `literature_fulltext` fetches
+- **Full-text fetches can't reach your network** (never set
+  `MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE` on a shared server; it turns this off).
+  `literature_fulltext` fetches
   URLs chosen by Unpaywall and by DOI registrants. It refuses loopback,
   private, link-local, CGNAT and reserved addresses, including the cloud
   metadata endpoints (`169.254.169.254`, Alibaba Cloud's `100.100.100.200`),
@@ -107,7 +111,7 @@ requires.
 
 ## Deploy
 
-Requires Node.js 22.22.2 or later (on Node 24, 24.15.0 or later).
+Requires Node.js 22.22.2 or later on 22, 24.15.0 or later on 24, or 26+.
 
 ```bash
 git clone https://github.com/emilkrebs/med-research-mcp.git
@@ -219,11 +223,12 @@ lists the rest):
 | `MED_RESEARCH_HTTP_BURST` | `20` | Extra tokens a client may spend immediately (see below). |
 | `MED_RESEARCH_HTTP_MAX_CONCURRENCY` | `8` | Requests being processed at once, process-wide. |
 | `MED_RESEARCH_HTTP_MAX_BODY_BYTES` | `1000000` | Maximum POST body size → 413 beyond. |
-| `MED_RESEARCH_TRUST_PROXY` | `0` | `1` = take the client IP from the first `X-Forwarded-For` entry (set only behind a proxy that appends a trusted header). Otherwise the socket address is used. |
+| `MED_RESEARCH_TRUST_PROXY` | `0` | `1` = take the client IP from the last `X-Forwarded-For` entry, the one your reverse proxy added (earlier entries can come from the client). Set it only when a reverse proxy always sits in front; otherwise the socket address is used. |
 | `MED_RESEARCH_ALLOWED_HOSTS` | unset | Comma-separated `Host` header allowlist; when set, DNS-rebinding protection is enabled. |
 
 Relevant non-HTTP variables, unchanged: `NCBI_EMAIL` (recommended),
-`NCBI_API_KEY`, `MED_RESEARCH_UNPAYWALL_EMAIL`, `MED_RESEARCH_CACHE_BACKEND`,
+`NCBI_API_KEY`, `MED_RESEARCH_UNPAYWALL_EMAIL`, `MED_RESEARCH_CHINAXIV_EMAIL`,
+`MED_RESEARCH_FULLTEXT_MAX_CHARS`, `MED_RESEARCH_CACHE_BACKEND`,
 `MED_RESEARCH_CACHE_PATH` (see [Persistent cache](#persistent-cache-sqlite)).
 
 **Leave `MED_RESEARCH_PROXY_PREFIX` unset on a hosted instance.** An
@@ -241,8 +246,8 @@ publisher pages.
   refilled continuously at `rate` per minute: a new client can fire
   60 + 20 = 80 requests immediately (with the defaults) and then sustains
   60/min. Rejections return **429** with a `Retry-After` header. The client IP
-  is the socket address, or the first `X-Forwarded-For` entry when
-  `MED_RESEARCH_TRUST_PROXY=1`. Buckets are in-memory and per-process; idle
+  is the socket address, or the last `X-Forwarded-For` entry (the one the
+  reverse proxy added) when `MED_RESEARCH_TRUST_PROXY=1`. Buckets are in-memory and per-process; idle
   entries are swept hourly.
 - **Global concurrency cap.** At most `MED_RESEARCH_HTTP_MAX_CONCURRENCY`
   requests (default 8) are processed at once, so upstream rate limits and

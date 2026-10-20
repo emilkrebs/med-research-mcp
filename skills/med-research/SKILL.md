@@ -9,7 +9,7 @@ Three tools, a triage-first workflow. **Always start with `literature_search`** 
 
 ## Decision flow
 
-1. Turn the question into a precise query and call `literature_search`. Default database is `"pubmed"`; for broader coverage use `database: ["pubmed","europepmc"]`, `["pubmed","chinaxiv"]`, or `"all"`. PubMed field tags (`[tiab]`/`[mesh]`/`[au]`) **only work on pubmed**; other databases get bare keywords.
+1. Turn the question into a precise query and call `literature_search`. Default database is `"pubmed"`; for broader coverage use `database: ["pubmed","europepmc"]`, `["pubmed","chinaxiv"]`, or `"all"`. PubMed field tags (`[tiab]`/`[mesh]`/`[au]`/`[pt]`) **only work on pubmed**; the server removes them from what it sends the other databases, which search the bare keywords.
 2. Read `flags` first. Then **read the abstract of every result whose `designTier` is `null`**: unclassified records and most meta-analyses/systematic reviews. Null means unrated, not weak.
 3. `literature_fetch` the specific ids you care about to read full abstracts.
 4. `literature_fulltext` **only** when you need more than the abstract — verify dosage, check sample sizes, read methods, detect statistical flaws.
@@ -26,7 +26,7 @@ Bare keywords match tens of thousands of papers and bury the signal. Use field t
 - Restrict to strong designs: `AND (randomized controlled trial[pt] OR meta-analysis[pt])` — `[pt]` is publication type.
 - Narrow first. On `QUERY_TOO_BROAD`, add a `[tiab]` term or an `AND` clause.
 
-Params: `database`, `maxResults` (default 10, max 50 — per-database, so two DBs return ~20), `studyTypes` (e.g. `["meta-analysis","systematic-review","randomized-controlled-trial"]` — **use this to keep reviews and trials**; `cohort`, `case-control`, `cross-sectional` and `in-vitro` never match, see below), `minDesignTier` (4 = RCTs; it drops every `null` tier, including most meta-analyses — read the warning), `dateRange {from,to}`, `sort` ("relevance"|"date"), `language` (PubMed and Europe PMC ignore it; for Russian papers use `database: "russiarxiv"`).
+Params: `database`, `maxResults` (default 10, max 50 — per-database, so two DBs return ~20), `studyTypes` (e.g. `["meta-analysis","systematic-review","randomized-controlled-trial"]` — **use this to keep reviews and trials**; `cohort`, `case-control`, `cross-sectional` and `in-vitro` never match, see below), `minDesignTier` (4 = RCTs; it drops every `null` tier, including most meta-analyses — read the warning), `dateRange {from,to}` (`YYYY-MM-DD`, `YYYY-MM` or `YYYY`), `sort` ("relevance"|"date"), `language` (PubMed and Europe PMC ignore it; for Russian papers use `database: "russiarxiv"`).
 
 ## Reading the design labels (`GradedArticle`)
 
@@ -77,7 +77,7 @@ Apply these to every answer, not only pivotal ones.
 - `literature_fetch({ids:["39123456","38987654"], database:"pubmed"})` — full abstracts + publication types + MeSH + retraction/correction links + metadata, no `studyType` (1–50 ids).
 - `literature_fulltext({id:"39123456", doi:"10.1234/x"})` — article body as markdown via Unpaywall → proxy → DOI; abstract-only if paywalled. Non-PubMed ids need their DOI; ChinaXiv/RussiaRxiv records have none, so open their `url` instead.
 - NCBI client is shared and serialized (3 req/s anonymous, 10 with `NCBI_API_KEY`): parallel calls are **safe** but don't run faster. Prefer a few precise queries.
-- Errors: `QUERY_TOO_BROAD` (narrow + retry); `RATE_LIMIT` (wait `retryAfter`); `NETWORK_ERROR`/`PARSE_FAILURE` (retry once, then say the DB is unreachable).
+- Errors: `QUERY_TOO_BROAD` (narrow + retry); `RATE_LIMIT` (wait `retryAfter`); `NETWORK_ERROR`/`PARSE_FAILURE` (retry once, then say the DB is unreachable). In a multi-database search, a database that fails while others answer shows up only in `warnings` (`<database> search failed: …`) — say which database is missing; never report its absence as "no studies found".
 
 ## Reporting
 
@@ -113,7 +113,7 @@ Search author+topic then title terms: `Jensen[au] AND melatonin AND REM sleep`, 
 
 ## When to go deeper (EBM)
 
-The `0–5` design tier orients you; it does not appraise a study. When a paper is about to drive a real decision and you need risk-of-bias (RoB 2 / ROBINS-I), AMSTAR 2, effect sizes/CIs/NNT, heterogeneity, Bradford Hill causation, or applicability checks, load the **`med-research-ebm`** reference skill. Don't load it for routine searches — it's heavy.
+The `0–5` design tier orients you; it does not appraise a study. When a conclusion will rest on one paper and you need risk-of-bias (RoB 2 / ROBINS-I), AMSTAR 2, effect sizes/CIs/NNT, heterogeneity, Bradford Hill causation, or applicability checks, load the **`med-research-ebm`** reference skill. Don't load it for routine searches — it's heavy.
 
 ## References
 

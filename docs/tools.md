@@ -14,12 +14,12 @@ Typical workflow: start with `literature_search`, read promising papers with `li
 
 | Parameter | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `query` | `string` | yes | Search query. PubMed field tags (`[tiab]`, `[mesh]`, `[au]`, `[pt]`) apply to `pubmed`; other databases receive the query as plain text. |
+| `query` | `string` | yes | Search query. PubMed field tags (`[tiab]`, `[mesh]`, `[au]`, `[pt]`) apply to `pubmed`; for other databases they're removed, since those would search them as words. |
 | `database` | `string \| string[]` | no | `"pubmed"` (default), `"europepmc"`, `"chinaxiv"`, `"russiarxiv"`, an array of these, or `"all"`. See [Databases](#databases). |
 | `maxResults` | `number` | no | Results per database. Default `10`, max `50`. |
 | `minDesignTier` | `number` | no | Drop results below this design tier (`0`–`5`; `4` = RCTs). Also drops every result with a `null` tier (unlabeled records and most meta-analyses and systematic reviews) and reports how many in a warning. |
 | `studyTypes` | `string[]` | no | Keep only these study types. To keep reviews and trials, use this instead of `minDesignTier`. `cohort`, `case-control`, `cross-sectional` and `in-vitro` are never assigned from metadata, so filtering on them returns nothing. |
-| `dateRange` | `{ from?, to? }` | no | Publication date filter, `YYYY-MM-DD`. Applies to every database. |
+| `dateRange` | `{ from?, to? }` | no | Publication date filter: `YYYY-MM-DD`, `YYYY-MM` or `YYYY` (a year or month covers all of it). Applies to every database. |
 | `sort` | `"relevance" \| "date"` | no | Order within `pubmed` and `europepmc`. The merged list is always re-sorted by design tier. |
 | `language` | `string` | no | ISO 639-1 hint. Only `chinaxiv` reads it: `"ru"` searches the RussiaRxiv corpus. |
 
@@ -27,7 +27,7 @@ Returns `{ articles, total, query, warnings? }`:
 
 - **`articles`**: one record per paper, sorted by design tier. Each has `pmid` (the database's id: a PMID for PubMed, otherwise that database's id), `title`, `abstract`, `authors`, `journal`, `pubDate`, `doi`, `publicationTypes`, `corrections` (retraction, erratum and update links), and for non-PubMed records `database`, `url` and `language`. ChinaXiv and RussiaRxiv records add `originalUrl`, the record they were translated from. Every record carries the [study design labels](#study-design-labels): `studyType`, `designTier` and, when any apply, `flags`. MeSH headings are left out to keep results compact; `literature_fetch` returns them.
 - **`total`**: the hit counts each database reported, summed, before truncation to `maxResults`.
-- **`warnings`**: a database that failed during a multi-database search (its error becomes a warning and the others' results are still returned), a very broad query, or records dropped by `minDesignTier` for having no tier.
+- **`warnings`**: a database that failed while others answered (its error's message becomes a warning, and the others' results are still returned), or records dropped by `minDesignTier` for having no tier. When every database searched fails, the tool returns the [error](#errors) instead, so a failed search never looks like an empty one.
 
 ## `literature_fetch`
 
@@ -49,7 +49,7 @@ Tries Unpaywall (open access), then the institutional proxy (if configured), the
 
 ChinaXiv and RussiaRxiv records have no DOI, so they can't be resolved; the tool says so, and their `url` links the record.
 
-Copies hosted by PubMed Central or Europe PMC are fetched through Europe PMC's full-text API, whose terms allow automated retrieval, never from the PMC or Europe PMC websites, whose terms don't. Pages are fetched only from public addresses: the tool refuses URLs and redirects that lead to loopback, private or link-local networks (such as cloud metadata endpoints), and bodies over 30 MB. Open-access texts are cached for 30 days; texts from the proxy or direct routes aren't cached at all. See [how-it-works.md](how-it-works.md#literature_fulltext).
+Copies that Unpaywall locates on PubMed Central or Europe PMC (articles and preprints) are fetched through Europe PMC's full-text API, whose terms allow automated retrieval, instead of from those websites, whose terms don't; their tables come through row by row. Pages are fetched only from public addresses: the tool refuses URLs and redirects that lead to loopback, private or link-local networks (such as cloud metadata endpoints), and bodies over 30 MB. When a refusal may be a fake-IP DNS proxy on the user's machine, the warning says how to allow it (`MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE=1`, never on a shared server). Open-access texts are cached for 30 days; texts from the proxy or direct routes aren't cached at all. See [how-it-works.md](how-it-works.md#literature_fulltext).
 
 **The proxy and direct routes can return licensed content.** The proxy route uses your institution's subscriptions, and so does the direct route (`https://doi.org/<DOI>`) when the machine is on a network with IP-based access. For subscription content, publisher terms often forbid use with AI tools unless your licence expressly allows it (Elsevier, for example: "You may not use Content from the Services in combination with an artificial intelligence tool … except as otherwise expressly permitted"), and they forbid systematic downloading. Configure the proxy only if your institution's licences permit this use, and don't let an agent fetch papers in bulk. The proxy works only if it lets the machine in without a login (on the campus network or VPN): the server sends no browser cookies.
 
@@ -66,7 +66,7 @@ Copies hosted by PubMed Central or Europe PMC are fetched through Europe PMC's f
 
 ## Study design labels
 
-Every `literature_search` result carries three fields, computed from database metadata only, never from the title or abstract text. [How it works](how-it-works.md#the-grader-study-design-labels) has the full mapping, the reasoning and the sources.
+Every `literature_search` result carries three fields, computed from database metadata only (plus a publisher's `RETRACTED:` title prefix, for the `retracted` flag), never by reading a design from the title or abstract. [How it works](how-it-works.md#the-grader-study-design-labels) has the full mapping, the reasoning and the sources.
 
 - **`studyType`**: the design, from NLM PublicationType tags (PubMed, and Europe PMC, which mirrors them). Records without such tags are `unknown`: common for recent papers, journals outside MEDLINE, and every ChinaXiv and RussiaRxiv record. **Unknown means unlabeled, not weak.**
 - **`designTier`**: how high the design ranks for "Does this intervention help?" by the [OCEBM 2011 Levels of Evidence](https://www.cebm.ox.ac.uk/resources/levels-of-evidence/ocebm-levels-of-evidence). When a label's definition spans levels, the lower one is used.
@@ -108,7 +108,7 @@ Two limits matter:
 
 ## Errors
 
-A failing tool returns an `isError` result whose text holds this payload (`UNKNOWN` for unexpected errors):
+A failing tool returns an `isError` result whose text holds this payload (`UNKNOWN` for unexpected errors). `literature_search` fails only when every database it searched failed; `literature_fetch` lists ids it couldn't fetch in `missing`, and fails outright only when a PubMed request fails (unreachable, or rate-limited).
 
 ```ts
 {
@@ -123,8 +123,8 @@ A failing tool returns an `isError` result whose text holds this payload (`UNKNO
 | Code | When | What to do |
 | --- | --- | --- |
 | `RATE_LIMIT` | A database answered 429; the message names it | Wait `retryAfter` seconds. For PubMed, set `NCBI_API_KEY` |
-| `QUERY_TOO_BROAD` | A PubMed query matched more than 100,000 records | Add `[tiab]` or `[mesh]` terms or `AND` clauses |
+| `QUERY_TOO_BROAD` | A PubMed query matched more than 100,000 records (in a multi-database search: a warning) | Add `[tiab]` or `[mesh]` terms or `AND` clauses |
 | `PARSE_FAILURE`, `NETWORK_ERROR` | The database was unreachable or answered something unreadable | Retry once, then report the database as unreachable |
 | `NOT_FOUND` | `literature_fulltext` got an id it can't resolve (no such PMID, or a non-PubMed id without a DOI) | Check the id, or pass the DOI |
 
-In a multi-database search, one database failing becomes a warning, not an error.
+In a multi-database search, a database that fails while others answer becomes a warning, `<database> search failed: <message>`, not an error.
