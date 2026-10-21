@@ -61,6 +61,7 @@
     "start:http": "node dist/http/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
+    "check:versions": "node scripts/check-versions.mjs",
     "build:mcpb": "node scripts/build-mcpb.mjs",
     "prepublishOnly": "npm run build"
   },

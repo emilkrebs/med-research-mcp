@@ -188,7 +188,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         "machine-generated abstracts (chinaxiv, russiarxiv: check originalUrl before relying on a number). Results are " +
         "merged, de-duplicated by DOI, and sorted by design tier. Always cheap — no LLM calls. " +
         "Use literature_fetch to get full metadata for specific ids, and literature_fulltext for the article body.",
-      inputSchema: literatureSearchShape,
+      // Strict, so a misnamed key (e.g. `databases`) errors instead of being stripped and silently searching PubMed.
+      inputSchema: z.object(literatureSearchShape).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {

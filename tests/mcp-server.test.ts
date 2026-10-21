@@ -51,6 +51,15 @@ describe("createServer", () => {
     await server.close();
   });
 
+  it("rejects an unknown argument instead of silently dropping it", async () => {
+    const { client, server } = await connect();
+    const result = await client.callTool({ name: "literature_search", arguments: { query: "x", databases: "chinaxiv" } });
+    expect(result.isError).toBe(true);
+    expect((result.content as { text: string }[])[0]!.text).toContain("databases");
+    await client.close();
+    await server.close();
+  });
+
   it("builds independent servers per call", () => {
     expect(createServer({ cache: new LRUBackend() })).not.toBe(createServer({ cache: new LRUBackend() }));
   });
