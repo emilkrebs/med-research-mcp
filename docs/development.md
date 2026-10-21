@@ -42,7 +42,8 @@ The `.mcpb` is one esbuild bundle plus two exceptions ([`scripts/build-mcpb.mjs`
 - **Upstream calls identify themselves.** Requests send the `User-Agent` from `src/core/version.ts` and the contact emails the databases ask for.
 - **Tests stay offline.** Adapters and the full-text resolver take injectable HTTP seams; use them instead of the network.
 - **Keep the docs in sync.** A change to a tool's behavior usually touches the tool description in `src/mcp/server.ts`, [tools.md](tools.md), [how-it-works.md](how-it-works.md) and the [`med-research`](../skills/med-research/SKILL.md) skill.
-- **ModelScope reads the README.** Its listing takes the server config and environment variables from the README's first `mcpServers` JSON block, so that block stays the stdio config, free of comments, with `mcpServers` at the top level. Links and images use absolute URLs: ModelScope shows a relative link as plain text and drops a relative image.
+- **ModelScope reads the README.** A listing takes the server config and environment variables from the first `mcpServers` JSON block of the README it's created from, so in both READMEs that block stays the stdio config, free of comments, with `mcpServers` at the top level. Links and images use absolute URLs: ModelScope shows a relative link as plain text and drops a relative image.
+- **[README.zh-CN.md](../README.zh-CN.md) translates README.md**, and adds the Chinese intended-use and ranking statements from [compliance.md](compliance.md#china-modelscope). A change to one README needs the same change in the other; if you can't write the Chinese, say so in the pull request.
 
 ## CI
 

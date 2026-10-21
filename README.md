@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  English · <a href="https://github.com/emilkrebs/med-research-mcp/blob/main/README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
   <a href="#install">Install</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#tools">Tools</a> ·
@@ -18,7 +22,7 @@
   <a href="#data-sources-and-copyright">Data sources</a>
 </p>
 
-`med-research-mcp` is an [MCP](https://modelcontextprotocol.io) server that lets an AI assistant search PubMed, Europe PMC, ChinaXiv and RussiaRxiv, and tells it what kind of study each result is. The assistant can then tell a meta-analysis from a case report, and a retracted paper from a sound one, before it answers. It's built for medical, clinical and supplementation research, where "what does the evidence actually say" matters more than a list of abstracts.
+`med-research-mcp` is an [MCP](https://modelcontextprotocol.io) server that lets an AI assistant search PubMed, Europe PMC and ChinaRxiv's ChinaXiv and RussiaRxiv sources, and tells it what kind of study each result is. The assistant can then tell a meta-analysis from a case report, and a retracted paper from a sound one, before it answers. It's built for medical, clinical and supplementation research, where "what does the evidence actually say" matters more than a list of abstracts.
 
 - **Four databases in one search**, merged and de-duplicated.
 - **Study-design labels from NLM metadata**: each result says what kind of study it is, where that design ranks in the evidence hierarchy, and whether it was retracted or corrected. No guessing: a record without metadata says `unknown`.
