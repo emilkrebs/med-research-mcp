@@ -22,7 +22,7 @@
   <a href="#数据来源与版权">数据来源</a>
 </p>
 
-`med-research-mcp` 是一个 [MCP](https://modelcontextprotocol.io)（模型上下文协议）服务器。它让 AI 助手能够检索 PubMed、Europe PMC、ChinaXiv 和 RussiaRxiv，并告诉助手每条结果属于哪一类研究。这样，助手在回答之前就能分清 Meta 分析和病例报告，也能识别出已撤稿的论文。它专为医学、临床和膳食补充剂研究而设计：在这些领域，“证据究竟说明了什么”比一串摘要更重要。
+`med-research-mcp` 是一个 [MCP](https://modelcontextprotocol.io)（模型上下文协议）服务器。它让 AI 助手能够检索 PubMed、Europe PMC 和 ChinaRxiv（含 ChinaXiv 与 RussiaRxiv 数据源），并告诉助手每条结果属于哪一类研究。这样，助手在回答之前就能分清 Meta 分析和病例报告，也能识别出已撤稿的论文。它专为医学、临床和膳食补充剂研究而设计：在这些领域，“证据究竟说明了什么”比一串摘要更重要。
 
 - **一次检索覆盖四个数据库**，结果合并并去重。
 - **研究设计标注来自美国国家医学图书馆（NLM）的元数据**：每条结果都注明它属于哪类研究、这种设计在证据等级中处于什么位置，以及是否已被撤稿或更正。不做猜测：没有相应元数据的记录标为 `unknown`。
@@ -97,7 +97,7 @@ npm run build
 | `MED_RESEARCH_CHINAXIV_EMAIL` | ChinaRxiv 的联系邮箱。ChinaRxiv 提供 `chinaxiv` 和 `russiarxiv` 两个数据源；设置后，其速率上限从每分钟 30 次请求提高到 300 次。 |
 | `MED_RESEARCH_PROXY_PREFIX` | 你所在机构用于 doi.org 的 EZproxy 地址，例如 `https://doi-org.ezproxy.your-university.edu`，用于阅读你有权访问的付费论文。仅当该代理无需登录即可放行本机时才有效，例如在校园网内或通过 VPN 连接时。请仅在机构的许可协议允许时使用：许多出版商禁止将订阅内容用于 AI 工具。 |
 | `MED_RESEARCH_FULLTEXT_MAX_CHARS` | 返回全文的最大长度（字符数）。默认为 `50000`。 |
-| `MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE` | 设为 `1` 时，允许获取全文的请求访问私有或保留网络地址（服务器默认拒绝）。仅当个人电脑使用 fake-IP 模式的 DNS 代理（如 TUN 模式下的 Clash、Surge 或 sing-box）或分离式 DNS（split-horizon DNS）时才需要；切勿在共享服务器上设置。 |
+| `MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE` | 设为 `1` 时，允许获取全文的请求访问私有或保留网络地址（服务器默认拒绝）。仅当个人电脑使用 fake-IP 模式的 DNS 代理（如 TUN 模式下的 Clash、Surge 或 sing-box）或分离解析（split-horizon DNS）时才需要；切勿在共享服务器上设置。 |
 | `MED_RESEARCH_CACHE_BACKEND` | `memory`（默认）或 `sqlite`；后者在重启后仍保留缓存。 |
 | `MED_RESEARCH_CACHE_PATH` | `sqlite` 后端使用的 SQLite 文件。请使用绝对路径：默认值 `./pubmed-cache.db` 是相对于客户端启动服务器时所在目录的路径。 |
 
@@ -117,7 +117,7 @@ npm run build
 
 - **`studyType`**（研究类型）是 NLM 标引的研究设计，例如 `meta-analysis`（Meta 分析）、`randomized-controlled-trial`（随机对照试验）、`case-report`（病例报告）等；记录没有此类元数据时为 `unknown`。**`unknown` 表示未标注，不代表证据弱**。这种情况在新近发表的论文、未被 MEDLINE 收录的期刊以及 ChinaXiv 和 RussiaRxiv 数据源中很常见；对于这些论文，助手会自行阅读摘要。
 - **`designTier`**（设计等级）参照[牛津循证医学中心（OCEBM）证据等级](https://www.cebm.ox.ac.uk/resources/levels-of-evidence/ocebm-levels-of-evidence)，针对“这种治疗是否有效？”这类问题为研究设计排序，从 5 级（随机试验的系统综述）到 0 级（动物和实验室研究、已撤稿论文）。它只为研究设计分级，不评价研究本身的质量。元数据无法确定设计时，该值为 `null`：包括未标注的记录，以及大多数 Meta 分析——它们的等级取决于所合并的研究。`null` 表示未评级，不代表证据弱。
-- **`flags`**（警示标记）提示撤稿、更正、关注通告、预印本和机器翻译文本。
+- **`flags`**（警示标记）提示撤稿、更正、关注声明、预印本和机器翻译文本。
 
 ChinaXiv 和 RussiaRxiv 的记录来自 [ChinaRxiv](https://chinarxiv.org)。这是一个独立项目，与中国科学院的 ChinaXiv（中国科学院科技论文预发布平台）没有关联。ChinaRxiv 的英文文本由机器翻译，大多数 RussiaRxiv 摘要也是它自行撰写的；在依据其中的剂量、研究人群或结局之前，请核对原始记录。
 
@@ -140,7 +140,7 @@ mkdir -p ~/.claude/skills && cp -r med-research-mcp/skills/* ~/.claude/skills/
 
 ## 隐私
 
-服务器在你的电脑上运行，不发送遥测数据。你的检索内容会发送到你所检索的数据库（PubMed 由 NCBI 提供，Europe PMC 由 EMBL-EBI 提供，此外还有 ChinaRxiv），获取全文的请求会发送到 Unpaywall、doi.org 和出版商网站，它们各自适用其服务条款和隐私政策。检索结果缓存在你的电脑上，默认保存在内存中，除非你选择 SQLite。如果你使用他人运行的实例（例如魔搭社区上托管的服务），其运营方也会收到你的检索内容。请勿在检索内容中输入姓名、病历号或其他可识别患者身份的信息。详见 [docs/compliance.md](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/compliance.md)（英文）。
+服务器在你的电脑上运行，不发送遥测数据。你的检索内容会发送到你所检索的数据库（PubMed 由 NCBI 提供，Europe PMC 由 EMBL-EBI 提供，此外还有 ChinaRxiv），获取全文的请求会发送到 Unpaywall、doi.org 和出版商网站，它们各自适用其服务条款和隐私政策。检索结果缓存在你的电脑上，默认保存在内存中，除非你选择 SQLite。如果你使用他人运行的 HTTP 实例，其运营方也会收到你的检索内容。请勿在检索内容中输入姓名、病历号或其他可识别患者身份的信息。详见 [docs/compliance.md](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/compliance.md)（英文）。
 
 ## 文档
 
