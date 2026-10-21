@@ -99,7 +99,7 @@ Points that matter for a listing on ModelScope, which runs in mainland China:
 - **Cross-border personal information.** Queries without personal information raise no transfer issue under the PIPL; queries with it would. This is the strongest reason for the patient-data rule above.
 - **ModelScope's own terms** ([user agreement](https://www.modelscope.cn/docs/agreements/terms)). Content published there is reviewed for prohibited material (political, pornographic, violent, illegal, advertising or spam). Publishing grants ModelScope a worldwide, irrevocable, sublicensable licence to host and distribute it, and every user a perpetual, irrevocable licence to use, copy and adapt it through ModelScope (§3.2.1; compatible with the MIT license). The agreement is governed by Chinese law (§9.5), registration requires phone verification (§2.2.2), and the service "旨在供中华人民共和国内地用户使用" — is intended for users in mainland China, without a guarantee for anyone else (§10.2).
 
-The listing states the intended use and the ranking in Chinese, in its description or at the top of its Chinese README, since ModelScope machine-translates the README and medical wording suffers most in translation. The wording is still to be checked by a native speaker.
+The listing states the intended use and the ranking in Chinese. The Chinese README, [README.zh-CN.md](../README.zh-CN.md), carries both at the top; create the listing from it, so that people using ModelScope in Chinese read that text rather than ModelScope's machine translation of the English README, which isn't always provided and where medical wording suffers most. The wording is still to be checked by a native speaker.
 
 Intended use, as [above](#intended-use):
 

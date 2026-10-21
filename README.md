@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  English · <a href="https://github.com/emilkrebs/med-research-mcp/blob/main/README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
   <a href="#install">Install</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#tools">Tools</a> ·
