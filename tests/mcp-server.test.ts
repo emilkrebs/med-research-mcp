@@ -60,6 +60,31 @@ describe("createServer", () => {
     await server.close();
   });
 
+  it("literature_fulltext reads a long text in parts with offset and maxChars", async () => {
+    const cache = new LRUBackend();
+    const text = "word ".repeat(400);
+    cache.setFulltext("PMC1234567", { source: "europepmc", fulltext: text, format: "markdown", fetchedAt: Date.now() });
+    const server = createServer({ cache });
+    const client = new Client({ name: "test", version: "0.0.0" });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(st), client.connect(ct)]);
+
+    const { tools } = await client.listTools();
+    const props = Object.keys((tools.find((t) => t.name === "literature_fulltext")!.inputSchema as { properties: object }).properties);
+    expect(props).toEqual(expect.arrayContaining(["offset", "maxChars"]));
+
+    const call = async (args: object) => {
+      const result = await client.callTool({ name: "literature_fulltext", arguments: { id: "PMC1234567", ...args } });
+      return JSON.parse((result.content as { text: string }[])[0]!.text) as Record<string, unknown>;
+    };
+    expect(await call({ maxChars: 1000 })).toMatchObject({ source: "europepmc", truncated: true, totalChars: 2000, nextOffset: 1000 });
+    expect(await call({ offset: 1000, maxChars: 1000 })).toMatchObject({ fulltext: text.slice(1000), truncated: false });
+    const bad = await client.callTool({ name: "literature_fulltext", arguments: { id: "PMC1234567", offset: -5 } });
+    expect(bad.isError).toBe(true);
+    await client.close();
+    await server.close();
+  });
+
   it("builds independent servers per call", () => {
     expect(createServer({ cache: new LRUBackend() })).not.toBe(createServer({ cache: new LRUBackend() }));
   });

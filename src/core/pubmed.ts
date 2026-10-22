@@ -1,7 +1,9 @@
 /**
  * NCBI E-utilities client (esearch → esummary → efetch) and the searchPubMed
- * orchestrator. Abstracts are parsed from efetch XML with fast-xml-parser — no
- * regex XML scraping.
+ * orchestrator. efetch XML is parsed with fast-xml-parser. An AbstractText is
+ * mixed content (text with <i>, <sup>, <sub>, <b> inside), which the parser would
+ * split into child properties and lose; it is read as raw inner XML instead and
+ * turned into text by xmlToText.
  */
 
 import { XMLParser } from "fast-xml-parser";
@@ -9,8 +11,10 @@ import { LRUCache } from "lru-cache";
 import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors } from "./errors.js";
+import { requestWithRetries } from "./request.js";
+import { xmlToText } from "./text.js";
 import { contactEmail, envSetting, PROJECT_TOOL, USER_AGENT } from "./version.js";
-import { classifyArticle, designPublicationTypes, unclassifiedDroppedWarning } from "./grader.js";
+import { classifyArticle, designPublicationTypes, unratedExcludedWarning } from "./grader.js";
 import { CORRECTION_TYPES } from "./types.js";
 import type { Correction, CorrectionType, FetchInput, FetchOutput, GradedArticle, Article, SearchInput, SearchOutput, StudyType } from "./types.js";
 
@@ -24,13 +28,9 @@ const SOFT_BROAD_THRESHOLD = 10_000;
  * Spacing between requests, as a multiple of 1/limit. NCBI counts requests as they
  * arrive, and arrival times jitter: spaced exactly 1/3 s apart, 2 of 15 serialized
  * requests drew a 429; spaced 400 ms apart, 1 of 15 (2026-10-20). The rest is left
- * to retries.
+ * to retries (see ./request.ts).
  */
 const SPACING_MARGIN = 1.2;
-/** 429s retried, after NCBI's Retry-After, before RATE_LIMIT reaches the caller. */
-const RATE_LIMIT_RETRIES = 2;
-/** The longest Retry-After waited out (NCBI sends 2 s); a longer one goes to the caller. */
-const MAX_RETRY_WAIT_S = 5;
 /**
  * How long a search's PMIDs are reused. PubMed's relevance ranking varies between
  * identical requests: five identical searches returned five different top-20 lists
@@ -64,7 +64,8 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 /**
  * Serializes requests and spaces them to respect NCBI's rate limit. A task runs
  * once every earlier one has finished and calls `pace()` before each request it
- * sends, so a task that waits out a 429 holds back the whole queue.
+ * sends, so a task that waits out a 429 or retries a server error holds back the
+ * whole queue.
  */
 class RateLimiter {
   private lastAt = 0;
@@ -97,6 +98,8 @@ interface EsummaryDoc {
   fulljournalname?: string;
   source?: string;
   pubdate?: string;
+  /** "2018 Sep 20", or "" when there is none. */
+  epubdate?: string;
   sortpubdate?: string;
   authors?: { name?: string }[];
   articleids?: { idtype?: string; value?: string }[];
@@ -142,6 +145,8 @@ export class NcbiClient {
       attributeNamePrefix: "@_",
       textNodeName: "#text",
       trimValues: true,
+      // Raw inner XML, entities undecoded: see extractAbstract.
+      stopNodes: ["*.AbstractText"],
     });
     const searchTtl = config.searchTtlMs ?? DEFAULT_SEARCH_TTL_MS;
     this.searches = searchTtl > 0 ? new LRUCache({ max: 200, ttl: searchTtl }) : null;
@@ -156,32 +161,9 @@ export class NcbiClient {
 
   private async request(path: string, params: URLSearchParams): Promise<Response> {
     const url = `${EUTILS_BASE}/${path}?${this.commonParams(params).toString()}`;
-    return this.limiter.run(async (pace) => {
-      for (let attempt = 0; ; attempt += 1) {
-        await pace();
-        const ac = new AbortController();
-        const timer = setTimeout(() => ac.abort(), this.timeoutMs);
-        let res: Response;
-        try {
-          res = await fetch(url, { signal: ac.signal, headers: { "User-Agent": USER_AGENT } });
-        } catch (err) {
-          throw errors.network(err instanceof Error ? err.message : String(err));
-        } finally {
-          clearTimeout(timer);
-        }
-        if (res.status === 429) {
-          const retryAfter = Number(res.headers.get("retry-after")) || 1;
-          await res.body?.cancel();
-          if (attempt >= RATE_LIMIT_RETRIES || retryAfter > MAX_RETRY_WAIT_S) throw errors.rateLimit(retryAfter);
-          await sleep(retryAfter * 1000);
-          continue;
-        }
-        if (!res.ok) {
-          throw errors.network(`NCBI returned HTTP ${res.status}`);
-        }
-        return res;
-      }
-    });
+    return this.limiter.run((pace) =>
+      requestWithRetries(url, { timeoutMs: this.timeoutMs, source: "PubMed", headers: { "User-Agent": USER_AGENT }, beforeAttempt: pace }),
+    );
   }
 
   /**
@@ -280,6 +262,7 @@ export class NcbiClient {
       pubDate: doc.pubdate ?? "",
       publicationTypes: toArray(doc.pubtype),
     };
+    if (doc.epubdate?.trim()) article.epubDate = doc.epubdate.trim();
     if (doi) article.doi = doi;
     if (pmcid && /^PMC\d+$/i.test(pmcid)) article.pmcid = pmcid.toUpperCase();
     return article;
@@ -339,20 +322,20 @@ function extractPmid(node: unknown): string | undefined {
   return text != null ? String(text) : undefined;
 }
 
+/** Sections as "LABEL: text" lines. Each AbstractText arrives as its raw inner XML (a stop node). */
 function extractAbstract(abstractNode: unknown): string | undefined {
   if (!abstractNode || typeof abstractNode !== "object") return undefined;
   const at = (abstractNode as Record<string, unknown>).AbstractText;
   if (at == null) return undefined;
   const parts = toArray(at)
     .map((node) => {
-      if (typeof node === "string" || typeof node === "number") return String(node);
+      if (typeof node === "string" || typeof node === "number") return xmlToText(String(node));
       if (!node || typeof node !== "object") return "";
       const rec = node as Record<string, unknown>;
       const label = rec["@_Label"];
-      const text = rec["#text"] ?? "";
-      return label ? `${String(label)}: ${String(text)}` : String(text);
+      const text = xmlToText(String(rec["#text"] ?? ""));
+      return label && text ? `${String(label)}: ${text}` : text;
     })
-    .map((s) => s.trim())
     .filter(Boolean);
   const joined = parts.join("\n").trim();
   return joined || undefined;
@@ -490,21 +473,18 @@ export async function searchPubMed(
   const typeFilter = input.studyTypes?.length ? new Set<StudyType>(input.studyTypes) : null;
 
   const articles: GradedArticle[] = [];
-  let droppedUnclassified = 0;
   for (const pmid of pmids) {
     const summary = summaries.get(pmid);
     if (!summary) continue;
     const abstract = abstracts.get(pmid);
     const article: Article = abstract ? { ...summary, abstract } : summary;
     const graded = classifyArticle(article);
-    if ((graded.designTier ?? 0) < minTier) {
-      if (graded.designTier == null) droppedUnclassified += 1;
-      continue;
-    }
+    if ((graded.designTier ?? 0) < minTier) continue;
     if (typeFilter && !typeFilter.has(graded.studyType)) continue;
     articles.push(graded);
   }
-  if (droppedUnclassified > 0) warnings.push(unclassifiedDroppedWarning(droppedUnclassified));
+  const unrated = unratedExcludedWarning(input.studyTypes, input.minDesignTier);
+  if (unrated) warnings.push(unrated);
 
   return {
     articles,

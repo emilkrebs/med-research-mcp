@@ -347,10 +347,31 @@ export function mergeDuplicate(first: GradedArticle, second: GradedArticle): Gra
   return { ...kept, flags, ...(flags.some((f) => NOT_EVIDENCE.has(f)) ? { designTier: 0 } : {}) };
 }
 
-/** Surfaced when a tier filter removes articles whose tier is merely unknown. */
-export function unclassifiedDroppedWarning(count: number): string {
+/**
+ * Why a studyTypes filter found no animal-study: the label comes only from the veterinary
+ * publication types, which laboratory animal studies don't carry. MEDLINE indexes those with the
+ * Animals check tag, so they show up as records flagged animals-not-humans.
+ */
+export function noAnimalStudiesWarning(): string {
   return (
-    `${count} result(s) with an unknown design tier were dropped by minDesignTier — unrated, not weak: ` +
+    `No record found is labeled animal-study: the label comes only from veterinary publication types (${VETERINARY.names.join("; ")}). ` +
+    `Laboratory animal studies carry none of them; MEDLINE-indexed ones show up flagged animals-not-humans. ` +
+    `Search without the animal-study filter and look for that flag.`
+  );
+}
+
+/**
+ * The warning for a minDesignTier that leaves out records the studyTypes filter alone would keep
+ * because their tier is unknown; undefined when it leaves out none. The databases are not asked for
+ * such records (see {@link designPublicationTypes}), so there is no count to report.
+ */
+export function unratedExcludedWarning(studyTypes?: readonly StudyType[], minDesignTier?: number): string | undefined {
+  if ((minDesignTier ?? 0) <= 0) return undefined;
+  const wanted = studyTypes && studyTypes.length > 0 ? new Set(studyTypes) : null;
+  const unratedWanted = !wanted || wanted.has("unknown") || DESIGN_TAGS.some((d) => d.tier === null && wanted.has(d.design));
+  if (!unratedWanted) return undefined;
+  return (
+    `minDesignTier ${minDesignTier} leaves out every record with an unknown design tier (designTier null) — unrated, not weak: ` +
     `records without design metadata, and systematic reviews/meta-analyses whose pooled study designs are not indexed. ` +
     `To keep reviews and trials, filter with studyTypes instead.`
   );

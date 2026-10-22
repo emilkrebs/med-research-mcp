@@ -99,7 +99,7 @@ Find the absolute path (`pwd`) and use `node <REPO>/dist/mcp/index.js` as the co
 | `MED_RESEARCH_PROXY_PREFIX` | optional | EZproxy-style DOI prefix for off-campus full text — `literature_fulltext` prepends it to the DOI, e.g. `https://doi-org.ezproxy.your-university.edu`. Works only if the proxy lets the machine in without a login (campus network or VPN); a proxy login in the browser isn't used. Use only if the institution's licences allow it: many publishers forbid using subscription content with AI tools. |
 | `MED_RESEARCH_CACHE_BACKEND` | optional | `memory` (default) or `sqlite` (persistent, survives restarts). `sqlite` needs `better-sqlite3`, an optional native dependency; if it isn't installed or fails to load, the server warns and uses `memory`. `.mcpb` installs always use `memory`. |
 | `MED_RESEARCH_CACHE_PATH` | optional | SQLite file path when the backend is `sqlite` (default `./pubmed-cache.db`, relative to the directory the client starts the server in, so use an absolute path; `:memory:` for ephemeral). |
-| `MED_RESEARCH_FULLTEXT_MAX_CHARS` | optional | Cap on returned full-text length. Default 50000; longer bodies are truncated (`truncated: true`). |
+| `MED_RESEARCH_FULLTEXT_MAX_CHARS` | optional | The most full-text characters returned per call. Default 50000; a longer text comes in parts (`truncated: true`, read on with `offset: nextOffset`). |
 | `MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE` | optional | `1` lets full-text fetches reach private or reserved addresses, refused by default. Only for a personal machine behind a fake-IP DNS proxy (Clash, Surge, sing-box TUN mode) or split-horizon DNS — never on a shared server. |
 
 ## Step 3 — Install the companion skills

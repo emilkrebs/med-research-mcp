@@ -17,7 +17,13 @@
  * server in `bookOrReportDetails.publisher`; `journalTitle` exists only in `lite`
  * results. The date is the issue date (`journalInfo.dateOfPublication`, "2026
  * Sep", like PubMed's), else the first publication date; recently added PMC
- * records have neither `pubYear` nor an issue date.
+ * records have neither `pubYear` nor an issue date. `electronicPublicationDate`
+ * becomes `epubDate`. A date range is matched against FIRST_PDATE, the earlier of
+ * the two: record 39680131, published online 2024-12-16 and in print 2025-07-01,
+ * matches FIRST_PDATE in December 2024 and P_PDATE in July 2025 (2026-10-22).
+ *
+ * Titles and abstracts carry HTML (`<h4>` section headings, `<sup>`, `<i>`), titles
+ * of MEDLINE records sometimes escaped (`&lt;i&gt;`); both are turned into text.
  *
  * Ids are only unique within a source: non-PubMed sources such as CBA (Chinese
  * Biological Abstracts) reuse plain numbers that collide with PMIDs, so those
@@ -30,6 +36,7 @@ import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
 import { cleanDoi, first, isoDateBound, splitAuthors, strArray, toIso1, withoutPubMedTags } from "./util.js";
 import { designPublicationTypes } from "../grader.js";
+import { htmlToText } from "../text.js";
 import type { Article, Correction, CorrectionType, SearchInput } from "../types.js";
 
 const BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest/search";
@@ -50,6 +57,7 @@ interface EpmcResult {
   bookOrReportDetails?: { publisher?: string };
   pubYear?: string;
   firstPublicationDate?: string;
+  electronicPublicationDate?: string;
   abstractText?: string;
   language?: string;
   fullTextUrlList?: { fullTextUrl?: { url?: string }[] };
@@ -110,7 +118,7 @@ function toArticle(r: EpmcResult): Article | null {
 
   const article: Article = {
     pmid: id,
-    title: (first(r.title) ?? "").replace(/\.$/, ""),
+    title: htmlToText(first(r.title) ?? "").replace(/\.$/, ""),
     authors: splitAuthors(r.authorString),
     journal:
       first(r.journalTitle) ?? first(r.journalInfo?.journal?.title) ?? first(r.bookOrReportDetails?.publisher) ?? "",
@@ -120,8 +128,10 @@ function toArticle(r: EpmcResult): Article | null {
     url,
     language,
   };
-  const abstract = first(r.abstractText);
+  const abstract = htmlToText(first(r.abstractText) ?? "");
   if (abstract) article.abstract = abstract;
+  const epubDate = first(r.electronicPublicationDate);
+  if (epubDate) article.epubDate = epubDate;
   if (doi) article.doi = doi;
   const pmcid = first(r.pmcid);
   if (pmcid && /^PMC\d+$/i.test(pmcid)) article.pmcid = pmcid.toUpperCase();

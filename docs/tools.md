@@ -17,23 +17,31 @@ Typical workflow: start with `literature_search`, read promising papers with `li
 | `query` | `string` | yes | Search query, not empty. PubMed field tags (`[tiab]`, `[mesh]`, `[au]`, `[pt]`) apply to `pubmed`; for other databases they're removed, since those would search them as words. |
 | `database` | `string \| string[]` | no | `"pubmed"` (default), `"europepmc"`, `"chinaxiv"`, `"russiarxiv"`, an array of these, or `"all"`, in lower case. Any other value is refused. See [Databases](#databases). |
 | `maxResults` | `number` | no | Results per database. Default `10`, max `50`. |
-| `minDesignTier` | `number` | no | Drop results below this design tier (`0`–`5`; `4` = RCTs). Also drops every result with a `null` tier (unlabeled records and most meta-analyses and systematic reviews) and reports how many in a warning. Narrows the query like `studyTypes`. |
-| `studyTypes` | `string[]` | no | Keep only these study types. To keep reviews and trials, use this instead of `minDesignTier`. The filter goes into the query (see [Design filters](#design-filters)), so `maxResults` counts matching records. `cohort`, `case-control`, `cross-sectional` and `in-vitro` are never assigned from metadata, so filtering on them returns nothing, with a warning. An empty list means no filter. |
-| `dateRange` | `{ from?, to? }` | no | Publication date filter: `YYYY-MM-DD`, `YYYY-MM` or `YYYY` (a year or month covers all of it). Applies to every database. A date that doesn't exist (`2020-13`), or `from` after `to`, is refused. |
-| `sort` | `"relevance" \| "date"` | no | Order within `pubmed` and `europepmc`. The merged list is always re-sorted by design tier. |
+| `minDesignTier` | `number` | no | Drop results below this design tier (`0`–`5`; `4` = RCTs). Also leaves out every record with a `null` tier (unlabeled records and most meta-analyses and systematic reviews), with a warning. Narrows the query like `studyTypes`, so those records are never fetched. |
+| `studyTypes` | `string[]` | no | Keep only these study types. To keep reviews and trials, use this instead of `minDesignTier`. The filter goes into the query (see [Design filters](#design-filters)), so `maxResults` counts matching records. `cohort`, `case-control`, `cross-sectional` and `in-vitro` are never assigned from metadata, so filtering on them returns nothing, with a warning. `animal-study` comes only from veterinary publication types: laboratory animal studies aren't labeled with it but flagged `animals-not-humans`, and a search that finds no `animal-study` says so. An empty list means no filter. |
+| `dateRange` | `{ from?, to? }` | no | Publication date filter: `YYYY-MM-DD`, `YYYY-MM` or `YYYY` (a year or month covers all of it). Applies to every database, and matches the electronic publication date too (see [Dates](#dates)). A date that doesn't exist (`2020-13`), or `from` after `to`, is refused. |
+| `sort` | `"relevance" \| "date"` | no | `"relevance"` (default): each database's relevance order, re-sorted by design tier when merged. `"date"`: newest first by first publication (the earlier of `pubDate` and `epubDate`), across databases. |
 | `language` | `string` | no | ISO 639-1 hint. Only `chinaxiv` reads it: `"ru"` searches the RussiaRxiv corpus. |
 
 Returns `{ articles, total, query, warnings? }`:
 
-- **`articles`**: one record per paper, sorted by design tier. Each has `pmid` (the database's id: a PMID for PubMed, otherwise that database's id), `title`, `abstract`, `authors`, `journal`, `pubDate`, `doi`, `publicationTypes`, `corrections` (retraction, erratum and update links), and for non-PubMed records `database`, `url` and `language`. ChinaXiv and RussiaRxiv records add `originalUrl`, the record they were translated from. Every record carries the [study design labels](#study-design-labels): `studyType`, `designTier` and, when any apply, `flags`. MeSH headings are left out to keep results compact; `literature_fetch` returns them.
+- **`articles`**: one record per paper, sorted by design tier (or by date). Each has `pmid` (the database's id: a PMID for PubMed, otherwise that database's id), `title`, `abstract`, `authors`, `journal`, `pubDate`, `epubDate` (when there is one, see [Dates](#dates)), `doi`, `publicationTypes`, `corrections` (retraction, erratum and update links), and for non-PubMed records `database`, `url` and `language`. ChinaXiv and RussiaRxiv records add `originalUrl`, the record they were translated from. Every record carries the [study design labels](#study-design-labels): `studyType`, `designTier` and, when any apply, `flags`. MeSH headings are left out to keep results compact; `literature_fetch` returns them.
 - **`total`**: the hit counts each database reported, summed, before truncation to `maxResults`. With a design filter, these count the records the narrowed query matched.
-- **`warnings`**: a database that failed while others answered (its error's message becomes a warning, and the others' results are still returned), records dropped by `minDesignTier` for having no tier, databases a design filter skipped, and a ChinaXiv or RussiaRxiv search that matched nothing because of its query rules. When every database searched fails, the tool returns the [error](#errors) instead, so a failed search never looks like an empty one.
+- **`warnings`**: a database that failed while others answered (its error's message becomes a warning, and the others' results are still returned), records with no tier that `minDesignTier` leaves out, databases a design filter skipped, an `animal-study` filter that found none, and a ChinaXiv or RussiaRxiv search that matched nothing because of its query rules. When every database searched fails, the tool returns the [error](#errors) instead, so a failed search never looks like an empty one.
 
 PubMed ranks results by relevance differently from one identical request to the next (five identical searches returned five different top-20 lists, 2026-10-20). So that a repeated search returns the same papers, the server reuses a PubMed search's results for an hour.
+
+Titles and abstracts are plain text. PubMed's and Europe PMC's markup is removed: italics and bold keep their text, character references are decoded (`&#xb1;` → `±`), a superscript of digits and signs becomes superscript characters (`10⁻³`, `kg⁻¹`, `³¹P`), subscripts become plain text (`HbA1c`), and the sections of a structured abstract start lines as `LABEL: text`.
+
+### Dates
+
+`pubDate` is the date the database reports, usually the journal issue's (`2019 Apr`). Many papers are published online months earlier; `epubDate` holds that date when the database has it (`2018 Sep 20` from PubMed, `2024-12-16` from Europe PMC). `dateRange` matches either: PubMed's publication date "includes both print and electronic dates of publication" ([PubMed Help](https://pubmed.ncbi.nlm.nih.gov/help/)), and Europe PMC is queried on the first publication date, the earlier of the two. So a search for 2024 can return a record with `pubDate: "2025 Jul"` and `epubDate: "2024-12-16"`.
 
 ### Design filters
 
 `studyTypes` and `minDesignTier` are applied inside the databases that have design metadata. PubMed and Europe PMC are asked only for records carrying a publication type the filter can keep (`"Randomized Controlled Trial"[pt] OR "Equivalence Trial"[pt]` for `randomized-controlled-trial`; `PUB_TYPE:` for Europe PMC), and the [labels](#study-design-labels) are then checked on every record, so a record whose tags classify it otherwise (an RCT also tagged `Observational Study` is `observational`) is still dropped. A search for 20 RCTs on creatine and cognition returns 20 RCTs out of 34 candidates; filtering the plain top 20, as earlier versions did, found 5 (2026-10-20).
+
+Because the query is narrowed, `minDesignTier` never sees the records with a `null` tier that it leaves out, and can't count them: "creatine supplementation" at `minDesignTier: 3` returns RCTs only, with a `total` of 796 of 3,427 records (2026-10-22). The warning says that unrated records were left out whenever `studyTypes` alone would have kept some.
 
 `chinaxiv` and `russiarxiv` records carry no design metadata, so a design filter would drop all of them: those databases aren't searched, and a warning says so. Search them without the filter and read the abstracts.
 
@@ -52,8 +60,12 @@ Returns `{ articles, missing, warnings? }`: the raw records in the order request
 | --- | --- | --- | --- |
 | `id` | `string` | yes | Article id: a PMID, a PMCID (`PMC…`, a record's `pmcid`), a Europe PMC preprint id (`PPR…`), or another database's id. |
 | `doi` | `string` | no | Required when `id` isn't a PMID, PMCID or `PPR` id. Pass the `doi` from a `literature_search` result. |
+| `offset` | `number` | no | Character position to return the text from: the previous call's `nextOffset`. Default `0`. |
+| `maxChars` | `number` | no | The most characters to return. At most `MED_RESEARCH_FULLTEXT_MAX_CHARS` (default 50,000), which is also the default. |
 
-Tries, in order: Europe PMC's full-text API, when the record has a PMCID (no email needed; tables come through row by row); the open-access copies Unpaywall knows; the institutional proxy, if configured; and the DOI directly. If none yields the article, it returns the abstract. Returns `{ id, doi?, source, fulltext?, format, truncated, warning? }`, where `source` says which route worked (`europepmc`, `unpaywall`, `proxy`, `direct`, or `none` for the abstract fallback) and `format` is `markdown` or `pdf` (plain text extracted from a PDF). Texts are capped at `MED_RESEARCH_FULLTEXT_MAX_CHARS` (default 50,000 characters), with `truncated: true` when cut.
+Tries, in order: Europe PMC's full-text API, when the record has a PMCID (no email needed; tables come through row by row); the open-access copies Unpaywall knows; the institutional proxy, if configured; and the DOI directly. If none yields the article, it returns the abstract. Returns `{ id, doi?, source, fulltext?, format, truncated, totalChars?, nextOffset?, warning? }`, where `source` says which route worked (`europepmc`, `unpaywall`, `proxy`, `direct`, or `none` for the abstract fallback) and `format` is `markdown` or `pdf` (plain text extracted from a PDF).
+
+A long text comes in parts. `totalChars` is the length of the whole text; when more follows, `truncated` is `true` and `nextOffset` says where the next part starts, so a call with `offset: nextOffset` reads on. A part ends at a paragraph break, line break or space near its limit rather than mid-word, and the parts join up to the whole text. An `offset` past the end returns `INVALID_INPUT`. Open-access texts are cached whole, so later parts cost no download; proxy and direct texts are fetched again for each part. The abstract fallback is returned whole.
 
 A web page counts as the full text only if it holds at least 2,000 characters besides its abstract, keywords, references and similar front and back matter. A paywalled article's page shows the abstract and little else, and so does arXiv's abstract page; those fall through to the next route. Sections a publisher's page adds that aren't the article, such as "Similar content being viewed by others" or "Cited by", are removed from the text.
 
@@ -113,7 +125,7 @@ Every `literature_search` result carries three fields, computed from database me
 | `machine-translated` | ChinaXiv/RussiaRxiv text machine-translated into English | unchanged |
 | `machine-generated-abstract` | The abstract was written by ChinaRxiv, not the authors | unchanged |
 
-Results are sorted with tiers 2–5 first, then `null`, then tiers 1 and 0.
+Results are sorted with tiers 2–5 first, then `null`, then tiers 1 and 0, unless `sort` is `"date"`.
 
 Two limits matter:
 
@@ -138,8 +150,8 @@ A failing tool returns an `isError` result whose text holds this payload (`UNKNO
 | --- | --- | --- |
 | `RATE_LIMIT` | A database kept answering 429 after two retries, or asked for a wait over 5 seconds; the message names it | Wait `retryAfter` seconds. For PubMed, set `NCBI_API_KEY` |
 | `QUERY_TOO_BROAD` | A PubMed query matched more than 100,000 records (in a multi-database search: a warning) | Add `[tiab]` or `[mesh]` terms or `AND` clauses |
-| `PARSE_FAILURE`, `NETWORK_ERROR` | The database was unreachable or answered something unreadable | Retry once, then report the database as unreachable |
+| `PARSE_FAILURE`, `NETWORK_ERROR` | The database was unreachable or answered something unreadable. A server error (HTTP 500, 502, 503, 504), a timeout or a dropped connection has already been retried twice, within 20 seconds | Retry once, then report the database as unreachable |
 | `NOT_FOUND` | `literature_fulltext` got an id it can't resolve (no such PMID, or another database's id without a DOI), or a DOI doi.org doesn't know and there's no abstract to return | Check the id, or pass the DOI |
-| `INVALID_INPUT` | A date that doesn't exist, or `from` after `to`; in library calls also an unknown database or an empty query (the MCP schema refuses those itself) | Correct the parameter the message names |
+| `INVALID_INPUT` | A date that doesn't exist, or `from` after `to`; a full-text `offset` past the end of the text; in library calls also an unknown database or an empty query (the MCP schema refuses those itself) | Correct the parameter the message names |
 
 In a multi-database search, a database that fails while others answer becomes a warning, `<database> search failed: <message>`, not an error.

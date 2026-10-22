@@ -4,8 +4,8 @@
  * `searchLiterature` fans a query out to one or more {@link DatabaseAdapter}s,
  * classifies every result's design from its metadata, merges the lists,
  * de-duplicates by DOI (keeping the better-classified copy, with any retraction
- * found on another copy), filters, and sorts by design tier. `fetchLiterature`
- * fetches specific ids from one database.
+ * found on another copy), filters, and sorts by design tier, or with `sort: "date"`
+ * newest first. `fetchLiterature` fetches specific ids from one database.
  *
  * Databases without NLM publication types (ChinaXiv, RussiaRxiv) always come
  * back `unknown`: the calling model reads the design from the abstract. A design
@@ -18,16 +18,17 @@
  */
 
 import { adaptersFor, getAdapter, unknownDatabase, type DatabaseAdapter } from "./adapters/registry.js";
-import { doiKey, isoDateBound } from "./adapters/util.js";
+import { dateKey, doiKey, isoDateBound } from "./adapters/util.js";
 import { LRUBackend, type Cache } from "./cache.js";
 import { errors, isMedResearchError } from "./errors.js";
 import {
   classifyArticle,
   designPublicationTypes,
   mergeDuplicate,
+  noAnimalStudiesWarning,
   rankKey,
   unassignedStudyTypes,
-  unclassifiedDroppedWarning,
+  unratedExcludedWarning,
 } from "./grader.js";
 import type {
   FetchOutput,
@@ -56,6 +57,17 @@ function validateSearch(input: SearchInput): void {
 }
 
 /**
+ * The earlier of a record's issue and electronic publication dates, as a {@link dateKey}; -1 without
+ * either. PubMed sorts by date this way ("Citations with more than one publication date, such as
+ * electronic and print, are sorted by their earliest publication date", PubMed Help, checked
+ * 2026-10-22), and both PubMed's and Europe PMC's date filters match it.
+ */
+function firstPublished(article: Article): number {
+  const dates = [dateKey(article.pubDate), dateKey(article.epubDate)].filter((d) => d !== undefined);
+  return dates.length > 0 ? Math.min(...dates) : -1;
+}
+
+/**
  * Keep one article per DOI (see {@link mergeDuplicate}). DOI-less articles are merged only
  * when the same database returned the same id twice (the chinaxiv adapter with language
  * "ru" and the russiarxiv adapter search the same corpus).
@@ -72,7 +84,8 @@ function dedupeByDoi(articles: GradedArticle[]): GradedArticle[] {
 }
 
 /**
- * Search one or more databases and return classified, merged, de-duplicated results.
+ * Search one or more databases and return classified, merged, de-duplicated results,
+ * sorted by design tier, or with `sort: "date"` by first publication date, newest first.
  * Throws INVALID_INPUT for an unknown database, an empty query or an invalid date,
  * and the first database's error when every database searched failed.
  *
@@ -116,6 +129,8 @@ export async function searchLiterature(
     );
   }
   if (searched.length === 0) return { articles: [], total: 0, query: input.query, warnings };
+  const unrated = unratedExcludedWarning(input.studyTypes, input.minDesignTier);
+  if (unrated) warnings.push(unrated);
 
   const maxResults = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
 
@@ -155,17 +170,18 @@ export async function searchLiterature(
   // drop must first pass its flag on to the copy that is kept.
   const minTier = input.minDesignTier ?? 0;
   const typeFilter = input.studyTypes?.length ? new Set(input.studyTypes) : null;
-  let droppedUnclassified = 0;
-  const merged = dedupeByDoi(graded).filter((a) => {
-    if ((a.designTier ?? 0) < minTier) {
-      if (a.designTier == null) droppedUnclassified += 1;
-      return false;
-    }
-    return !typeFilter || typeFilter.has(a.studyType);
-  });
-  if (droppedUnclassified > 0) warnings.push(unclassifiedDroppedWarning(droppedUnclassified));
-  // Stable sort — equal-rank items keep their per-adapter relevance order.
-  merged.sort((a, b) => rankKey(b) - rankKey(a));
+  const merged = dedupeByDoi(graded).filter(
+    (a) => (a.designTier ?? 0) >= minTier && (!typeFilter || typeFilter.has(a.studyType)),
+  );
+  if (typeFilter?.has("animal-study") && !merged.some((a) => a.studyType === "animal-study")) {
+    warnings.push(noAnimalStudiesWarning());
+  }
+  // Stable sorts: equal items keep their database's order, databases in the order requested.
+  if (input.sort === "date") {
+    merged.sort((a, b) => firstPublished(b) - firstPublished(a));
+  } else {
+    merged.sort((a, b) => rankKey(b) - rankKey(a));
+  }
 
   return {
     articles: merged,

@@ -87,6 +87,40 @@ describe("SQLiteBackend persistence", () => {
     expect(second.getFulltext("12345678")?.fulltext).toBe(FULLTEXT.fulltext);
     second.close();
   });
+
+  it("empties a file written by 0.6.0 or earlier, whose abstracts were parsed without their inline markup", () => {
+    const path = freshPath();
+    const old = new SQLiteBackend(path);
+    old.setSummary("12345678", ARTICLE);
+    old.setAbstract("12345678", "(= 0.03), 31 &#xb1; 8 years");
+    old.setFulltext("12345678", { ...FULLTEXT, fetchedAt: Date.now() });
+    old.close();
+    // 0.6.0 and earlier never set user_version.
+    const raw = new Database(path);
+    raw.pragma("user_version = 0");
+    raw.close();
+
+    const upgraded = new SQLiteBackend(path);
+    expect(upgraded.getSummary("12345678")).toBeNull();
+    expect(upgraded.getAbstract("12345678")).toBeNull();
+    expect(upgraded.getFulltext("12345678")).toBeNull();
+    expect(upgraded.size).toBe(0);
+    upgraded.close();
+  });
+
+  it("leaves a file written by a newer version alone", () => {
+    const path = freshPath();
+    const newer = new SQLiteBackend(path);
+    newer.setAbstract("12345678", "newer abstract");
+    newer.close();
+    const raw = new Database(path);
+    raw.pragma("user_version = 99");
+    raw.close();
+
+    const reopened = new SQLiteBackend(path);
+    expect(reopened.getAbstract("12345678")).toBe("newer abstract");
+    reopened.close();
+  });
 });
 
 describe("SQLiteBackend full-text TTL", () => {

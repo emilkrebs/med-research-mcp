@@ -103,6 +103,49 @@ describe("NcbiClient.parseEfetch", () => {
   });
 });
 
+// AbstractText is mixed content. Fragments of PMIDs 40292479, 32599716, 38418482 and 30243806
+// as efetch returns them (2026-10-22), which 0.6.0 returned as "(= 0.03)", "31 &#xb1; 8 years",
+// "consecutiveP-MRS scans" and "haemoglobin Aover time".
+const MIXED_XML = `<?xml version="1.0" ?>
+<PubmedArticleSet>
+  <PubmedArticle><MedlineCitation><PMID Version="1">40292479</PMID><Article><Abstract><AbstractText><b>Background/Objectives</b>: Creatine monohydrate (CrM) is considered to be one of the most effective supplements. <b>Methods</b>: Sixty-three (34 females, 29 males, 31 &#xb1; 8 years) participants were randomised. Lean mass increased more with CrM (<i>p</i> = 0.03).</AbstractText></Abstract></Article></MedlineCitation></PubmedArticle>
+  <PubmedArticle><MedlineCitation><PMID Version="1">32599716</PMID><Article><Abstract><AbstractText>Twenty-two participants were randomized to supplement with creatine (CR: <i>n</i> = 13, 26 &#xb1; 4 yrs; 0.0055 g&#xb7;kg<sup>-1</sup> post training set).</AbstractText></Abstract></Article></MedlineCitation></PubmedArticle>
+  <PubmedArticle><MedlineCitation><PMID Version="1">38418482</PMID><Article><Abstract><AbstractText>Two consecutive <sup>31</sup>P-MRS scans, <sup>1</sup>H-MRS, and cognitive tests were performed during 21&#xa0;h of sleep deprivation.</AbstractText></Abstract></Article></MedlineCitation></PubmedArticle>
+  <PubmedArticle><MedlineCitation><PMID Version="1">30243806</PMID><Article><Abstract>
+    <AbstractText Label="METHODS">The primary outcome was the change in haemoglobin A<sub>1c</sub> over time.</AbstractText>
+    <AbstractText Label="RESULTS">[MD (95% CI)&#x2009;=&#x2009;-0.38% (-0.62, -0.15)]; p &lt; 0.05 &amp; more.</AbstractText>
+    <AbstractText Label="EMPTY"></AbstractText>
+  </Abstract></Article></MedlineCitation></PubmedArticle>
+</PubmedArticleSet>`;
+
+describe("NcbiClient.parseEfetch — mixed-content abstracts", () => {
+  const parsed = new NcbiClient({ email: "test@example.com" }).parseEfetch(MIXED_XML);
+  const abstract = (pmid: string): string | undefined => parsed.get(pmid)?.abstract;
+
+  it("keeps the text of inline elements", () => {
+    expect(abstract("40292479")).toContain("Background/Objectives: Creatine monohydrate");
+    expect(abstract("40292479")).toContain("effective supplements. Methods: Sixty-three");
+    expect(abstract("40292479")).toContain("(p = 0.03)");
+    expect(abstract("32599716")).toContain("(CR: n = 13,");
+    expect(abstract("30243806")).toContain("haemoglobin A1c over time");
+  });
+
+  it("decodes character references, and writes a superscript of digits and signs as superscript characters", () => {
+    expect(abstract("40292479")).toContain("31 ± 8 years");
+    expect(abstract("32599716")).toContain("0.0055 g·kg⁻¹ post");
+    expect(abstract("38418482")).toBe(
+      "Two consecutive ³¹P-MRS scans, ¹H-MRS, and cognitive tests were performed during 21 h of sleep deprivation.",
+    );
+  });
+
+  it("keeps labels, decodes escaped text once, and drops a section without text", () => {
+    expect(abstract("30243806")).toBe(
+      "METHODS: The primary outcome was the change in haemoglobin A1c over time.\n" +
+        "RESULTS: [MD (95% CI) = -0.38% (-0.62, -0.15)]; p < 0.05 & more.",
+    );
+  });
+});
+
 // NCBI's esummary returns an ERROR-DOC object (uid + error, no title) for uids it
 // doesn't recognize instead of omitting the key — e.g. for a nonexistent PMID. These
 // tests exercise the real esummary()/fetchPubMed() parse path (real HTTP layer mocked
@@ -140,6 +183,22 @@ describe("NcbiClient.esummary error-doc handling", () => {
 
     expect(out.has("99999999")).toBe(false);
     expect(out.get("11111111")?.title).toBe("Creatine and cognition");
+  });
+
+  it("keeps the electronic publication date next to the issue date", async () => {
+    // PMID 30243806: issue 2019 Apr, online 2018 Sep 20 (esummary, 2026-10-22).
+    const payload = {
+      result: {
+        uids: ["30243806", "11111111"],
+        "30243806": { ...VALID_DOC, uid: "30243806", pubdate: "2019 Apr", epubdate: "2018 Sep 20" },
+        "11111111": { ...VALID_DOC, epubdate: "" },
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(payload), { status: 200 })));
+
+    const out = await new NcbiClient({ email: "test@example.com" }).esummary(["30243806", "11111111"]);
+    expect(out.get("30243806")).toMatchObject({ pubDate: "2019 Apr", epubDate: "2018 Sep 20" });
+    expect(out.get("11111111")).not.toHaveProperty("epubDate");
   });
 
   it("fetchPubMed reports the nonexistent PMID as missing instead of a stub article", async () => {
@@ -210,10 +269,11 @@ describe("searchPubMed orchestration", () => {
     expect(out.articles[1]?.studyType).toBe("review");
   });
 
-  it("filters by minDesignTier", async () => {
+  it("filters by minDesignTier, and says it leaves out unrated records", async () => {
     const out = await searchPubMed({ query: "x", minDesignTier: 4 }, new LRUBackend(), fakeClient());
     expect(out.articles).toHaveLength(1);
     expect(out.articles[0]?.pmid).toBe("11111111");
+    expect(out.warnings).toEqual([expect.stringContaining("leaves out every record with an unknown design tier")]);
   });
 
   it("filters by study type", async () => {

@@ -49,6 +49,22 @@ export function isoDateBound(value: string | undefined, bound: "from" | "to"): s
   return `${m[1]}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/**
+ * A publication date as a number that sorts chronologically (YYYYMMDD, 0 for a missing month
+ * or day), from the forms the databases report: "2019 Nov-Dec" (the first month counts),
+ * "2021 Mar 15", "2021 Spring" (year only), "2024-12-16". Undefined without a year.
+ */
+export function dateKey(date: string | undefined): number | undefined {
+  const m = /^\s*(\d{4})(?:[-/ ]+(\d{1,2}|[a-z]{3})[a-z]*\.?(?:[-/ ]+(\d{1,2})\b)?)?/i.exec(date ?? "");
+  if (!m) return undefined;
+  const month = !m[2] ? 0 : /^\d+$/.test(m[2]) ? Number(m[2]) : MONTHS.indexOf(m[2].toLowerCase()) + 1;
+  if (month < 1 || month > 12) return Number(m[1]) * 10_000;
+  const day = m[3] && Number(m[3]) <= 31 ? Number(m[3]) : 0;
+  return Number(m[1]) * 10_000 + month * 100 + day;
+}
+
 /** Split a comma/semicolon-separated author string ("Smith J, Doe A") into names. */
 export function splitAuthors(value: unknown): string[] {
   const s = first(value);

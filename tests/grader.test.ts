@@ -7,6 +7,7 @@ import {
   mergeDuplicate,
   rankKey,
   unassignedStudyTypes,
+  unratedExcludedWarning,
 } from "../src/core/grader";
 import { STUDY_TYPES } from "../src/core/types";
 import type { Correction, NcbiArticle } from "../src/core/types";
@@ -308,6 +309,17 @@ describe("designPublicationTypes — narrowing a query to what a design filter c
     expect(designPublicationTypes(["systematic-review"], 1)).toEqual([]);
     // A tier above 0 drops unrated records, so wanting `unknown` no longer prevents narrowing.
     expect(designPublicationTypes(["unknown", "randomized-controlled-trial"], 2)).toEqual(["Randomized Controlled Trial", "Equivalence Trial"]);
+  });
+
+  it("warns that minDesignTier leaves out unrated records only when studyTypes would keep some", () => {
+    expect(unratedExcludedWarning()).toBeUndefined();
+    expect(unratedExcludedWarning(undefined, 0)).toBeUndefined();
+    expect(unratedExcludedWarning(undefined, 3)).toContain("minDesignTier 3 leaves out every record with an unknown design tier");
+    expect(unratedExcludedWarning([], 3)).toBeDefined();
+    expect(unratedExcludedWarning(["unknown"], 2)).toBeDefined();
+    // Only network meta-analyses are rated: other meta-analyses are left out.
+    expect(unratedExcludedWarning(["meta-analysis"], 5)).toBeDefined();
+    expect(unratedExcludedWarning(["randomized-controlled-trial", "clinical-trial"], 2)).toBeUndefined();
   });
 
   it("returns an empty list for designs metadata never assigns", () => {

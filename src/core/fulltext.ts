@@ -14,7 +14,8 @@
  *                       says what each location answered
  *
  * Only open-access (Europe PMC, Unpaywall) texts are cached; a proxy or direct
- * text may be licensed to the user alone.
+ * text may be licensed to the user alone. A long text is returned in parts of at
+ * most `maxChars` characters; `offset` reads on from where the last part ended.
  *
  * HTML is reduced to the article body with mozilla/readability, then converted
  * to markdown with turndown. A page counts as full text only if it holds text
@@ -85,7 +86,7 @@ export interface FulltextDeps {
   pdfToText?: (bytes: Uint8Array) => Promise<string>;
   /** Institutional proxy prefix. Defaults to $MED_RESEARCH_PROXY_PREFIX. */
   proxyPrefix?: string;
-  /** Character cap on the returned text. Defaults to $MED_RESEARCH_FULLTEXT_MAX_CHARS, then 50000. */
+  /** The most characters returned per call, and the ceiling for `FulltextInput.maxChars`. Defaults to $MED_RESEARCH_FULLTEXT_MAX_CHARS, then 50000. */
   maxChars?: number;
   /** Per-fetch timeout in ms. Default 20000. */
   timeoutMs?: number;
@@ -134,22 +135,26 @@ export async function fetchFulltext(
     throw errors.noDoi(String(input.id ?? ""));
   }
 
-  const maxChars = deps.maxChars ?? envMaxChars() ?? DEFAULT_MAX_CHARS;
+  const offset = input.offset ?? 0;
+  if (!Number.isInteger(offset) || offset < 0) throw errors.invalidInput("offset must be a whole number of characters, 0 or more.");
+  if (input.maxChars !== undefined && (!Number.isInteger(input.maxChars) || input.maxChars < 1)) {
+    throw errors.invalidInput("maxChars must be a whole number of characters, 1 or more.");
+  }
+  const limit = deps.maxChars ?? envMaxChars() ?? DEFAULT_MAX_CHARS;
+  const maxChars = Math.min(input.maxChars ?? limit, limit);
   const now = deps.now ?? Date.now;
 
-  // 1. Cache hit — return immediately, re-clamped to the current limit. Only open-access texts
-  // count: 0.5.0 also cached proxy and direct texts, which a persistent cache may still hold.
+  // 1. Cache hit — return immediately: the cache holds the whole text, so every part is cheap.
+  // Only open-access texts count: 0.5.0 also cached proxy and direct texts, which a persistent cache may still hold.
   const cached = cache.getFulltext(id);
   if (cached && OPEN_ACCESS_SOURCES.has(cached.source)) {
-    const { text, truncated } = clamp(cached.fulltext, maxChars);
     const knownDoi = inputDoi ?? normalizeDoi(cache.getSummary(id)?.doi);
     return {
       id,
       ...(knownDoi ? { doi: knownDoi } : {}),
       source: cached.source as FulltextSource,
-      fulltext: text,
+      ...part(cached.fulltext, offset, maxChars),
       format: cached.format,
-      truncated,
     };
   }
 
@@ -234,8 +239,7 @@ export async function fetchFulltext(
       if (OPEN_ACCESS_SOURCES.has(source)) {
         cache.setFulltext(id, { source, fulltext: got.fulltext, format: got.format, fetchedAt: now() });
       }
-      const { text, truncated } = clamp(got.fulltext, maxChars);
-      return { id, ...(doi ? { doi } : {}), source, fulltext: text, format: got.format, truncated };
+      return { id, ...(doi ? { doi } : {}), source, ...part(got.fulltext, offset, maxChars), format: got.format };
     }
     return null;
   };
@@ -472,9 +476,32 @@ function fallbackWarning(ctx: {
   return parts.join(" ");
 }
 
-function clamp(text: string, maxChars: number): { text: string; truncated: boolean } {
-  if (text.length <= maxChars) return { text, truncated: false };
-  return { text: text.slice(0, maxChars), truncated: true };
+/**
+ * The part of a full text from `offset`, at most `maxChars` long. When the text goes on, the part
+ * ends after the last paragraph break, line break or space in its final fifth, if there is one, so
+ * that it doesn't stop mid-word; `nextOffset` is where the next part starts. Parts join up to the
+ * whole text. Throws INVALID_INPUT for an offset past the end.
+ */
+function part(
+  text: string,
+  offset: number,
+  maxChars: number,
+): Pick<FulltextOutput, "fulltext" | "truncated" | "totalChars" | "nextOffset"> {
+  if (offset > 0 && offset >= text.length) {
+    throw errors.invalidInput(`offset ${offset} is past the end of the text, which has ${text.length} characters.`);
+  }
+  const end = offset + maxChars;
+  if (end >= text.length) return { fulltext: text.slice(offset), truncated: false, totalChars: text.length };
+  const floor = end - Math.floor(maxChars / 5);
+  let cut = end;
+  for (const breakAt of ["\n\n", "\n", " "]) {
+    const at = text.lastIndexOf(breakAt, end - breakAt.length);
+    if (at >= floor && at > offset) {
+      cut = at + breakAt.length;
+      break;
+    }
+  }
+  return { fulltext: text.slice(offset, cut), truncated: true, totalChars: text.length, nextOffset: cut };
 }
 
 // ─── Telling an article from its landing page ───────────────────
@@ -639,7 +666,8 @@ export async function defaultHtmlToMarkdown(html: string, url: string): Promise<
  * Convert a JATS XML article (as Europe PMC's full-text API returns it) to
  * markdown: title, abstract, then the body's sections as headings, paragraphs,
  * lists, tables (row by row), formulas (one readable form each), figure
- * captions and scanned-article OCR text. Reference lists are left out.
+ * captions and scanned-article OCR text. Reference lists are left out, and so
+ * are sections that would print nothing but their heading.
  *
  * Returns "" when the body holds less than {@link MIN_FULLTEXT_CHARS}: an
  * article Europe PMC has only as an abstract must not pass for full text.
@@ -687,9 +715,15 @@ export async function defaultJatsToMarkdown(xml: string): Promise<string> {
   const render = (el: Element, depth: number, out: string[]): void => {
     switch (el.localName) {
       case "sec": {
+        // Europe PMC wraps the reference list in a section of its own, titled "References".
+        if (el.getAttribute("sec-type") === "ref-list") return;
         const heading = child(el, "title");
+        const content: string[] = [];
+        for (const c of el.children) if (c !== heading) render(c, depth + 1, content);
+        // A heading over nothing, such as "Supplementary Materials" over files, is left out.
+        if (content.length === 0) return;
         if (heading) out.push(`${"#".repeat(Math.min(depth, 6))} ${squash(inline(heading))}`);
-        for (const c of el.children) if (c !== heading) render(c, depth + 1, out);
+        out.push(...content);
         return;
       }
       case "title":

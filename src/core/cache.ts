@@ -135,6 +135,17 @@ CREATE TABLE IF NOT EXISTS fulltexts (
 );
 `;
 
+/**
+ * The version of what the cache stores, kept in the file's `user_version`. Opening a file
+ * written by an older version empties it: abstracts never expire, so text parsed by an older
+ * version would otherwise be served forever.
+ *
+ * 1 (0.6.1): PubMed abstracts lost the text of inline markup and kept character references;
+ * Europe PMC titles and abstracts carried HTML; Europe PMC full texts could end in an empty
+ * References heading.
+ */
+const CACHE_FORMAT_VERSION = 1;
+
 interface FulltextRow {
   source: string;
   fulltext: string;
@@ -189,6 +200,7 @@ export class SQLiteBackend implements Cache {
     this.db.pragma("journal_mode = WAL"); // concurrent reads while another process writes
     this.db.pragma("synchronous = NORMAL"); // safe with WAL, faster writes
     this.db.exec(SCHEMA_SQL);
+    this.migrate();
 
     this.stmts = {
       getSummary: this.db.prepare("SELECT article, fetched_at FROM summaries WHERE pmid = ?"),
@@ -254,6 +266,16 @@ export class SQLiteBackend implements Cache {
 
   setFulltext(pmid: string, data: FulltextData): void {
     this.stmts.setFulltext.run(pmid, data.source, data.fulltext, data.format, data.fetchedAt ?? Date.now());
+  }
+
+  /** Empty a file written by an older version (see {@link CACHE_FORMAT_VERSION}); a newer one is left alone. */
+  private migrate(): void {
+    const version = this.db.pragma("user_version", { simple: true }) as number;
+    if (version >= CACHE_FORMAT_VERSION) return;
+    this.db.transaction(() => {
+      this.db.exec("DELETE FROM summaries; DELETE FROM abstracts; DELETE FROM fulltexts;");
+      this.db.pragma(`user_version = ${CACHE_FORMAT_VERSION}`);
+    })();
   }
 
   /** Delete every expired summary and full-text row. Runs on construction; call periodically if desired. */
