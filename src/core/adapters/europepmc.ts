@@ -20,7 +20,11 @@
  * records have neither `pubYear` nor an issue date. `electronicPublicationDate`
  * becomes `epubDate`. A date range is matched against FIRST_PDATE, the earlier of
  * the two: record 39680131, published online 2024-12-16 and in print 2025-07-01,
- * matches FIRST_PDATE in December 2024 and P_PDATE in July 2025 (2026-10-22).
+ * matches FIRST_PDATE in December 2024 and P_PDATE in July 2025 (2026-10-22). A
+ * date sort orders by FIRST_PDATE too, as the merged results are: sorted by P_PDATE,
+ * `semaglutide AND SRC:MED` led with an issue of January 2027 published online in
+ * August 2026, and records published online on 2026-10-20 didn't make the first page
+ * (2026-10-22).
  *
  * Titles and abstracts carry HTML (`<h4>` section headings, `<sup>`, `<i>`), titles
  * of MEDLINE records sometimes escaped (`&lt;i&gt;`); both are turned into text.
@@ -184,7 +188,7 @@ export class EuropePmcAdapter extends RestAdapter {
       resultType: "core",
       pageSize: String(pageSize),
     });
-    if (input.sort === "date") params.set("sort", "P_PDATE_D desc");
+    if (input.sort === "date") params.set("sort", "FIRST_PDATE_D desc");
     const data = await this.http.json<EpmcResponse>(`${BASE}?${params.toString()}`);
     const { count, articles } = parseEuropePmc(data);
     this.remember(articles);

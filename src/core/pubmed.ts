@@ -14,7 +14,7 @@ import { errors } from "./errors.js";
 import { requestWithRetries } from "./request.js";
 import { xmlToText } from "./text.js";
 import { contactEmail, envSetting, PROJECT_TOOL, USER_AGENT } from "./version.js";
-import { classifyArticle, designPublicationTypes, unratedExcludedWarning } from "./grader.js";
+import { classifyArticle, designPublicationTypes, filterWarnings, noAnimalStudiesWarning } from "./grader.js";
 import { CORRECTION_TYPES } from "./types.js";
 import type { Correction, CorrectionType, FetchInput, FetchOutput, GradedArticle, Article, SearchInput, SearchOutput, StudyType } from "./types.js";
 
@@ -159,7 +159,8 @@ export class NcbiClient {
     return params;
   }
 
-  private async request(path: string, params: URLSearchParams): Promise<Response> {
+  /** The body of a successful response. */
+  private async request(path: string, params: URLSearchParams): Promise<string> {
     const url = `${EUTILS_BASE}/${path}?${this.commonParams(params).toString()}`;
     return this.limiter.run((pace) =>
       requestWithRetries(url, { timeoutMs: this.timeoutMs, source: "PubMed", headers: { "User-Agent": USER_AGENT }, beforeAttempt: pace }),
@@ -199,10 +200,10 @@ export class NcbiClient {
   }
 
   private async runEsearch(params: URLSearchParams): Promise<{ count: number; pmids: string[] }> {
-    const res = await this.request("esearch.fcgi", params);
+    const body = await this.request("esearch.fcgi", params);
     let data: { esearchresult?: { count?: string; idlist?: string[]; ERROR?: string }; ERROR?: string };
     try {
-      data = (await res.json()) as typeof data;
+      data = JSON.parse(body) as typeof data;
     } catch (err) {
       throw errors.parseFailure(err instanceof Error ? err.message : "invalid JSON from esearch");
     }
@@ -228,10 +229,10 @@ export class NcbiClient {
       id: pmids.join(","),
       retmode: "json",
     });
-    const res = await this.request("esummary.fcgi", params);
+    const body = await this.request("esummary.fcgi", params);
     let data: { result?: Record<string, EsummaryDoc | string[]> };
     try {
-      data = (await res.json()) as typeof data;
+      data = JSON.parse(body) as typeof data;
     } catch (err) {
       throw errors.parseFailure(err instanceof Error ? err.message : "invalid JSON from esummary");
     }
@@ -279,9 +280,7 @@ export class NcbiClient {
       retmode: "xml",
       rettype: "abstract",
     });
-    const res = await this.request("efetch.fcgi", params);
-    const xml = await res.text();
-    return this.parseEfetch(xml);
+    return this.parseEfetch(await this.request("efetch.fcgi", params));
   }
 
   /** Exposed for testing: parse an efetch XML string. */
@@ -302,10 +301,9 @@ export class NcbiClient {
       const pmid = extractPmid(citation.PMID);
       if (!pmid) continue;
       const articleNode = citation.Article ?? {};
+      const abstract = extractAbstract(articleNode.Abstract);
       out.set(pmid, {
-        ...(extractAbstract(articleNode.Abstract) !== undefined
-          ? { abstract: extractAbstract(articleNode.Abstract) }
-          : {}),
+        ...(abstract !== undefined ? { abstract } : {}),
         publicationTypes: extractPubTypes(articleNode.PublicationTypeList),
         meshHeadings: extractMesh(citation.MeshHeadingList),
         corrections: extractCorrections(citation.CommentsCorrectionsList),
@@ -407,16 +405,16 @@ export async function searchPubMed(
   cache: Cache = new LRUBackend(),
   client: NcbiClient = new NcbiClient(),
 ): Promise<SearchOutput> {
-  const warnings: string[] = [];
+  // As in searchLiterature: what the filter leaves out is said whatever PubMed returns.
+  const warnings = filterWarnings(input.studyTypes, input.minDesignTier);
+  if (designPublicationTypes(input.studyTypes, input.minDesignTier)?.length === 0) {
+    return { articles: [], total: 0, query: input.query, warnings };
+  }
   const { count, pmids } = await client.esearch(input);
 
   if (pmids.length === 0) {
-    return {
-      articles: [],
-      total: count,
-      query: input.query,
-      warnings: [count === 0 ? "No articles matched this query. Try broader terms or fewer field tags." : "No results returned."],
-    };
+    warnings.push(count === 0 ? "No articles matched this query. Try broader terms or fewer field tags." : "No results returned.");
+    return { articles: [], total: count, query: input.query, warnings };
   }
   if (count > SOFT_BROAD_THRESHOLD) {
     warnings.push(
@@ -483,8 +481,8 @@ export async function searchPubMed(
     if (typeFilter && !typeFilter.has(graded.studyType)) continue;
     articles.push(graded);
   }
-  const unrated = unratedExcludedWarning(input.studyTypes, input.minDesignTier);
-  if (unrated) warnings.push(unrated);
+  const noAnimals = noAnimalStudiesWarning(input.studyTypes, input.minDesignTier, articles);
+  if (noAnimals) warnings.push(noAnimals);
 
   return {
     articles,

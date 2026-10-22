@@ -29,7 +29,7 @@ export type { FulltextDeps, FetchedResource } from "./fulltext.js";
 export { UnpaywallClient } from "./unpaywall.js";
 export type { UnpaywallConfig, UnpaywallLookup, UnpaywallResult } from "./unpaywall.js";
 
-export { createCache, LRUBackend, NullCache, SQLiteBackend, FULLTEXT_TTL_MS, SUMMARY_TTL_MS } from "./cache.js";
+export { createCache, LRUBackend, NullCache, SQLiteBackend, CACHE_FORMAT_VERSION, FULLTEXT_TTL_MS, SUMMARY_TTL_MS } from "./cache.js";
 export type { Cache, CacheBackend, CacheOptions } from "./cache.js";
 
 export { ResearchApiException, isMedResearchError, errors } from "./errors.js";

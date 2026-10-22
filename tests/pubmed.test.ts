@@ -276,6 +276,29 @@ describe("searchPubMed orchestration", () => {
     expect(out.warnings).toEqual([expect.stringContaining("leaves out every record with an unknown design tier")]);
   });
 
+  it("says what the filter leaves out when PubMed returns nothing", async () => {
+    const client = fakeClient();
+    vi.spyOn(client, "esearch").mockResolvedValueOnce({ count: 0, pmids: [] });
+    const out = await searchPubMed({ query: "creatine meta-analysis", minDesignTier: 3 }, new LRUBackend(), client);
+    expect(out.warnings).toEqual([
+      expect.stringContaining("leaves out every record with an unknown design tier"),
+      expect.stringContaining("No articles matched this query"),
+    ]);
+  });
+
+  it("explains an animal-study filter that finds none, unless minDesignTier is what left them out", async () => {
+    const none = await searchPubMed({ query: "x", studyTypes: ["animal-study"] }, new LRUBackend(), fakeClient());
+    expect(none.warnings).toEqual([expect.stringContaining("flagged animals-not-humans")]);
+
+    const esearch = vi.fn();
+    const client = fakeClient();
+    vi.spyOn(client, "esearch").mockImplementation(esearch);
+    const below = await searchPubMed({ query: "x", studyTypes: ["animal-study"], minDesignTier: 1 }, new LRUBackend(), client);
+    expect(below).toMatchObject({ articles: [], total: 0 });
+    expect(below.warnings).toEqual(["animal-study (designTier 0) records are below minDesignTier 1, so none are kept. Lower minDesignTier to keep them."]);
+    expect(esearch).not.toHaveBeenCalled();
+  });
+
   it("filters by study type", async () => {
     const out = await searchPubMed({ query: "x", studyTypes: ["review"] }, new LRUBackend(), fakeClient());
     expect(out.articles).toHaveLength(1);

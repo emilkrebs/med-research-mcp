@@ -348,11 +348,57 @@ export function mergeDuplicate(first: GradedArticle, second: GradedArticle): Gra
 }
 
 /**
+ * Study types a minDesignTier leaves out entirely: metadata assigns them, but only below that tier
+ * (animal-study at 0, review and case-report at 1).
+ */
+export function typesBelowTier(studyTypes?: readonly StudyType[], minDesignTier?: number): StudyType[] {
+  const minTier = minDesignTier ?? 0;
+  return [...new Set(studyTypes ?? [])].filter((t) => {
+    const sources = DESIGN_TAGS.filter((d) => d.design === t);
+    return sources.length > 0 && sources.every((d) => d.tier !== null && d.tier < minTier);
+  });
+}
+
+/**
+ * The warnings a studyTypes / minDesignTier filter gets whatever the databases return: study types
+ * metadata never assigns, study types below minDesignTier, and the unrated records minDesignTier
+ * leaves out (see {@link unratedExcludedWarning}).
+ */
+export function filterWarnings(studyTypes?: readonly StudyType[], minDesignTier?: number): string[] {
+  const warnings: string[] = [];
+  const unassigned = unassignedStudyTypes(studyTypes);
+  if (unassigned.length > 0) {
+    warnings.push(
+      `No record is ever labeled ${unassigned.join(", ")}: metadata doesn't assign ${unassigned.length > 1 ? "these designs" : "this design"}. ` +
+        `Search without ${unassigned.length > 1 ? "them" : "it"} and judge the design from the abstract.`,
+    );
+  }
+  const below = typesBelowTier(studyTypes, minDesignTier).filter((t) => !unassigned.includes(t));
+  if (below.length > 0) {
+    warnings.push(
+      `${below.map((t) => `${t} (designTier ${DESIGN_TIER[t as Design]})`).join(" and ")} records are below minDesignTier ${minDesignTier}, ` +
+        `so none are kept. Lower minDesignTier to keep them.`,
+    );
+  }
+  const unrated = unratedExcludedWarning(studyTypes, minDesignTier);
+  if (unrated) warnings.push(unrated);
+  return warnings;
+}
+
+/**
  * Why a studyTypes filter found no animal-study: the label comes only from the veterinary
  * publication types, which laboratory animal studies don't carry. MEDLINE indexes those with the
- * Animals check tag, so they show up as records flagged animals-not-humans.
+ * Animals check tag, so they show up as records flagged animals-not-humans. Undefined when the
+ * filter didn't ask for animal-study, found one, or minDesignTier left them out ({@link filterWarnings}
+ * says so).
  */
-export function noAnimalStudiesWarning(): string {
+export function noAnimalStudiesWarning(
+  studyTypes: readonly StudyType[] | undefined,
+  minDesignTier: number | undefined,
+  found: readonly GradedArticle[],
+): string | undefined {
+  if (!studyTypes?.includes("animal-study") || typesBelowTier(["animal-study"], minDesignTier).length > 0) return undefined;
+  if (found.some((a) => a.studyType === "animal-study")) return undefined;
   return (
     `No record found is labeled animal-study: the label comes only from veterinary publication types (${VETERINARY.names.join("; ")}). ` +
     `Laboratory animal studies carry none of them; MEDLINE-indexed ones show up flagged animals-not-humans. ` +

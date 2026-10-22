@@ -203,6 +203,12 @@ describe("EuropePmcAdapter", () => {
     expect(urls[0]).toContain("FIRST_PDATE");
   });
 
+  it("sorts by date as the merged results are, by first publication", async () => {
+    const { http, urls } = recordingHttp(RESPONSE);
+    await new EuropePmcAdapter(http).search({ query: "semaglutide", sort: "date" });
+    expect(new URL(urls[0]!).searchParams.get("sort")).toBe("FIRST_PDATE_D desc");
+  });
+
   it("cold fetch() looks a record up by EXT_ID + SRC and rejects a non-matching hit", async () => {
     const cba = {
       hitCount: 1,

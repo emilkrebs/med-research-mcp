@@ -218,6 +218,18 @@ describe("searchLiterature fan-out", () => {
     // Merged newest first by first publication; a record without a date goes last.
     expect(byDate.articles.map((a) => a.pmid)).toEqual(["P1", "E9", "E7", "P2", "P0", "P3", "P4", "E8"]);
 
+    // A date that only narrows the other is the date: PMID 42422741 has issue "2026" and online "2026 Jun 24".
+    const narrowed = await searchLiterature({ query: "x", sort: "date" }, new LRUBackend(), [
+      fakeAdapter("pubmed", [
+        record("Q1", "2026 Feb", []),
+        { ...record("Q2", "2026", []), epubDate: "2026 Jun 24" },
+        record("Q3", "2026 Oct 3", []),
+        { ...record("Q4", "2026 Oct", []), epubDate: "2026 Oct 20" },
+        { ...record("Q5", "2026 Dec", []), epubDate: "2026 Sep 1" },
+      ]),
+    ]);
+    expect(narrowed.articles.map((a) => a.pmid)).toEqual(["Q4", "Q3", "Q5", "Q2", "Q1"]);
+
     const byRelevance = await searchLiterature({ query: "x", database: "pubmed" }, new LRUBackend(), [fakeAdapter("pubmed", pubmed)]);
     expect(byRelevance.articles.map((a) => a.pmid)).toEqual(["P2", "P4", "P0", "P1", "P3"]);
   });
@@ -369,7 +381,20 @@ describe("searchLiterature input and design filters", () => {
       fakeAdapter("pubmed", [pubmedMeta]),
     ]);
     expect(out.articles).toEqual([]);
-    expect(out.warnings?.[0]).toContain("can reach minDesignTier 1");
+    expect(out.warnings).toEqual([expect.stringContaining("minDesignTier 1 leaves out every record with an unknown design tier")]);
+  });
+
+  it("names the study types below minDesignTier, and doesn't blame the animal-study label for them", async () => {
+    const vet: NcbiArticle = { ...epmcRct, pmid: "V1", doi: "10.1/vet", publicationTypes: ["Clinical Trial, Veterinary"] };
+    const out = await searchLiterature(
+      { query: "x", database: "europepmc", studyTypes: ["animal-study", "review", "randomized-controlled-trial"], minDesignTier: 2 },
+      new LRUBackend(),
+      [fakeAdapter("europepmc", [epmcRct, vet])],
+    );
+    expect(out.articles.map((a) => a.pmid)).toEqual(["E1"]);
+    expect(out.warnings).toEqual([
+      "animal-study (designTier 0) and review (designTier 1) records are below minDesignTier 2, so none are kept. Lower minDesignTier to keep them.",
+    ]);
   });
 
   it("explains an animal-study filter that finds none: lab-animal studies show up as a flag instead", async () => {

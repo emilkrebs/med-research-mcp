@@ -27,6 +27,7 @@ import {
   type DatabaseAdapter,
   UnpaywallClient,
 } from "../core/index.js";
+import { withDeadline } from "../core/request.js";
 import { envSetting, packageVersion } from "../core/version.js";
 
 /** Re-exported for the HTTP entry and tests, which import it from here. */
@@ -63,6 +64,14 @@ export function buildCache(): Cache {
     return new LRUBackend();
   }
 }
+
+/**
+ * The time a tool call's database requests get, retries and waiting in the NCBI queue included
+ * (see ../core/request.ts): a hosted server sits behind a gateway that answers 504 itself when a
+ * call takes too long (nginx's proxy_read_timeout, for one, defaults to 60 s). Full-text pages are
+ * fetched with their own timeout.
+ */
+const TOOL_CALL_BUDGET_MS = 30_000;
 
 const DATABASES = ["pubmed", "europepmc", "chinaxiv", "russiarxiv"] as const;
 const DATABASE_OR_ALL = z.enum([...DATABASES, "all"]);
@@ -201,7 +210,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     },
     async (args) => {
       try {
-        const result = await searchLiterature(args, cache, resolveAdapters(args.database));
+        const result = await withDeadline(TOOL_CALL_BUDGET_MS, () => searchLiterature(args, cache, resolveAdapters(args.database)));
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };
@@ -245,10 +254,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     },
     async (args) => {
       try {
-        const result = await fetchLiterature(
-          { ids: args.ids, database: args.database },
-          cache,
-          resolveAdapter(args.database),
+        const result = await withDeadline(TOOL_CALL_BUDGET_MS, () =>
+          fetchLiterature({ ids: args.ids, database: args.database }, cache, resolveAdapter(args.database)),
         );
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -309,16 +316,18 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     },
     async (args) => {
       try {
-        const result = await fetchFulltext(
-          {
-            id: args.id,
-            ...(args.doi ? { doi: args.doi } : {}),
-            ...(args.offset !== undefined ? { offset: args.offset } : {}),
-            ...(args.maxChars !== undefined ? { maxChars: args.maxChars } : {}),
-          },
-          cache,
-          ncbi,
-          { unpaywall },
+        const result = await withDeadline(TOOL_CALL_BUDGET_MS, () =>
+          fetchFulltext(
+            {
+              id: args.id,
+              ...(args.doi ? { doi: args.doi } : {}),
+              ...(args.offset !== undefined ? { offset: args.offset } : {}),
+              ...(args.maxChars !== undefined ? { maxChars: args.maxChars } : {}),
+            },
+            cache,
+            ncbi,
+            { unpaywall },
+          ),
         );
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

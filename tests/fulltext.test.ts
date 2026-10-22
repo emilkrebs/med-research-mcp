@@ -351,6 +351,86 @@ describe("fetchFulltext resolution strategy", () => {
       await expect(fetchFulltext({ id: "12345678", doi: DOI, offset: -1 }, cache, fakeClient(), deps)).rejects.toMatchObject({ code: "INVALID_INPUT" });
       await expect(fetchFulltext({ id: "12345678", doi: DOI, maxChars: 0 }, cache, fakeClient(), deps)).rejects.toMatchObject({ code: "INVALID_INPUT" });
     });
+
+    it("reads a direct text on from the same download, even when Unpaywall answers by then", async () => {
+      const unpaywall = vi.fn<() => Promise<UnpaywallLookup>>(async () => ({ status: "failed" }));
+      const fetchUrl = vi.fn(async (url: string) => htmlResource("<x/>", url));
+      const deps: FulltextDeps = {
+        unpaywall: { lookup: unpaywall, sharedContact: false } as unknown as UnpaywallClient,
+        fetchUrl,
+        htmlToMarkdown: async (_html, url) => (url.startsWith("https://doi.org/") ? text : `# Other\n\n${"other ".repeat(1000)}`),
+        maxChars: 3000,
+      };
+      const cache = new LRUBackend();
+      const first = await fetchFulltext({ id: "12345678", doi: DOI }, cache, fakeClient(), deps);
+      expect(first).toMatchObject({ source: "direct", truncated: true });
+
+      // The lookup that failed answers now, with a copy of another length.
+      unpaywall.mockResolvedValue({ status: "found", result: { doi: DOI, isOa: true, urls: ["https://oa.example/u"] } });
+      const parts = [first.fulltext!];
+      let offset = first.nextOffset;
+      while (offset !== undefined) {
+        const out = await fetchFulltext({ id: "12345678", doi: DOI, offset }, cache, fakeClient(), deps);
+        expect(out.source).toBe("direct");
+        parts.push(out.fulltext!);
+        offset = out.nextOffset;
+      }
+      expect(parts.join("")).toBe(text);
+      expect(fetchUrl).toHaveBeenCalledTimes(1);
+      // Never cached: a direct text may be licensed to this user alone.
+      expect(cache.getFulltext("12345678")).toBeNull();
+
+      // Read to the end, the text is let go: a new reading resolves afresh.
+      const again = await fetchFulltext({ id: "12345678", doi: DOI, offset: 3000 }, cache, fakeClient(), deps);
+      expect(again.source).toBe("unpaywall");
+    });
+
+    it("returns no text for an offset when the text can't be fetched again, not the abstract", async () => {
+      const deps: FulltextDeps = { unpaywall: fakeUnpaywall(null), fetchUrl: async () => paywalled() };
+      const out = await fetchFulltext({ id: "12345678", doi: DOI, offset: 50_000 }, new LRUBackend(), fakeClient({ abstract: "The abstract." }), deps);
+      expect(out).toMatchObject({ source: "none", truncated: false });
+      expect(out.fulltext).toBeUndefined();
+      expect(out.warning).toMatch(/^No full text found, so there is no part from offset 50000; call without offset for the abstract\. /);
+    });
+
+    it("never splits a character outside the BMP between parts", async () => {
+      const math = "𝛼".repeat(1000);
+      const deps: FulltextDeps = {
+        unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://oa.example/u"] }),
+        fetchUrl: async () => htmlResource("<x/>"),
+        htmlToMarkdown: async () => `# Formulas\n\n${math}`,
+        maxChars: 1001,
+      };
+      const cache = new LRUBackend();
+      const first = await fetchFulltext({ id: "12345678", doi: DOI }, cache, fakeClient(), deps);
+      expect(first.nextOffset).toBe(1000);
+      expect(first.fulltext!.at(-1)).not.toMatch(/[\uD800-\uDBFF]/);
+      const second = await fetchFulltext({ id: "12345678", doi: DOI, offset: first.nextOffset!, maxChars: 1 }, cache, fakeClient(), deps);
+      // A part of one code unit still holds the whole character.
+      expect(second.fulltext).toBe("𝛼");
+    });
+  });
+
+  describe("MED_RESEARCH_FULLTEXT_MAX_CHARS", () => {
+    afterEach(() => {
+      delete process.env.MED_RESEARCH_FULLTEXT_MAX_CHARS;
+    });
+
+    it("takes a whole number of characters, 1 or more, and ignores anything else", async () => {
+      const deps: FulltextDeps = {
+        unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://oa.example/u"] }),
+        fetchUrl: async () => htmlResource("<x/>"),
+        htmlToMarkdown: async () => "A".repeat(60_000),
+      };
+      const read = async (value: string) => {
+        process.env.MED_RESEARCH_FULLTEXT_MAX_CHARS = value;
+        return (await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), deps)).nextOffset;
+      };
+      expect(await read("1500")).toBe(1500);
+      expect(await read("1500.5")).toBe(50_000);
+      expect(await read("0.5")).toBe(50_000);
+      expect(await read("0")).toBe(50_000);
+    });
   });
 
   it("skips the id→DOI lookup when a DOI is supplied", async () => {

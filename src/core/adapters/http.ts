@@ -39,21 +39,20 @@ export function defaultHttp(options: HttpOptions = {}): AdapterHttp {
   const source = options.source ?? "the database";
 
   // A longer Retry-After than the helper waits out (ChinaRxiv's limit is per minute) goes to the caller.
-  const request = (url: string, accept: string): Promise<Response> =>
+  const request = (url: string, accept: string): Promise<string> =>
     requestWithRetries(url, { timeoutMs, source, headers: { "User-Agent": userAgent, Accept: accept, ...options.headers } });
 
   return {
     async json<T>(url: string): Promise<T> {
-      const res = await request(url, "application/json");
+      const body = await request(url, "application/json");
       try {
-        return (await res.json()) as T;
+        return JSON.parse(body) as T;
       } catch (err) {
         throw errors.parseFailure(err instanceof Error ? err.message : "invalid JSON from upstream");
       }
     },
-    async text(url: string): Promise<string> {
-      const res = await request(url, "text/html,application/xhtml+xml,*/*");
-      return res.text();
+    text(url: string): Promise<string> {
+      return request(url, "text/html,application/xhtml+xml,*/*");
     },
   };
 }

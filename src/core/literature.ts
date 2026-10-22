@@ -21,15 +21,7 @@ import { adaptersFor, getAdapter, unknownDatabase, type DatabaseAdapter } from "
 import { dateKey, doiKey, isoDateBound } from "./adapters/util.js";
 import { LRUBackend, type Cache } from "./cache.js";
 import { errors, isMedResearchError } from "./errors.js";
-import {
-  classifyArticle,
-  designPublicationTypes,
-  mergeDuplicate,
-  noAnimalStudiesWarning,
-  rankKey,
-  unassignedStudyTypes,
-  unratedExcludedWarning,
-} from "./grader.js";
+import { classifyArticle, designPublicationTypes, filterWarnings, mergeDuplicate, noAnimalStudiesWarning, rankKey } from "./grader.js";
 import type {
   FetchOutput,
   GradedArticle,
@@ -57,14 +49,27 @@ function validateSearch(input: SearchInput): void {
 }
 
 /**
- * The earlier of a record's issue and electronic publication dates, as a {@link dateKey}; -1 without
- * either. PubMed sorts by date this way ("Citations with more than one publication date, such as
- * electronic and print, are sorted by their earliest publication date", PubMed Help, checked
- * 2026-10-22), and both PubMed's and Europe PMC's date filters match it.
+ * When a record was first published, as a {@link dateKey}; -1 without a date. That is the earlier
+ * of its issue and electronic publication dates, as PubMed's website sorts by publication date
+ * ("Citations with more than one publication date, such as electronic and print, are sorted by their
+ * earliest publication date", PubMed Help, checked 2026-10-22) and both PubMed's and Europe PMC's date
+ * filters match, unless
+ * one date only narrows the other: PMID 42422741, issue "2026" and online "2026 Jun 24", was first
+ * published on June 24, as NCBI's own sort date for it says, not at the start of 2026 (2026-10-22).
  */
 function firstPublished(article: Article): number {
-  const dates = [dateKey(article.pubDate), dateKey(article.epubDate)].filter((d) => d !== undefined);
-  return dates.length > 0 ? Math.min(...dates) : -1;
+  const issue = dateKey(article.pubDate);
+  const online = dateKey(article.epubDate);
+  if (issue === undefined || online === undefined) return issue ?? online ?? -1;
+  if (narrows(online, issue)) return online;
+  if (narrows(issue, online)) return issue;
+  return Math.min(issue, online);
+}
+
+/** Whether a date key falls within the year or month another leaves open: 20260624 within 20260000 or 20260600. */
+function narrows(precise: number, vague: number): boolean {
+  const span = vague % 10_000 === 0 ? 10_000 : vague % 100 === 0 ? 100 : 0;
+  return precise > vague && precise < vague + span;
 }
 
 /**
@@ -100,26 +105,10 @@ export async function searchLiterature(
   validateSearch(input);
   const selected = adapters ?? adaptersFor(input.database);
   if (selected.length === 0) throw errors.invalidInput("No database to search.");
-  const warnings: string[] = [];
-
-  const unassigned = unassignedStudyTypes(input.studyTypes);
-  if (unassigned.length > 0) {
-    warnings.push(
-      `No record is ever labeled ${unassigned.join(", ")}: metadata doesn't assign ${unassigned.length > 1 ? "these designs" : "this design"}. ` +
-        `Search without ${unassigned.length > 1 ? "them" : "it"} and judge the design from the abstract.`,
-    );
-  }
+  const warnings = filterWarnings(input.studyTypes, input.minDesignTier);
   // A design filter keeps only records carrying one of these publication types (null: no such filter).
   const designTypes = designPublicationTypes(input.studyTypes, input.minDesignTier);
-  if (designTypes?.length === 0) {
-    if (unassigned.length < (input.studyTypes?.length ?? 0)) {
-      warnings.push(
-        `No study type in studyTypes can reach minDesignTier ${input.minDesignTier}: meta-analyses and systematic reviews ` +
-          `are mostly unrated (designTier null), and minDesignTier drops unrated records. Filter with studyTypes alone.`,
-      );
-    }
-    return { articles: [], total: 0, query: input.query, warnings };
-  }
+  if (designTypes?.length === 0) return { articles: [], total: 0, query: input.query, warnings };
   const searched = designTypes ? selected.filter((a) => a.designMetadata !== false) : selected;
   const skipped = selected.filter((a) => !searched.includes(a));
   if (skipped.length > 0) {
@@ -129,8 +118,6 @@ export async function searchLiterature(
     );
   }
   if (searched.length === 0) return { articles: [], total: 0, query: input.query, warnings };
-  const unrated = unratedExcludedWarning(input.studyTypes, input.minDesignTier);
-  if (unrated) warnings.push(unrated);
 
   const maxResults = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
 
@@ -173,12 +160,12 @@ export async function searchLiterature(
   const merged = dedupeByDoi(graded).filter(
     (a) => (a.designTier ?? 0) >= minTier && (!typeFilter || typeFilter.has(a.studyType)),
   );
-  if (typeFilter?.has("animal-study") && !merged.some((a) => a.studyType === "animal-study")) {
-    warnings.push(noAnimalStudiesWarning());
-  }
+  const noAnimals = noAnimalStudiesWarning(input.studyTypes, input.minDesignTier, merged);
+  if (noAnimals) warnings.push(noAnimals);
   // Stable sorts: equal items keep their database's order, databases in the order requested.
   if (input.sort === "date") {
-    merged.sort((a, b) => firstPublished(b) - firstPublished(a));
+    const published = new Map(merged.map((a) => [a, firstPublished(a)]));
+    merged.sort((a, b) => published.get(b)! - published.get(a)!);
   } else {
     merged.sort((a, b) => rankKey(b) - rankKey(a));
   }

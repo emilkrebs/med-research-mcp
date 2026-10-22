@@ -3,9 +3,11 @@
  *
  * PubMed's efetch XML marks up abstracts with inline elements (`<i>`, `<b>`,
  * `<sup>`, `<sub>`) and numeric character references (`&#xb1;`). Europe PMC's
- * JSON carries HTML in abstracts (`<h4>` section headings, `<p>`, `<sup>`) and
- * in titles, there sometimes escaped (`&lt;i&gt;`), next to an unescaped "<" in
- * the text itself ("p < 0.001").
+ * JSON carries HTML in abstracts (`<h4>` section headings, `<p>`, `<sup>`, named
+ * references such as `&copy;` and `&otimes;`), JATS and MathML, under any namespace
+ * prefix (`<ns3:list-item>`, `<mml:mi>`) or none, and in titles, there sometimes
+ * escaped (`&lt;i&gt;`), next to an unescaped "<" in the text itself ("p < 0.001",
+ * "2.5<t<2.9").
  *
  * Inline elements keep their text, as in NCBI's own text rendering
  * (A<sub>1c</sub> → A1c), except that a superscript of digits and signs becomes
@@ -13,6 +15,8 @@
  * 10⁻³, kg⁻¹, ³¹P. A section heading starts a line as "Heading: ", the way
  * PubMed labels the sections of a structured abstract.
  */
+
+import { decodeHTMLStrict } from "entities";
 
 const SUPERSCRIPT: Readonly<Record<string, string>> = {
   "0": "⁰",
@@ -34,15 +38,12 @@ const SUPERSCRIPT: Readonly<Record<string, string>> = {
   ")": "⁾",
 };
 
-const NAMED_ENTITIES: Readonly<Record<string, string>> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
-
-/** Decode numeric character references and the XML entities (plus `&nbsp;`) in one pass; others stay as they are. */
+/**
+ * Decode character references, numeric and named, HTML's whole set included (`&plusmn;`, `&copy;`),
+ * in one pass. A name without its closing semicolon, or unknown, stays as it is.
+ */
 export function decodeEntities(text: string): string {
-  return text.replace(/&(?:#x([0-9a-f]+)|#(\d+)|([a-z]+));/gi, (match, hex: string | undefined, dec: string | undefined, name: string | undefined) => {
-    if (name) return NAMED_ENTITIES[name.toLowerCase()] ?? match;
-    const code = hex ? parseInt(hex, 16) : Number(dec);
-    return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
-  });
+  return decodeHTMLStrict(text);
 }
 
 /** Unicode superscript for text of digits and signs only; undefined for anything else. */
@@ -52,15 +53,32 @@ function toSuperscript(text: string): string | undefined {
   return chars.map((c) => SUPERSCRIPT[c]).join("");
 }
 
-/**
- * Tags Europe PMC's HTML uses, JATS names included (its preprint abstracts carry `<title>` and `<p>`).
- * Only these are removed, so an unescaped "<" in the text survives. Attributes must have values.
- */
-const HTML_TAG =
-  /<\/?(?:a|abbr|b|big|bold|br|code|del|div|em|font|h[1-6]|hr|i|ins|italic|li|mark|ol|p|s|sc|small|span|strike|strong|sub|sup|title|tt|u|ul|underline|mml:[a-z]+)(?:\s+[\w:.-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'<>]+))*\s*\/?>/gi;
+/** A tag's optional namespace prefix (`mml:`, `jats:`, `ns3:`), and attributes, which must have values. */
+const PREFIX = String.raw`(?:[a-z][\w.-]*:)?`;
+const ATTRIBUTES = String.raw`(?:\s+[\w:.-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'<>]+))*`;
+/** Opening, closing and empty tags with one of these names; only these are removed, so a "<" in the text survives. */
+const tags = (names: string): RegExp => new RegExp(String.raw`<\/?${PREFIX}(?:${names})${ATTRIBUTES}\s*\/?>`, "gi");
+
+/** Elements that end a line: HTML and JATS (Europe PMC's preprint abstracts) blocks. */
+const BLOCK_TAG = tags(
+  "br|p|div|li|ul|ol|dl|dt|dd|pre|hr|blockquote|sec|list|list-item|table|table-wrap|thead|tbody|tfoot|tr|caption|fig|" +
+    "disp-formula|disp-quote|boxed-text|statement|abstract|break",
+);
+/** Table cells: a space between them. */
+const CELL_TAG = tags("td|th");
+/** Inline elements, HTML, JATS and MathML, whose text is kept. */
+const INLINE_TAG = tags(
+  "a|abbr|b|big|bold|cite|code|del|em|font|i|img|ins|italic|mark|s|sc|small|span|strike|strong|sub|sup|tt|u|underline|" +
+    "xref|ext-link|uri|email|named-content|styled-content|monospace|roman|sans-serif|overline|label|inline-formula|" +
+    "tex-math|alternatives|graphic|inline-graphic|" +
+    "math|mi|mn|mo|ms|mtext|mspace|mrow|mfrac|msqrt|mroot|mstyle|merror|mpadded|mphantom|mfenced|menclose|msub|msup|" +
+    "msubsup|munder|mover|munderover|mmultiscripts|mprescripts|mtable|mtr|mtd|mlabeledtr|semantics|annotation|annotation-xml",
+);
+/** A section heading and its text. */
+const HEADING = new RegExp(String.raw`<(${PREFIX}(?:h[1-6]|title))${ATTRIBUTES}\s*>([\s\S]*?)<\/\1\s*>`, "gi");
 const ANY_TAG = /<[^<>]*>/g;
 /** Private-use marker for the end of a heading while lines are assembled. */
-const HEADING_END = "";
+const HEADING_END = "\uE000";
 
 /** Replace each superscript that holds only digits and signs with Unicode superscripts. */
 function superscripts(markup: string, tag: RegExp): string {
@@ -86,19 +104,25 @@ export function xmlToText(xml: string): string {
 }
 
 /**
- * Text of a title or abstract from Europe PMC: headings become "Heading: " at the start
- * of a line (a lone "Abstract" heading is dropped), paragraphs and line breaks become
- * lines, and markup escaped as `&lt;i&gt;` is removed once decoded.
+ * Europe PMC markup without its tags: headings become "Heading: " at the start of a line (a lone
+ * "Abstract" heading is dropped), blocks and line breaks become lines, cells are spaced, and other
+ * tags go. Entities are left for the caller.
  */
-export function htmlToText(html: string): string {
+function untag(html: string): string {
   const structured = html
-    .replace(/<(h[1-6]|title)\b[^<>]*>([\s\S]*?)<\/\1\s*>/gi, (_match, _tag: string, inner: string) => {
-      const heading = decodeEntities(inner.replace(HTML_TAG, "")).replace(/\s+/g, " ").trim().replace(/\s*[:.]$/, "");
+    .replace(HEADING, (_match, _tag: string, inner: string) => {
+      const heading = inner.replace(INLINE_TAG, "").replace(/\s+/g, " ").trim().replace(/\s*[:.]$/, "");
       // HEADING_END keeps the section's first paragraph on the heading's line.
       return heading && !/^abstract$/i.test(heading) ? `\n${heading}:${HEADING_END}` : "\n";
     })
-    .replace(/<(?:br|p|div|li)\b[^<>]*\/?>|<\/(?:p|div|li)\s*>/gi, "\n")
+    .replace(BLOCK_TAG, "\n")
+    .replace(CELL_TAG, " ")
     .replace(new RegExp(`${HEADING_END}\\s*`, "g"), " ");
-  const text = decodeEntities(superscripts(structured, HTML_TAG).replace(HTML_TAG, ""));
-  return tidy(superscripts(text, HTML_TAG).replace(HTML_TAG, ""));
+  return superscripts(structured, INLINE_TAG).replace(INLINE_TAG, "");
+}
+
+/** Text of a title or abstract from Europe PMC (see {@link untag}). */
+export function htmlToText(html: string): string {
+  // Markup escaped as `&lt;i&gt;` shows only once decoded, and goes the same way.
+  return tidy(untag(decodeEntities(untag(html))));
 }

@@ -8,13 +8,18 @@
  *   twice, after 0.5 s and then 1 s: overloaded servers and the gateways in front
  *   of them often answer the next request. Other statuses fail at once.
  *
+ * The timeout covers the whole response, body included: a body that stalls or
+ * breaks off is retried like a connection that does.
+ *
  * Every retry must fit in {@link RETRY_BUDGET_MS} from the first attempt, and a
  * retry's timeout is cut to what is left of it. A tool call makes several
  * requests in a row (PubMed: esearch, esummary, efetch), and a hosted server sits
- * behind a gateway that gives up on a slow call and answers 504 itself, so
- * retries must not stretch a call without bound.
+ * behind a gateway that gives up on a slow call and answers 504 itself, so a call
+ * run by {@link withDeadline} also bounds every attempt of every request it makes,
+ * time spent waiting in the NCBI client's queue included.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { errors, isMedResearchError, type ResearchApiException } from "./errors.js";
 
 /** 429s retried, after the server's Retry-After, before RATE_LIMIT reaches the caller. */
@@ -29,8 +34,20 @@ const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([500, 502, 503, 504]);
 const BACKOFF_MS = 500;
 /** No retry starts later than this after the first attempt. */
 const RETRY_BUDGET_MS = 20_000;
-/** The shortest timeout a retry is worth sending with. */
+/** The shortest timeout an attempt is worth sending with. */
 const MIN_ATTEMPT_MS = 2_000;
+
+/** When the current call must be done, in ms since the epoch; set by {@link withDeadline}. */
+const callDeadline = new AsyncLocalStorage<number>();
+
+/**
+ * Run a call whose requests must be done within `ms`: each attempt's timeout is cut to what is
+ * left, and once too little is left, requests fail with NETWORK_ERROR instead of being sent. A
+ * deadline inside another keeps the earlier of the two.
+ */
+export function withDeadline<T>(ms: number, call: () => Promise<T>): Promise<T> {
+  return callDeadline.run(Math.min(Date.now() + ms, callDeadline.getStore() ?? Infinity), call);
+}
 
 export interface RequestOptions {
   /** Timeout of each attempt in ms; a retry gets at most what is left of the budget. */
@@ -45,31 +62,39 @@ export interface RequestOptions {
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /**
- * GET a URL and return the successful response. Throws RATE_LIMIT for a 429 its retries
- * don't clear, and NETWORK_ERROR for any other failure, after retrying the transient ones.
+ * GET a URL and return the body of the successful response. Throws RATE_LIMIT for a 429 its
+ * retries don't clear, and NETWORK_ERROR for any other failure, after retrying the transient ones.
  */
-export async function requestWithRetries(url: string, options: RequestOptions): Promise<Response> {
+export async function requestWithRetries(url: string, options: RequestOptions): Promise<string> {
   const started = Date.now();
+  // Retries stop at the budget; every attempt, the first included, at the call's deadline.
+  const retryDeadline = started + RETRY_BUDGET_MS;
+  const deadline = callDeadline.getStore() ?? Infinity;
   let rateLimited = 0;
   let transient = 0;
+  /** What the last attempt got. */
+  let failure: ResearchApiException | undefined;
   for (let attempt = 1; ; attempt += 1) {
     await options.beforeAttempt?.();
-    const timeoutMs = attempt === 1 ? options.timeoutMs : Math.min(options.timeoutMs, RETRY_BUDGET_MS - (Date.now() - started));
+    const left = Math.min(attempt === 1 ? Infinity : retryDeadline, deadline) - Date.now();
+    if (left < MIN_ATTEMPT_MS) throw failure ?? errors.network(`${options.source} wasn't asked: the call ran out of time`);
+    const timeoutMs = Math.min(options.timeoutMs, left);
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), timeoutMs);
-    let failure: ResearchApiException;
     try {
       const res = await fetch(url, { signal: ac.signal, headers: options.headers });
       if (res.status === 429) {
         const retryAfter = Number(res.headers.get("retry-after")) || 1;
         await res.body?.cancel();
-        const late = Date.now() - started + retryAfter * 1000 + MIN_ATTEMPT_MS > RETRY_BUDGET_MS;
-        if (rateLimited >= RATE_LIMIT_RETRIES || retryAfter > MAX_RETRY_WAIT_S || late) throw errors.rateLimit(retryAfter, options.source);
+        failure = errors.rateLimit(retryAfter, options.source);
+        const late = Date.now() + retryAfter * 1000 + MIN_ATTEMPT_MS > Math.min(retryDeadline, deadline);
+        if (rateLimited >= RATE_LIMIT_RETRIES || retryAfter > MAX_RETRY_WAIT_S || late) throw failure;
         rateLimited += 1;
         await sleep(retryAfter * 1000);
         continue;
       }
-      if (res.ok) return res;
+      // Read within the timeout, so that a body that stalls or breaks off is retried too.
+      if (res.ok) return await res.text();
       await res.body?.cancel();
       const message = `${options.source} returned HTTP ${res.status}${attempt > 1 ? ` (attempt ${attempt})` : ""}`;
       if (!TRANSIENT_STATUSES.has(res.status)) throw errors.network(message);
@@ -87,7 +112,7 @@ export async function requestWithRetries(url: string, options: RequestOptions): 
       clearTimeout(timer);
     }
     const wait = BACKOFF_MS * 2 ** transient;
-    if (transient >= TRANSIENT_RETRIES || Date.now() - started + wait + MIN_ATTEMPT_MS > RETRY_BUDGET_MS) throw failure;
+    if (transient >= TRANSIENT_RETRIES || Date.now() + wait + MIN_ATTEMPT_MS > Math.min(retryDeadline, deadline)) throw failure;
     transient += 1;
     await sleep(wait);
   }
