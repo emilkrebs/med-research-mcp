@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/med-research-mcp"><img src="https://img.shields.io/npm/v/med-research-mcp" alt="npm version"></a>
+</p>
+
+<p align="center">
   English · <a href="https://github.com/emilkrebs/med-research-mcp/blob/main/README.zh-CN.md">简体中文</a>
 </p>
 
@@ -35,7 +39,7 @@
 
 ## Install
 
-You need [Node.js](https://nodejs.org) 22.22.2 or later on 22, 24.15.0 or later on 24, or 26+. The server runs straight from npm, so there's nothing to clone or build. In the examples, replace `you@example.com` with your email (see [Configuration](#configuration)).
+You need [Node.js](https://nodejs.org) 22.22.2 or later on 22, 24.15.0 or later on 24, or 26+. The server runs straight from [npm](https://www.npmjs.com/package/med-research-mcp), so there's nothing to clone or build. In the examples, replace `you@example.com` with your email (see [Configuration](#configuration)).
 
 ### Claude Code
 
@@ -68,6 +72,10 @@ Add this to the client's MCP configuration:
 ```
 
 Clients configured in YAML, such as Hermes, take the same `command`, `args` and `env`.
+
+### ModelScope
+
+The server is also listed on [ModelScope](https://www.modelscope.cn/mcp/servers/emilkrebs/med-research-mcp) (魔搭社区), which can host it for you, so there's nothing to install.
 
 ### From source
 

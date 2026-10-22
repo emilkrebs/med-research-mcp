@@ -9,6 +9,11 @@
 </p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/med-research-mcp"><img src="https://img.shields.io/npm/v/med-research-mcp" alt="npm 版本"></a>
+  <a href="https://www.modelscope.cn/mcp/servers/emilkrebs/med-research-mcp"><img src="https://img.shields.io/badge/%E9%AD%94%E6%90%AD%E7%A4%BE%E5%8C%BA-MCP%20%E6%9C%8D%E5%8A%A1%E5%99%A8-624aff" alt="魔搭社区 MCP 服务器"></a>
+</p>
+
+<p align="center">
   <a href="https://github.com/emilkrebs/med-research-mcp/blob/main/README.md">English</a> · 简体中文
 </p>
 
@@ -40,7 +45,7 @@
 
 ## 安装
 
-需要 [Node.js](https://nodejs.org) 22.22.2 或更高的 22.x 版本、24.15.0 或更高的 24.x 版本，或 26 及以上版本。服务器直接从 npm 运行，无需克隆仓库或构建。请将示例中的 `you@example.com` 替换为你的邮箱（见[配置](#配置)）。
+需要 [Node.js](https://nodejs.org) 22.22.2 或更高的 22.x 版本、24.15.0 或更高的 24.x 版本，或 26 及以上版本。服务器直接从 [npm](https://www.npmjs.com/package/med-research-mcp) 运行，无需克隆仓库或构建。请将示例中的 `you@example.com` 替换为你的邮箱（见[配置](#配置)）。
 
 ### Claude Code
 
@@ -73,6 +78,10 @@ claude mcp add med-research-mcp -s user \
 ```
 
 使用 YAML 配置的客户端（如 Hermes）填写相同的 `command`、`args` 和 `env` 即可。
+
+### 魔搭社区（ModelScope）
+
+本服务器也已在[魔搭社区](https://www.modelscope.cn/mcp/servers/emilkrebs/med-research-mcp)上架，可由魔搭托管运行，无需在本地安装任何软件。
 
 ### 从源码安装
 
