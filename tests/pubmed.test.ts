@@ -446,10 +446,13 @@ describe("NcbiClient requests", () => {
       ["pub_date", "100"],
       [null, "100"],
     ]);
-    // An identical search is served from memory.
+    // An identical search is served from memory, and so, once, are the summaries of the PMIDs it returned.
     const requests = fetchMock.mock.calls.length;
     expect(await client.esearch({ query: "semaglutide", sort: "date", maxResults: 4 })).toEqual(out);
+    expect([...(await client.esummary(out.pmids)).keys()].sort()).toEqual([...out.pmids].sort());
     expect(fetchMock.mock.calls.length).toBe(requests);
+    await client.esummary(out.pmids);
+    expect(fetchMock.mock.calls.length).toBe(requests + 1);
   });
 
   it('with sort "date", takes 4 × maxResults from each order and asks esummary for at most 200 at a time', async () => {

@@ -408,6 +408,10 @@ describe("fetchFulltext resolution strategy", () => {
       const second = await fetchFulltext({ id: "12345678", doi: DOI, offset: first.nextOffset!, maxChars: 1 }, cache, fakeClient(), deps);
       // A part of one code unit still holds the whole character.
       expect(second.fulltext).toBe("𝛼");
+      // And when that character ends the text, the part is the last one.
+      const last = await fetchFulltext({ id: "12345678", doi: DOI, offset: 2010, maxChars: 1 }, cache, fakeClient(), deps);
+      expect(last).toMatchObject({ fulltext: "𝛼", truncated: false, totalChars: 2012 });
+      expect(last.nextOffset).toBeUndefined();
     });
   });
 

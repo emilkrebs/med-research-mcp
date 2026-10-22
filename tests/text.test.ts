@@ -77,6 +77,28 @@ describe("htmlToText (Europe PMC)", () => {
     expect(htmlToText("<table><tr><td>Dose</td><td>10 mg</td></tr><tr><td>n</td><td>40</td></tr></table>")).toBe("Dose 10 mg\nn 40");
   });
 
+  it("keeps the line structure of tags with attributes without values", () => {
+    expect(htmlToText('<h4 hidden>Methods</h4><p hidden>We did.</p>Then<br clear>more<br clear="all"/>.')).toBe("Methods: We did.\nThen\nmore\n.");
+  });
+
+  it("cleans up a heading that ends in a white-space entity", () => {
+    expect(htmlToText("<h4>Abstract&nbsp;</h4><p>b</p>")).toBe("b");
+    expect(htmlToText("<h4>Methods&#160;</h4><p>b</p>")).toBe("Methods: b");
+  });
+
+  it("makes a namespaced superscript of digits superscript characters too", () => {
+    expect(htmlToText("<jats:p>Dose 10<jats:sup>-3</jats:sup> M</jats:p>")).toBe("Dose 10⁻³ M");
+  });
+
+  it("keeps one form of a formula: MathML over TeX, no annotation, no LaTeX document wrapper", () => {
+    const tex = "\\documentclass[12pt]{minimal}\\usepackage{amsmath}\\begin{document}$\\alpha$\\end{document}";
+    expect(htmlToText(`The value <inline-formula><alternatives><tex-math>${tex}</tex-math><mml:math><mml:mi>α</mml:mi></mml:math></alternatives></inline-formula> was high.`)).toBe(
+      "The value α was high.",
+    );
+    expect(htmlToText('<math><semantics><mi>x</mi><annotation encoding="application/x-tex">x</annotation></semantics></math> grew')).toBe("x grew");
+    expect(htmlToText(`<inline-formula><tex-math>${tex}</tex-math></inline-formula> alone`)).toBe("$\\alpha$ alone");
+  });
+
   it("removes MathML with a prefix or without one, escaped or not", () => {
     // 40443200
     expect(htmlToText('(coeffs: a<math display="inline" altimg="urn:x-wiley:07360266" xmlns="http://www.w3.org/1998/Math/MathML" wiley:location="equation/m1.png"><mrow><mi>a</mi></mrow></math> = 2.22)')).toBe("(coeffs: aa = 2.22)");

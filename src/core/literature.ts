@@ -104,7 +104,7 @@ export async function searchLiterature(
       try {
         const { count, ids, warning } = await adapter.search(input);
         if (warning) warnings.push(warning);
-        const articles = await adapter.fetch(ids.slice(0, maxResults), cache);
+        const articles = await adapter.fetch(ids.slice(0, maxResults), cache, (w) => warnings.push(`${adapter.name}: ${w}`));
         return { count, articles };
       } catch (err) {
         failures.push(err);
@@ -168,17 +168,15 @@ export async function fetchLiterature(
   const resolved = adapter ?? getAdapter(input.database);
   if (!resolved) throw unknownDatabase([input.database]);
 
-  const articles = resolved.fetchFull ? await resolved.fetchFull(input.ids, cache) : await resolved.fetch(input.ids, cache);
+  const warnings: string[] = [];
+  const articles = resolved.fetchFull
+    ? await resolved.fetchFull(input.ids, cache)
+    : await resolved.fetch(input.ids, cache, (w) => warnings.push(w));
   // Case-insensitive: adapters return canonical ids ("PPR123456") for any input case. A PMCID
   // fetched from Europe PMC comes back under its PMID, so it counts as found through `pmcid`.
   const found = new Set(articles.flatMap((a) => [a.pmid, a.pmcid ?? ""]).map((id) => id.toUpperCase()));
   const missing = input.ids.filter((id) => !found.has(id.toUpperCase()));
+  if (missing.length > 0) warnings.push(`${missing.length} id(s) could not be fetched from ${resolved.name}.`);
 
-  return {
-    articles,
-    missing,
-    ...(missing.length > 0
-      ? { warnings: [`${missing.length} id(s) could not be fetched from ${resolved.name}.`] }
-      : {}),
-  };
+  return { articles, missing, ...(warnings.length > 0 ? { warnings } : {}) };
 }

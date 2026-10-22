@@ -14,6 +14,13 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Cache, NcbiClient, UnpaywallClient } from "../core/index.js";
 import { createServer } from "../mcp/server.js";
 
+/**
+ * The time a search or fetch call's database requests get: a hosted server sits behind a gateway
+ * that answers 504 itself when a call takes too long (nginx's proxy_read_timeout, for one, defaults
+ * to 60 s), and an answer with the databases that did respond beats that.
+ */
+const CALL_BUDGET_MS = 30_000;
+
 export interface McpHandlerDeps {
   /** Process-wide cache, shared by every request's tool calls. */
   cache: Cache;
@@ -44,7 +51,7 @@ export async function handleMcpPost(
 
   // Shared state (cache, NCBI rate limiter, Unpaywall answers) is injected; the
   // server object itself is per-request and dies with the response.
-  const server = createServer({ cache: deps.cache, ncbi: deps.ncbi, unpaywall: deps.unpaywall });
+  const server = createServer({ cache: deps.cache, ncbi: deps.ncbi, unpaywall: deps.unpaywall, callBudgetMs: CALL_BUDGET_MS });
 
   res.on("close", () => {
     void transport.close();

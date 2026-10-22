@@ -27,9 +27,10 @@ export class PubMedAdapter implements DatabaseAdapter {
     return { count, ids: pmids };
   }
 
-  async fetch(ids: string[], cache: Cache): Promise<Article[]> {
+  async fetch(ids: string[], cache: Cache, warn?: (warning: string) => void): Promise<Article[]> {
     if (ids.length === 0) return [];
-    const { articles } = await fetchPubMed({ ids }, cache, this.client);
+    const { articles, warnings } = await fetchPubMed({ ids }, cache, this.client);
+    for (const warning of warnings ?? []) warn?.(warning);
     return articles;
   }
 }

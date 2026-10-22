@@ -414,6 +414,21 @@ describe("searchLiterature input and design filters", () => {
     expect(found.warnings).toBeUndefined();
   });
 
+  it("passes on a database's warning about records it returned incomplete, in a search and a fetch", async () => {
+    const incomplete: DatabaseAdapter = {
+      ...fakeAdapter("pubmed", [pubmedMeta]),
+      name: "PubMed / NCBI",
+      fetch: async (ids, _cache, warn) => {
+        warn?.("Some abstracts could not be fetched; those articles lack abstracts, MeSH headings and retraction/correction links.");
+        return [pubmedMeta].filter((a) => ids.includes(a.pmid));
+      },
+    };
+    const searched = await searchLiterature({ query: "x" }, new LRUBackend(), [incomplete]);
+    expect(searched.warnings).toEqual([expect.stringMatching(/^PubMed \/ NCBI: Some abstracts could not be fetched/)]);
+    const fetched = await fetchLiterature({ ids: ["1", "2"], database: "pubmed" }, new LRUBackend(), incomplete);
+    expect(fetched.warnings).toEqual([expect.stringContaining("Some abstracts could not be fetched"), "1 id(s) could not be fetched from PubMed / NCBI."]);
+  });
+
   it("treats an empty studyTypes list as no filter", async () => {
     const out = await searchLiterature({ query: "x", studyTypes: [] }, new LRUBackend(), [fakeAdapter("pubmed", [pubmedMeta])]);
     expect(out.articles.map((a) => a.pmid)).toEqual(["1"]);

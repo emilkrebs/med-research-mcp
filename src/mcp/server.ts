@@ -65,14 +65,6 @@ export function buildCache(): Cache {
   }
 }
 
-/**
- * The time a tool call's database requests get, retries and waiting in the NCBI queue included
- * (see ../core/request.ts): a hosted server sits behind a gateway that answers 504 itself when a
- * call takes too long (nginx's proxy_read_timeout, for one, defaults to 60 s). Full-text pages are
- * fetched with their own timeout.
- */
-const TOOL_CALL_BUDGET_MS = 30_000;
-
 const DATABASES = ["pubmed", "europepmc", "chinaxiv", "russiarxiv"] as const;
 const DATABASE_OR_ALL = z.enum([...DATABASES, "all"]);
 
@@ -86,6 +78,13 @@ export interface CreateServerOptions {
   ncbi?: NcbiClient;
   /** Unpaywall client for literature_fulltext; sharing one reuses its answers. Defaults to a new client. */
   unpaywall?: UnpaywallClient;
+  /**
+   * Time in ms a literature_search or literature_fetch call's database requests get, retries and
+   * waiting in the NCBI queue included (see ../core/request.ts). None by default; the HTTP server sets
+   * one, to answer before a gateway gives up. literature_fulltext has none: its pages are fetched with
+   * their own timeout, and a cut-off abstract lookup would leave its fallback without the abstract.
+   */
+  callBudgetMs?: number;
 }
 
 /**
@@ -117,6 +116,10 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     return adapter?.id === "pubmed" ? ncbiAdapter : adapter;
   }
 
+
+  /** A tool call's work, within the call budget when there is one. */
+  const budgeted = <T>(call: () => Promise<T>): Promise<T> =>
+    options.callBudgetMs === undefined ? call() : withDeadline(options.callBudgetMs, call);
 
   const server = new McpServer({ name: "med-research-mcp", version: packageVersion() });
 
@@ -210,7 +213,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     },
     async (args) => {
       try {
-        const result = await withDeadline(TOOL_CALL_BUDGET_MS, () => searchLiterature(args, cache, resolveAdapters(args.database)));
+        const result = await budgeted(() => searchLiterature(args, cache, resolveAdapters(args.database)));
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };
@@ -254,7 +257,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     },
     async (args) => {
       try {
-        const result = await withDeadline(TOOL_CALL_BUDGET_MS, () =>
+        const result = await budgeted(() =>
           fetchLiterature({ ids: args.ids, database: args.database }, cache, resolveAdapter(args.database)),
         );
         return {
@@ -316,18 +319,16 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     },
     async (args) => {
       try {
-        const result = await withDeadline(TOOL_CALL_BUDGET_MS, () =>
-          fetchFulltext(
-            {
-              id: args.id,
-              ...(args.doi ? { doi: args.doi } : {}),
-              ...(args.offset !== undefined ? { offset: args.offset } : {}),
-              ...(args.maxChars !== undefined ? { maxChars: args.maxChars } : {}),
-            },
-            cache,
-            ncbi,
-            { unpaywall },
-          ),
+        const result = await fetchFulltext(
+          {
+            id: args.id,
+            ...(args.doi ? { doi: args.doi } : {}),
+            ...(args.offset !== undefined ? { offset: args.offset } : {}),
+            ...(args.maxChars !== undefined ? { maxChars: args.maxChars } : {}),
+          },
+          cache,
+          ncbi,
+          { unpaywall },
         );
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { LRUBackend, PROJECT_CONTACT_EMAIL } from "../src/core/index.js";
+import { LRUBackend, NcbiClient, PROJECT_CONTACT_EMAIL } from "../src/core/index.js";
 import { contactEmailWarning, createServer } from "../src/mcp/server.js";
 
 async function connect() {
@@ -83,6 +83,36 @@ describe("createServer", () => {
     expect(bad.isError).toBe(true);
     await client.close();
     await server.close();
+  });
+
+  it("bounds search and fetch calls by callBudgetMs, and not literature_fulltext, whose fallback needs its abstract", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const path = new URL(String(input)).pathname;
+        if (path.endsWith("esummary.fcgi")) return new Response(JSON.stringify({ result: { uids: ["12345678"], "12345678": { uid: "12345678", title: "T", pubdate: "2021" } } }));
+        if (path.endsWith("efetch.fcgi")) return new Response("<PubmedArticleSet/>");
+        return new Response(JSON.stringify({ esearchresult: { count: "1", idlist: ["12345678"] } }));
+      }),
+    );
+    try {
+      const server = createServer({ cache: new LRUBackend(), ncbi: new NcbiClient({ email: "test@example.com" }), callBudgetMs: 1 });
+      const client = new Client({ name: "test", version: "0.0.0" });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      await Promise.all([server.connect(st), client.connect(ct)]);
+      const text = (result: Awaited<ReturnType<typeof client.callTool>>) => (result.content as { text: string }[])[0]!.text;
+
+      const search = await client.callTool({ name: "literature_search", arguments: { query: "x" } });
+      expect(search.isError).toBe(true);
+      expect(text(search)).toContain("the call ran out of time");
+      const fulltext = await client.callTool({ name: "literature_fulltext", arguments: { id: "12345678" } });
+      expect(fulltext.isError).toBeFalsy();
+      expect(JSON.parse(text(fulltext)).warning).toContain("Could not resolve a DOI");
+      await client.close();
+      await server.close();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("builds independent servers per call", () => {

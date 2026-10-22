@@ -53,19 +53,27 @@ function toSuperscript(text: string): string | undefined {
   return chars.map((c) => SUPERSCRIPT[c]).join("");
 }
 
-/** A tag's optional namespace prefix (`mml:`, `jats:`, `ns3:`), and attributes, which must have values. */
+/** A tag's optional namespace prefix (`mml:`, `jats:`, `ns3:`). */
 const PREFIX = String.raw`(?:[a-z][\w.-]*:)?`;
+/** Attributes with values, as inline tags must have them: "a<b and c>d" is text. */
 const ATTRIBUTES = String.raw`(?:\s+[\w:.-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'<>]+))*`;
+/** Any attributes (`<h4 hidden>`), for block tags and headings, whose names don't start a "<" in the text. */
+const ANY_ATTRIBUTES = String.raw`(?:\s[^<>]*?)?`;
 /** Opening, closing and empty tags with one of these names; only these are removed, so a "<" in the text survives. */
-const tags = (names: string): RegExp => new RegExp(String.raw`<\/?${PREFIX}(?:${names})${ATTRIBUTES}\s*\/?>`, "gi");
+const tags = (names: string, attributes = ATTRIBUTES): RegExp =>
+  new RegExp(String.raw`<\/?${PREFIX}(?:${names})${attributes}\s*\/?>`, "gi");
+/** An element with one of these names and its content: the name is $1, the content $2. */
+const element = (names: string): RegExp =>
+  new RegExp(String.raw`<(${PREFIX}(?:${names}))${ANY_ATTRIBUTES}\s*>([\s\S]*?)<\/\1\s*>`, "gi");
 
 /** Elements that end a line: HTML and JATS (Europe PMC's preprint abstracts) blocks. */
 const BLOCK_TAG = tags(
   "br|p|div|li|ul|ol|dl|dt|dd|pre|hr|blockquote|sec|list|list-item|table|table-wrap|thead|tbody|tfoot|tr|caption|fig|" +
     "disp-formula|disp-quote|boxed-text|statement|abstract|break",
+  ANY_ATTRIBUTES,
 );
 /** Table cells: a space between them. */
-const CELL_TAG = tags("td|th");
+const CELL_TAG = tags("td|th", ANY_ATTRIBUTES);
 /** Inline elements, HTML, JATS and MathML, whose text is kept. */
 const INLINE_TAG = tags(
   "a|abbr|b|big|bold|cite|code|del|em|font|i|img|ins|italic|mark|s|sc|small|span|strike|strong|sub|sup|tt|u|underline|" +
@@ -75,14 +83,25 @@ const INLINE_TAG = tags(
     "msubsup|munder|mover|munderover|mmultiscripts|mprescripts|mtable|mtr|mtd|mlabeledtr|semantics|annotation|annotation-xml",
 );
 /** A section heading and its text. */
-const HEADING = new RegExp(String.raw`<(${PREFIX}(?:h[1-6]|title))${ATTRIBUTES}\s*>([\s\S]*?)<\/\1\s*>`, "gi");
+const HEADING = element("h[1-6]|title");
+const SUPERSCRIPT_ELEMENT = element("sup");
+/** MathML annotations: another encoding (TeX source) of the formula beside them, dropped with their content. */
+const ANNOTATION = element("annotation|annotation-xml");
+/** JATS alternative forms of one formula (TeX and MathML): only one is kept. */
+const ALTERNATIVES = element("alternatives");
+const TEX_MATH = element("tex-math");
+const MATHML = new RegExp(String.raw`<${PREFIX}math\b`, "i");
+/** The LaTeX document PMC wraps TeX in: `\documentclass…\begin{document}$\alpha$\end{document}`. */
+const LATEX_DOCUMENT = /\\documentclass[\s\S]*?\\begin\{document\}([\s\S]*?)\\end\{document\}/g;
+/** Entities for white space, which the cleanup of a heading must see before they are decoded. */
+const WHITESPACE_ENTITY = /&(?:nbsp|ensp|emsp|thinsp|#160|#x0*a0);/gi;
 const ANY_TAG = /<[^<>]*>/g;
 /** Private-use marker for the end of a heading while lines are assembled. */
 const HEADING_END = "\uE000";
 
 /** Replace each superscript that holds only digits and signs with Unicode superscripts. */
 function superscripts(markup: string, tag: RegExp): string {
-  return markup.replace(/<sup\b[^<>]*>([\s\S]*?)<\/sup\s*>/gi, (match, inner: string) => toSuperscript(decodeEntities(inner.replace(tag, ""))) ?? inner);
+  return markup.replace(SUPERSCRIPT_ELEMENT, (_match, _sup: string, inner: string) => toSuperscript(decodeEntities(inner.replace(tag, ""))) ?? inner);
 }
 
 /** Collapse whitespace (non-breaking and thin spaces included) within lines; drop empty lines. */
@@ -104,14 +123,17 @@ export function xmlToText(xml: string): string {
 }
 
 /**
- * Europe PMC markup without its tags: headings become "Heading: " at the start of a line (a lone
- * "Abstract" heading is dropped), blocks and line breaks become lines, cells are spaced, and other
- * tags go. Entities are left for the caller.
+ * Europe PMC markup without its tags: a formula keeps one of its forms, headings become "Heading: "
+ * at the start of a line (a lone "Abstract" heading is dropped), blocks and line breaks become lines,
+ * cells are spaced, and other tags go. Entities are left for the caller.
  */
 function untag(html: string): string {
   const structured = html
+    .replace(ANNOTATION, "")
+    .replace(ALTERNATIVES, (_match, _tag: string, inner: string) => (MATHML.test(inner) ? inner.replace(TEX_MATH, "") : inner))
+    .replace(LATEX_DOCUMENT, "$1")
     .replace(HEADING, (_match, _tag: string, inner: string) => {
-      const heading = inner.replace(INLINE_TAG, "").replace(/\s+/g, " ").trim().replace(/\s*[:.]$/, "");
+      const heading = inner.replace(INLINE_TAG, "").replace(WHITESPACE_ENTITY, " ").replace(/\s+/g, " ").trim().replace(/\s*[:.]$/, "");
       // HEADING_END keeps the section's first paragraph on the heading's line.
       return heading && !/^abstract$/i.test(heading) ? `\n${heading}:${HEADING_END}` : "\n";
     })

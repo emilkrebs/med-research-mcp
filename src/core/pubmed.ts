@@ -46,6 +46,8 @@ const DATE_POOL_MIN = 100;
 const DATE_POOL_FACTOR = 4;
 /** PMIDs per esummary request, so that its GET URL stays short. */
 const ESUMMARY_BATCH = 200;
+/** How long a date search's summaries wait for the esummary of the PMIDs it returned. */
+const POOLED_SUMMARY_TTL_MS = 10 * 60 * 1000;
 
 export interface NcbiConfig {
   /**
@@ -140,6 +142,8 @@ export class NcbiClient {
   private readonly limiter: RateLimiter;
   private readonly parser: XMLParser;
   private readonly searches: LRUCache<string, { count: number; pmids: string[] }> | null;
+  /** Summaries of the PMIDs a date search returned, fetched to rank them, served once by esummary. */
+  private readonly pooled = new LRUCache<string, Article>({ max: 500, ttl: POOLED_SUMMARY_TTL_MS });
 
   constructor(config: NcbiConfig = {}) {
     this.tool = config.tool ?? PROJECT_TOOL;
@@ -228,13 +232,19 @@ export class NcbiClient {
     byAdded.set("retmax", pool);
     const [issued, added] = await Promise.all([this.runEsearch(byIssue), this.runEsearch(byAdded)]);
     const pmids = [...new Set([...issued.pmids, ...added.pmids])];
-    const published = new Map<string, number>();
+    const summaries = new Map<string, Article>();
     for (let i = 0; i < pmids.length; i += ESUMMARY_BATCH) {
-      for (const [pmid, article] of await this.esummary(pmids.slice(i, i + ESUMMARY_BATCH))) published.set(pmid, firstPublished(article));
+      for (const [pmid, article] of await this.esummary(pmids.slice(i, i + ESUMMARY_BATCH))) summaries.set(pmid, article);
     }
+    const published = new Map([...summaries].map(([pmid, article]) => [pmid, firstPublished(article)]));
     // Stable: equal dates keep the issue order, then the date-added one.
     pmids.sort((a, b) => (published.get(b) ?? -1) - (published.get(a) ?? -1));
-    return { count: issued.count, pmids: pmids.slice(0, maxResults) };
+    const newest = pmids.slice(0, maxResults);
+    for (const pmid of newest) {
+      const summary = summaries.get(pmid);
+      if (summary) this.pooled.set(pmid, summary);
+    }
+    return { count: issued.count, pmids: newest };
   }
 
   private async runEsearch(params: URLSearchParams): Promise<{ count: number; pmids: string[] }> {
@@ -260,11 +270,19 @@ export class NcbiClient {
   /** Fetches article metadata (no abstract). Preserves nothing about order. */
   async esummary(pmids: string[]): Promise<Map<string, Article>> {
     const out = new Map<string, Article>();
-    if (pmids.length === 0) return out;
+    // A date search has just fetched the summaries of the PMIDs it returned.
+    const missing = pmids.filter((pmid) => {
+      const pooled = this.pooled.get(pmid);
+      if (!pooled) return true;
+      this.pooled.delete(pmid);
+      out.set(pmid, pooled);
+      return false;
+    });
+    if (missing.length === 0) return out;
 
     const params = new URLSearchParams({
       db: "pubmed",
-      id: pmids.join(","),
+      id: missing.join(","),
       retmode: "json",
     });
     const body = await this.request("esummary.fcgi", params);
@@ -277,7 +295,7 @@ export class NcbiClient {
 
     const result = data.result;
     if (!result) return out;
-    for (const pmid of pmids) {
+    for (const pmid of missing) {
       const doc = result[pmid];
       // NCBI returns an ERROR-DOC object (uid + error, no title) for uids it doesn't
       // recognize — e.g. a nonexistent PMID — rather than omitting the key entirely.

@@ -70,8 +70,12 @@ const OPEN_ACCESS_SOURCES: ReadonlySet<string> = new Set(["europepmc", "unpaywal
  * the {@link Cache}, which can outlive the session; this store dies with the process.
  */
 const READING_TTL_MS = 30 * 60 * 1000;
-/** The most texts kept in memory while they are read, per cache. */
-const READING_MAX = 20;
+/**
+ * The most characters of text kept in memory while read, per cache: about 20 MB, a hundred or more
+ * articles. The hosted server shares one cache between its users, so a small store would let other
+ * readings push one out before its last part.
+ */
+const READING_MAX_CHARS = 10_000_000;
 
 /** A resource fetched from an arbitrary URL. Either `text` (HTML) or `bytes` (PDF) is set. */
 export interface FetchedResource {
@@ -122,13 +126,21 @@ interface Reading extends Extracted {
 /**
  * The texts being read in parts, per cache: callers that share a cache share what it holds, and
  * keys include the proxy, so a text is only served to a caller who would fetch it the same way.
+ * Calls carry no reader's identity, so the latest reading of an article from its start is the one
+ * continued: two callers reading the same article at once, one from a proxy or direct text and one
+ * from an open-access copy, can get each other's parts.
  */
 const readings = new WeakMap<Cache, LRUCache<string, Reading>>();
 
 function readingsOf(cache: Cache): LRUCache<string, Reading> {
   let store = readings.get(cache);
   if (!store) {
-    store = new LRUCache({ max: READING_MAX, ttl: READING_TTL_MS, updateAgeOnGet: true });
+    store = new LRUCache({
+      maxSize: READING_MAX_CHARS,
+      sizeCalculation: (r: Reading) => Math.max(1, r.fulltext.length),
+      ttl: READING_TTL_MS,
+      updateAgeOnGet: true,
+    });
     readings.set(cache, store);
   }
   return store;
@@ -536,7 +548,8 @@ function part(
     throw errors.invalidInput(`offset ${offset} is past the end of the text, which has ${text.length} characters.`);
   }
   const end = offset + maxChars;
-  if (end >= text.length) return { fulltext: text.slice(offset), truncated: false, totalChars: text.length };
+  const rest = { fulltext: text.slice(offset), truncated: false, totalChars: text.length };
+  if (end >= text.length) return rest;
   const floor = end - Math.floor(maxChars / 5);
   let cut = end;
   for (const breakAt of ["\n\n", "\n", " "]) {
@@ -548,6 +561,7 @@ function part(
   }
   // A character outside the BMP (𝛼, an emoji) is two code units: keep them in one part.
   if (isHighSurrogate(text.charCodeAt(cut - 1))) cut += cut - 1 > offset ? -1 : 1;
+  if (cut >= text.length) return rest;
   return { fulltext: text.slice(offset, cut), truncated: true, totalChars: text.length, nextOffset: cut };
 }
 
