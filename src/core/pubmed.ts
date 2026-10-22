@@ -11,6 +11,7 @@ import { LRUCache } from "lru-cache";
 import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors } from "./errors.js";
+import { firstPublished } from "./adapters/util.js";
 import { requestWithRetries } from "./request.js";
 import { xmlToText } from "./text.js";
 import { contactEmail, envSetting, PROJECT_TOOL, USER_AGENT } from "./version.js";
@@ -37,6 +38,14 @@ const SPACING_MARGIN = 1.2;
  * (2026-10-20), so within this window the same search returns the same papers.
  */
 const DEFAULT_SEARCH_TTL_MS = 60 * 60 * 1000;
+/**
+ * The fewest PMIDs taken from each of PubMed's two date orders for `sort: "date"`, and the multiple
+ * of maxResults taken when that is more (see {@link NcbiClient.newest}).
+ */
+const DATE_POOL_MIN = 100;
+const DATE_POOL_FACTOR = 4;
+/** PMIDs per esummary request, so that its GET URL stays short. */
+const ESUMMARY_BATCH = 200;
 
 export interface NcbiConfig {
   /**
@@ -171,32 +180,61 @@ export class NcbiClient {
    * Returns matching PMIDs (already truncated to maxResults) and the total count. A
    * studyTypes or minDesignTier filter narrows the query to the publication types it
    * can keep (see designPublicationTypes), so the count is of candidates for it.
-   * An identical search within `searchTtlMs` returns the same PMIDs.
+   * With `sort: "date"`, the PMIDs are those first published last, newest first (see
+   * {@link newest}). An identical search within `searchTtlMs` returns the same PMIDs.
    */
   async esearch(input: SearchInput): Promise<{ count: number; pmids: string[] }> {
     const maxResults = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
     const types = designPublicationTypes(input.studyTypes, input.minDesignTier);
     if (types?.length === 0) return { count: 0, pmids: [] };
     const term = types ? `(${input.query}) AND (${types.map((t) => `"${t}"[pt]`).join(" OR ")})` : input.query;
-    const params = new URLSearchParams({
-      db: "pubmed",
-      term,
-      retmode: "json",
-      retmax: String(maxResults),
-      sort: input.sort === "date" ? "pub_date" : "relevance",
-    });
+    const params = new URLSearchParams({ db: "pubmed", term, retmode: "json", retmax: String(maxResults) });
     if (input.dateRange?.from || input.dateRange?.to) {
       params.set("datetype", "pdat");
       if (input.dateRange.from) params.set("mindate", input.dateRange.from.replace(/-/g, "/"));
       if (input.dateRange.to) params.set("maxdate", input.dateRange.to.replace(/-/g, "/"));
     }
+    const byDate = input.sort === "date";
+    if (!byDate) params.set("sort", "relevance");
 
-    const key = params.toString();
+    const key = `${params.toString()}${byDate ? "&order=first-published" : ""}`;
     const cached = this.searches?.get(key);
     if (cached) return { count: cached.count, pmids: [...cached.pmids] };
-    const result = await this.runEsearch(params);
+    const result = byDate ? await this.newest(params, maxResults) : await this.runEsearch(params);
     this.searches?.set(key, result);
     return { count: result.count, pmids: [...result.pmids] };
+  }
+
+  /**
+   * The `maxResults` PMIDs first published last ({@link firstPublished}), newest first. No esearch
+   * order is that one. `sort=pub_date` orders by issue date: for "semaglutide" it led with issues of
+   * December 2026 published online in August to October, and records published online on 2026-10-20
+   * weren't in its first 12 (2026-10-22). Without a sort, esearch orders by date added to PubMed
+   * ("The default sort order varies by database (for PubMed, it is most+recent)", NLM Data Guide,
+   * https://dataguide.nlm.nih.gov/eutilities/utilities.html, checked 2026-10-22), which misses
+   * records added long before their issue. So the first max(100, 4 × maxResults) of each order are
+   * pooled and sorted by first publication from esummary's dates. Checked against every record with a
+   * publication date since 2026-10-01, the first 100 of each order held all 10 newest records for each
+   * of five queries (semaglutide, creatine supplementation, vitamin D supplementation, intermittent
+   * fasting, long covid), and the first 200 all 50 newest for the two queries with 50 in that range;
+   * the first 10 of pub_date alone held 1 to 3 of the 10 newest (2026-10-22).
+   */
+  private async newest(params: URLSearchParams, maxResults: number): Promise<{ count: number; pmids: string[] }> {
+    const pool = String(Math.max(DATE_POOL_MIN, DATE_POOL_FACTOR * maxResults));
+    const byIssue = new URLSearchParams(params);
+    byIssue.set("retmax", pool);
+    byIssue.set("sort", "pub_date");
+    const byAdded = new URLSearchParams(params);
+    byAdded.set("retmax", pool);
+    const [issued, added] = await Promise.all([this.runEsearch(byIssue), this.runEsearch(byAdded)]);
+    const pmids = [...new Set([...issued.pmids, ...added.pmids])];
+    const published = new Map<string, number>();
+    for (let i = 0; i < pmids.length; i += ESUMMARY_BATCH) {
+      for (const [pmid, article] of await this.esummary(pmids.slice(i, i + ESUMMARY_BATCH))) published.set(pmid, firstPublished(article));
+    }
+    // Stable: equal dates keep the issue order, then the date-added one.
+    pmids.sort((a, b) => (published.get(b) ?? -1) - (published.get(a) ?? -1));
+    return { count: issued.count, pmids: pmids.slice(0, maxResults) };
   }
 
   private async runEsearch(params: URLSearchParams): Promise<{ count: number; pmids: string[] }> {

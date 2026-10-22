@@ -18,7 +18,7 @@
  */
 
 import { adaptersFor, getAdapter, unknownDatabase, type DatabaseAdapter } from "./adapters/registry.js";
-import { dateKey, doiKey, isoDateBound } from "./adapters/util.js";
+import { doiKey, firstPublished, isoDateBound } from "./adapters/util.js";
 import { LRUBackend, type Cache } from "./cache.js";
 import { errors, isMedResearchError } from "./errors.js";
 import { classifyArticle, designPublicationTypes, filterWarnings, mergeDuplicate, noAnimalStudiesWarning, rankKey } from "./grader.js";
@@ -46,30 +46,6 @@ function validateSearch(input: SearchInput): void {
     if (value && !parsed) throw errors.invalidInput(`${JSON.stringify(value)} is not a date. Use YYYY-MM-DD, YYYY-MM or YYYY.`);
   }
   if (start && end && start > end) throw errors.invalidInput(`dateRange.from (${from}) is after dateRange.to (${to}).`);
-}
-
-/**
- * When a record was first published, as a {@link dateKey}; -1 without a date. That is the earlier
- * of its issue and electronic publication dates, as PubMed's website sorts by publication date
- * ("Citations with more than one publication date, such as electronic and print, are sorted by their
- * earliest publication date", PubMed Help, checked 2026-10-22) and both PubMed's and Europe PMC's date
- * filters match, unless
- * one date only narrows the other: PMID 42422741, issue "2026" and online "2026 Jun 24", was first
- * published on June 24, as NCBI's own sort date for it says, not at the start of 2026 (2026-10-22).
- */
-function firstPublished(article: Article): number {
-  const issue = dateKey(article.pubDate);
-  const online = dateKey(article.epubDate);
-  if (issue === undefined || online === undefined) return issue ?? online ?? -1;
-  if (narrows(online, issue)) return online;
-  if (narrows(issue, online)) return issue;
-  return Math.min(issue, online);
-}
-
-/** Whether a date key falls within the year or month another leaves open: 20260624 within 20260000 or 20260600. */
-function narrows(precise: number, vague: number): boolean {
-  const span = vague % 10_000 === 0 ? 10_000 : vague % 100 === 0 ? 100 : 0;
-  return precise > vague && precise < vague + span;
 }
 
 /**

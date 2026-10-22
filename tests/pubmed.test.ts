@@ -416,6 +416,61 @@ describe("NcbiClient requests", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
+  it('with sort "date", returns the records first published last, from PubMed\'s issue-date and date-added orders', async () => {
+    // PubMed's pub_date order leads with later issues published online earlier (the semaglutide search, 2026-10-22).
+    const dates: Record<string, { pubdate: string; epubdate: string }> = {
+      "42886550": { pubdate: "2026 Dec 31", epubdate: "2026 Oct 16" },
+      "42894545": { pubdate: "2026 Dec", epubdate: "2026 Oct 17" },
+      "42545731": { pubdate: "2027 Jan", epubdate: "2026 Aug 3" },
+      "42902597": { pubdate: "2026 Oct 20", epubdate: "2026 Oct 20" },
+      "42901618": { pubdate: "2026 Oct 20", epubdate: "2026 Oct 20" },
+      "42422741": { pubdate: "2026", epubdate: "2026 Jun 24" },
+    };
+    const issueOrder = ["42545731", "42886550", "42894545", "42422741"];
+    const addedOrder = ["42902597", "42901618", "42894545", "42886550"];
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("esummary.fcgi")) {
+        const ids = url.searchParams.get("id")!.split(",");
+        return new Response(JSON.stringify({ result: { uids: ids, ...Object.fromEntries(ids.map((id) => [id, { uid: id, title: id, ...dates[id] }])) } }));
+      }
+      return esearchResponse(url.searchParams.get("sort") === "pub_date" ? issueOrder : addedOrder);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new NcbiClient({ email: "test@example.com" });
+
+    const out = await client.esearch({ query: "semaglutide", sort: "date", maxResults: 4 });
+    expect(out.pmids).toEqual(["42902597", "42901618", "42894545", "42886550"]);
+    const searches = fetchMock.mock.calls.map(([u]) => new URL(String(u))).filter((u) => u.pathname.endsWith("esearch.fcgi"));
+    expect(searches.map((u) => [u.searchParams.get("sort"), u.searchParams.get("retmax")])).toEqual([
+      ["pub_date", "100"],
+      [null, "100"],
+    ]);
+    // An identical search is served from memory.
+    const requests = fetchMock.mock.calls.length;
+    expect(await client.esearch({ query: "semaglutide", sort: "date", maxResults: 4 })).toEqual(out);
+    expect(fetchMock.mock.calls.length).toBe(requests);
+  });
+
+  it('with sort "date", takes 4 × maxResults from each order and asks esummary for at most 200 at a time', async () => {
+    const ids = (from: number) => Array.from({ length: 200 }, (_, i) => String(from + i));
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("esummary.fcgi")) {
+        const batch = url.searchParams.get("id")!.split(",");
+        return new Response(JSON.stringify({ result: { uids: batch, ...Object.fromEntries(batch.map((id) => [id, { uid: id, pubdate: "2026 Oct 1" }])) } }));
+      }
+      return esearchResponse(url.searchParams.get("sort") === "pub_date" ? ids(1000) : ids(2000));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await new NcbiClient({ email: "test@example.com" }).esearch({ query: "x", sort: "date", maxResults: 50 });
+    expect(out.pmids).toHaveLength(50);
+    const summaries = fetchMock.mock.calls.map(([u]) => new URL(String(u))).filter((u) => u.pathname.endsWith("esummary.fcgi"));
+    expect(summaries.map((u) => u.searchParams.get("id")!.split(",").length)).toEqual([200, 200]);
+    const retmax = fetchMock.mock.calls.map(([u]) => new URL(String(u))).find((u) => u.pathname.endsWith("esearch.fcgi"))!.searchParams.get("retmax");
+    expect(retmax).toBe("200");
+  });
+
   it("waits out a 429 and retries, holding back the queue, instead of failing the call", async () => {
     vi.useFakeTimers();
     const responses = [tooMany("2"), esearchResponse(["1"]), esearchResponse(["2"])];
