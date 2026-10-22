@@ -30,9 +30,11 @@ export interface DatabaseAdapter {
   /**
    * Fetch full metadata ({@link Article}[]) for one or more ids. Order is not
    * guaranteed; ids with no result are simply absent from the returned array.
-   * The cache is scoped per-database (see {@link RestAdapter}).
+   * The cache is scoped per-database (see {@link RestAdapter}). `warn` receives a
+   * warning for records returned incomplete, such as PubMed records without their
+   * abstract and retraction links when efetch failed.
    */
-  fetch(ids: string[], cache: Cache): Promise<Article[]>;
+  fetch(ids: string[], cache: Cache, warn?: (warning: string) => void): Promise<Article[]>;
   /**
    * Complete records for an explicit fetch (`literature_fetch`), for databases
    * whose search endpoint only returns previews (e.g. ChinaXiv cuts abstracts at

@@ -27,6 +27,7 @@ import {
   type DatabaseAdapter,
   UnpaywallClient,
 } from "../core/index.js";
+import { withDeadline } from "../core/request.js";
 import { envSetting, packageVersion } from "../core/version.js";
 
 /** Re-exported for the HTTP entry and tests, which import it from here. */
@@ -77,6 +78,13 @@ export interface CreateServerOptions {
   ncbi?: NcbiClient;
   /** Unpaywall client for literature_fulltext; sharing one reuses its answers. Defaults to a new client. */
   unpaywall?: UnpaywallClient;
+  /**
+   * Time in ms a literature_search or literature_fetch call's database requests get, retries and
+   * waiting in the NCBI queue included (see ../core/request.ts). None by default; the HTTP server sets
+   * one, to answer before a gateway gives up. literature_fulltext has none: its pages are fetched with
+   * their own timeout, and a cut-off abstract lookup would leave its fallback without the abstract.
+   */
+  callBudgetMs?: number;
 }
 
 /**
@@ -108,6 +116,10 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     return adapter?.id === "pubmed" ? ncbiAdapter : adapter;
   }
 
+
+  /** A tool call's work, within the call budget when there is one. */
+  const budgeted = <T>(call: () => Promise<T>): Promise<T> =>
+    options.callBudgetMs === undefined ? call() : withDeadline(options.callBudgetMs, call);
 
   const server = new McpServer({ name: "med-research-mcp", version: packageVersion() });
 
@@ -142,8 +154,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .optional()
       .describe(
         "Drop results below this design tier (0-5; 4 = RCTs). Results with designTier null — unclassified records and most " +
-          "meta-analyses/systematic reviews — are dropped too, with a warning. To keep reviews and trials, use studyTypes instead. " +
-          "Narrows the query like studyTypes.",
+          "meta-analyses/systematic reviews — are left out too: the query is narrowed like studyTypes, so they are never " +
+          "fetched, and a warning says so. To keep reviews and trials, use studyTypes instead.",
       ),
     studyTypes: z
       .array(z.enum(STUDY_TYPES))
@@ -152,16 +164,23 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         "Keep only these study types. PubMed and Europe PMC are queried for them, so maxResults counts matching " +
           "records; chinaxiv and russiarxiv, which have no design metadata, are skipped. cohort, case-control, " +
           "cross-sectional and in-vitro are never assigned from metadata (tagged observational studies come back as " +
-          "observational), so filtering on them returns nothing.",
+          "observational), so filtering on them returns nothing. animal-study comes only from veterinary publication types; " +
+          "laboratory animal studies are not labeled with it but flagged animals-not-humans.",
       ),
     dateRange: z
       .object({ from: isoDate.optional(), to: isoDate.optional() })
       .optional()
-      .describe("Publication date filter: YYYY-MM-DD, YYYY-MM or YYYY (a year or month covers all of it)."),
+      .describe(
+        "Publication date filter: YYYY-MM-DD, YYYY-MM or YYYY (a year or month covers all of it). It matches the electronic " +
+          "publication date too, so a record published online within the range can show a later pubDate; see its epubDate.",
+      ),
     sort: z
       .enum(["relevance", "date"])
       .optional()
-      .describe("Per-database sort order. Merged results are always re-ordered by design tier."),
+      .describe(
+        'Default "relevance": each database\'s relevance order, re-sorted by design tier. "date": newest first by first ' +
+          "publication (the earlier of pubDate and epubDate), across databases.",
+      ),
     language: z
       .string()
       .optional()
@@ -186,7 +205,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         "protocol and editorial records (designTier 0), and warns of an expression of concern, an erratum (corrected), " +
         "a newer version (updated), animals-not-humans indexing, preprints, letters, machine-translated text and " +
         "machine-generated abstracts (chinaxiv, russiarxiv: check originalUrl before relying on a number). Results are " +
-        "merged, de-duplicated by DOI, and sorted by design tier. Always cheap — no LLM calls. " +
+        'merged, de-duplicated by DOI, and sorted by design tier (or by date with sort: "date"). Always cheap — no LLM calls. ' +
         "Use literature_fetch to get full metadata for specific ids, and literature_fulltext for the article body.",
       // Strict, so a misnamed key (e.g. `databases`) errors instead of being stripped and silently searching PubMed.
       inputSchema: z.object(literatureSearchShape).strict(),
@@ -194,7 +213,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     },
     async (args) => {
       try {
-        const result = await searchLiterature(args, cache, resolveAdapters(args.database));
+        const result = await budgeted(() => searchLiterature(args, cache, resolveAdapters(args.database)));
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };
@@ -238,10 +257,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     },
     async (args) => {
       try {
-        const result = await fetchLiterature(
-          { ids: args.ids, database: args.database },
-          cache,
-          resolveAdapter(args.database),
+        const result = await budgeted(() =>
+          fetchLiterature({ ids: args.ids, database: args.database }, cache, resolveAdapter(args.database)),
         );
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -271,6 +288,18 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .string()
       .optional()
       .describe("DOI — database-agnostic. Required when the id is not a PMID, PMCID or PPR id; otherwise skips the id→DOI lookup."),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Character position to read the full text from: the nextOffset of the previous call. Default 0."),
+    maxChars: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Return at most this many characters; the server's limit (default 50,000) is the most."),
   };
 
   server.registerTool(
@@ -282,14 +311,25 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         "access), institutional proxy (if configured), and direct DOI access; falls back to the abstract, with a " +
         "warning saying what each location answered. DOI resolution is database-agnostic: for non-PubMed articles, " +
         "pass the DOI from the literature_search result. Records with neither DOI nor PMCID (all chinaxiv and " +
-        "russiarxiv records) can't be resolved; their url links the record. Use when the abstract isn't enough " +
-        "(verify dosage, sample sizes, methods).",
+        "russiarxiv records) can't be resolved; their url links the record. A long text comes in parts: when truncated " +
+        "is true, call again with offset set to nextOffset to read on (totalChars is the whole length). Use when the " +
+        "abstract isn't enough (verify dosage, sample sizes, methods).",
       inputSchema: literatureFulltextShape,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
       try {
-        const result = await fetchFulltext({ id: args.id, ...(args.doi ? { doi: args.doi } : {}) }, cache, ncbi, { unpaywall });
+        const result = await fetchFulltext(
+          {
+            id: args.id,
+            ...(args.doi ? { doi: args.doi } : {}),
+            ...(args.offset !== undefined ? { offset: args.offset } : {}),
+            ...(args.maxChars !== undefined ? { maxChars: args.maxChars } : {}),
+          },
+          cache,
+          ncbi,
+          { unpaywall },
+        );
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };

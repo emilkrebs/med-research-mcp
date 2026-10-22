@@ -111,6 +111,7 @@ describe("parseEuropePmc — core results", () => {
             journalInfo: { journal: { title: "Ageing research reviews" }, dateOfPublication: "2026 Nov" },
             pubYear: "2026",
             firstPublicationDate: "2026-08-29",
+            electronicPublicationDate: "2026-08-29",
           },
           {
             id: "PPR1308156",
@@ -137,6 +138,39 @@ describe("parseEuropePmc — core results", () => {
       ["Ageing research reviews", "2026 Nov"],
       ["medRxiv", "2026-08-28"],
       ["European psychiatry", "2026-09-04"],
+    ]);
+    // The date a dateRange matches (FIRST_PDATE) can precede the issue date shown.
+    expect(articles.map((a) => a.epubDate)).toEqual(["2026-08-29", undefined, undefined]);
+  });
+
+  it("turns the HTML in titles and abstracts into text, escaped or not", () => {
+    // Shapes from records 42422741, PPR1333599 and PPR1248025 and a "semaglutide lean mass" search (2026-10-22).
+    const { articles } = parseEuropePmc({
+      hitCount: 2,
+      resultList: {
+        result: [
+          {
+            id: "42422741",
+            source: "MED",
+            title: "&lt;i&gt;Akkermansia muciniphila&lt;/i&gt; in cardiovascular diseases: opportunities and challenges.",
+            abstractText:
+              "<h4>Background</h4>Semaglutide lowers body weight.<h4>Results</h4>Lean mass fell (p < 0.001; I<sup>2</sup> = 98%).",
+          },
+          {
+            id: "PPR1333599",
+            source: "PPR",
+            title: "Effects of CO  <sub>2</sub>  on the growth of  <i>Akkermansia muciniphila</i>",
+            abstractText: "<title>Abstract</title>  <p>The human gut is home to <b>many</b> bacteria.</p>",
+          },
+        ],
+      },
+    } as Parameters<typeof parseEuropePmc>[0]);
+    expect(articles.map((a) => [a.title, a.abstract])).toEqual([
+      [
+        "Akkermansia muciniphila in cardiovascular diseases: opportunities and challenges",
+        "Background: Semaglutide lowers body weight.\nResults: Lean mass fell (p < 0.001; I² = 98%).",
+      ],
+      ["Effects of CO 2 on the growth of Akkermansia muciniphila", "The human gut is home to many bacteria."],
     ]);
   });
 });
@@ -167,6 +201,12 @@ describe("EuropePmcAdapter", () => {
     const adapter = new EuropePmcAdapter(http);
     await adapter.search({ query: "peptide", dateRange: { from: "2020-01-01", to: "2021-12-31" } });
     expect(urls[0]).toContain("FIRST_PDATE");
+  });
+
+  it("sorts by date as the merged results are, by first publication", async () => {
+    const { http, urls } = recordingHttp(RESPONSE);
+    await new EuropePmcAdapter(http).search({ query: "semaglutide", sort: "date" });
+    expect(new URL(urls[0]!).searchParams.get("sort")).toBe("FIRST_PDATE_D desc");
   });
 
   it("cold fetch() looks a record up by EXT_ID + SRC and rejects a non-matching hit", async () => {

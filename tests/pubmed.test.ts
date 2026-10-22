@@ -103,6 +103,49 @@ describe("NcbiClient.parseEfetch", () => {
   });
 });
 
+// AbstractText is mixed content. Fragments of PMIDs 40292479, 32599716, 38418482 and 30243806
+// as efetch returns them (2026-10-22), which 0.6.0 returned as "(= 0.03)", "31 &#xb1; 8 years",
+// "consecutiveP-MRS scans" and "haemoglobin Aover time".
+const MIXED_XML = `<?xml version="1.0" ?>
+<PubmedArticleSet>
+  <PubmedArticle><MedlineCitation><PMID Version="1">40292479</PMID><Article><Abstract><AbstractText><b>Background/Objectives</b>: Creatine monohydrate (CrM) is considered to be one of the most effective supplements. <b>Methods</b>: Sixty-three (34 females, 29 males, 31 &#xb1; 8 years) participants were randomised. Lean mass increased more with CrM (<i>p</i> = 0.03).</AbstractText></Abstract></Article></MedlineCitation></PubmedArticle>
+  <PubmedArticle><MedlineCitation><PMID Version="1">32599716</PMID><Article><Abstract><AbstractText>Twenty-two participants were randomized to supplement with creatine (CR: <i>n</i> = 13, 26 &#xb1; 4 yrs; 0.0055 g&#xb7;kg<sup>-1</sup> post training set).</AbstractText></Abstract></Article></MedlineCitation></PubmedArticle>
+  <PubmedArticle><MedlineCitation><PMID Version="1">38418482</PMID><Article><Abstract><AbstractText>Two consecutive <sup>31</sup>P-MRS scans, <sup>1</sup>H-MRS, and cognitive tests were performed during 21&#xa0;h of sleep deprivation.</AbstractText></Abstract></Article></MedlineCitation></PubmedArticle>
+  <PubmedArticle><MedlineCitation><PMID Version="1">30243806</PMID><Article><Abstract>
+    <AbstractText Label="METHODS">The primary outcome was the change in haemoglobin A<sub>1c</sub> over time.</AbstractText>
+    <AbstractText Label="RESULTS">[MD (95% CI)&#x2009;=&#x2009;-0.38% (-0.62, -0.15)]; p &lt; 0.05 &amp; more.</AbstractText>
+    <AbstractText Label="EMPTY"></AbstractText>
+  </Abstract></Article></MedlineCitation></PubmedArticle>
+</PubmedArticleSet>`;
+
+describe("NcbiClient.parseEfetch — mixed-content abstracts", () => {
+  const parsed = new NcbiClient({ email: "test@example.com" }).parseEfetch(MIXED_XML);
+  const abstract = (pmid: string): string | undefined => parsed.get(pmid)?.abstract;
+
+  it("keeps the text of inline elements", () => {
+    expect(abstract("40292479")).toContain("Background/Objectives: Creatine monohydrate");
+    expect(abstract("40292479")).toContain("effective supplements. Methods: Sixty-three");
+    expect(abstract("40292479")).toContain("(p = 0.03)");
+    expect(abstract("32599716")).toContain("(CR: n = 13,");
+    expect(abstract("30243806")).toContain("haemoglobin A1c over time");
+  });
+
+  it("decodes character references, and writes a superscript of digits and signs as superscript characters", () => {
+    expect(abstract("40292479")).toContain("31 ± 8 years");
+    expect(abstract("32599716")).toContain("0.0055 g·kg⁻¹ post");
+    expect(abstract("38418482")).toBe(
+      "Two consecutive ³¹P-MRS scans, ¹H-MRS, and cognitive tests were performed during 21 h of sleep deprivation.",
+    );
+  });
+
+  it("keeps labels, decodes escaped text once, and drops a section without text", () => {
+    expect(abstract("30243806")).toBe(
+      "METHODS: The primary outcome was the change in haemoglobin A1c over time.\n" +
+        "RESULTS: [MD (95% CI) = -0.38% (-0.62, -0.15)]; p < 0.05 & more.",
+    );
+  });
+});
+
 // NCBI's esummary returns an ERROR-DOC object (uid + error, no title) for uids it
 // doesn't recognize instead of omitting the key — e.g. for a nonexistent PMID. These
 // tests exercise the real esummary()/fetchPubMed() parse path (real HTTP layer mocked
@@ -140,6 +183,22 @@ describe("NcbiClient.esummary error-doc handling", () => {
 
     expect(out.has("99999999")).toBe(false);
     expect(out.get("11111111")?.title).toBe("Creatine and cognition");
+  });
+
+  it("keeps the electronic publication date next to the issue date", async () => {
+    // PMID 30243806: issue 2019 Apr, online 2018 Sep 20 (esummary, 2026-10-22).
+    const payload = {
+      result: {
+        uids: ["30243806", "11111111"],
+        "30243806": { ...VALID_DOC, uid: "30243806", pubdate: "2019 Apr", epubdate: "2018 Sep 20" },
+        "11111111": { ...VALID_DOC, epubdate: "" },
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(payload), { status: 200 })));
+
+    const out = await new NcbiClient({ email: "test@example.com" }).esummary(["30243806", "11111111"]);
+    expect(out.get("30243806")).toMatchObject({ pubDate: "2019 Apr", epubDate: "2018 Sep 20" });
+    expect(out.get("11111111")).not.toHaveProperty("epubDate");
   });
 
   it("fetchPubMed reports the nonexistent PMID as missing instead of a stub article", async () => {
@@ -210,10 +269,34 @@ describe("searchPubMed orchestration", () => {
     expect(out.articles[1]?.studyType).toBe("review");
   });
 
-  it("filters by minDesignTier", async () => {
+  it("filters by minDesignTier, and says it leaves out unrated records", async () => {
     const out = await searchPubMed({ query: "x", minDesignTier: 4 }, new LRUBackend(), fakeClient());
     expect(out.articles).toHaveLength(1);
     expect(out.articles[0]?.pmid).toBe("11111111");
+    expect(out.warnings).toEqual([expect.stringContaining("leaves out every record with an unknown design tier")]);
+  });
+
+  it("says what the filter leaves out when PubMed returns nothing", async () => {
+    const client = fakeClient();
+    vi.spyOn(client, "esearch").mockResolvedValueOnce({ count: 0, pmids: [] });
+    const out = await searchPubMed({ query: "creatine meta-analysis", minDesignTier: 3 }, new LRUBackend(), client);
+    expect(out.warnings).toEqual([
+      expect.stringContaining("leaves out every record with an unknown design tier"),
+      expect.stringContaining("No articles matched this query"),
+    ]);
+  });
+
+  it("explains an animal-study filter that finds none, unless minDesignTier is what left them out", async () => {
+    const none = await searchPubMed({ query: "x", studyTypes: ["animal-study"] }, new LRUBackend(), fakeClient());
+    expect(none.warnings).toEqual([expect.stringContaining("flagged animals-not-humans")]);
+
+    const esearch = vi.fn();
+    const client = fakeClient();
+    vi.spyOn(client, "esearch").mockImplementation(esearch);
+    const below = await searchPubMed({ query: "x", studyTypes: ["animal-study"], minDesignTier: 1 }, new LRUBackend(), client);
+    expect(below).toMatchObject({ articles: [], total: 0 });
+    expect(below.warnings).toEqual(["animal-study (designTier 0) records are below minDesignTier 1, so none are kept. Lower minDesignTier to keep them."]);
+    expect(esearch).not.toHaveBeenCalled();
   });
 
   it("filters by study type", async () => {
@@ -331,6 +414,64 @@ describe("NcbiClient requests", () => {
     await uncached.esearch({ query: "x" });
     await uncached.esearch({ query: "x" });
     expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('with sort "date", returns the records first published last, from PubMed\'s issue-date and date-added orders', async () => {
+    // PubMed's pub_date order leads with later issues published online earlier (the semaglutide search, 2026-10-22).
+    const dates: Record<string, { pubdate: string; epubdate: string }> = {
+      "42886550": { pubdate: "2026 Dec 31", epubdate: "2026 Oct 16" },
+      "42894545": { pubdate: "2026 Dec", epubdate: "2026 Oct 17" },
+      "42545731": { pubdate: "2027 Jan", epubdate: "2026 Aug 3" },
+      "42902597": { pubdate: "2026 Oct 20", epubdate: "2026 Oct 20" },
+      "42901618": { pubdate: "2026 Oct 20", epubdate: "2026 Oct 20" },
+      "42422741": { pubdate: "2026", epubdate: "2026 Jun 24" },
+    };
+    const issueOrder = ["42545731", "42886550", "42894545", "42422741"];
+    const addedOrder = ["42902597", "42901618", "42894545", "42886550"];
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("esummary.fcgi")) {
+        const ids = url.searchParams.get("id")!.split(",");
+        return new Response(JSON.stringify({ result: { uids: ids, ...Object.fromEntries(ids.map((id) => [id, { uid: id, title: id, ...dates[id] }])) } }));
+      }
+      return esearchResponse(url.searchParams.get("sort") === "pub_date" ? issueOrder : addedOrder);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new NcbiClient({ email: "test@example.com" });
+
+    const out = await client.esearch({ query: "semaglutide", sort: "date", maxResults: 4 });
+    expect(out.pmids).toEqual(["42902597", "42901618", "42894545", "42886550"]);
+    const searches = fetchMock.mock.calls.map(([u]) => new URL(String(u))).filter((u) => u.pathname.endsWith("esearch.fcgi"));
+    expect(searches.map((u) => [u.searchParams.get("sort"), u.searchParams.get("retmax")])).toEqual([
+      ["pub_date", "100"],
+      [null, "100"],
+    ]);
+    // An identical search is served from memory, and so, once, are the summaries of the PMIDs it returned.
+    const requests = fetchMock.mock.calls.length;
+    expect(await client.esearch({ query: "semaglutide", sort: "date", maxResults: 4 })).toEqual(out);
+    expect([...(await client.esummary(out.pmids)).keys()].sort()).toEqual([...out.pmids].sort());
+    expect(fetchMock.mock.calls.length).toBe(requests);
+    await client.esummary(out.pmids);
+    expect(fetchMock.mock.calls.length).toBe(requests + 1);
+  });
+
+  it('with sort "date", takes 4 × maxResults from each order and asks esummary for at most 200 at a time', async () => {
+    const ids = (from: number) => Array.from({ length: 200 }, (_, i) => String(from + i));
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("esummary.fcgi")) {
+        const batch = url.searchParams.get("id")!.split(",");
+        return new Response(JSON.stringify({ result: { uids: batch, ...Object.fromEntries(batch.map((id) => [id, { uid: id, pubdate: "2026 Oct 1" }])) } }));
+      }
+      return esearchResponse(url.searchParams.get("sort") === "pub_date" ? ids(1000) : ids(2000));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await new NcbiClient({ email: "test@example.com" }).esearch({ query: "x", sort: "date", maxResults: 50 });
+    expect(out.pmids).toHaveLength(50);
+    const summaries = fetchMock.mock.calls.map(([u]) => new URL(String(u))).filter((u) => u.pathname.endsWith("esummary.fcgi"));
+    expect(summaries.map((u) => u.searchParams.get("id")!.split(",").length)).toEqual([200, 200]);
+    const retmax = fetchMock.mock.calls.map(([u]) => new URL(String(u))).find((u) => u.pathname.endsWith("esearch.fcgi"))!.searchParams.get("retmax");
+    expect(retmax).toBe("200");
   });
 
   it("waits out a 429 and retries, holding back the queue, instead of failing the call", async () => {

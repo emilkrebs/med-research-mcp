@@ -78,8 +78,14 @@ export interface Article {
   abstract?: string;
   authors: string[];
   journal: string;
-  /** Publication date as reported by the source database (e.g. "2021 Mar 15" or "2021"). */
+  /** Publication date as reported by the source database (e.g. "2021 Mar 15" or "2021"): the issue date when there is one. */
   pubDate: string;
+  /**
+   * Electronic publication date, when the database reports one (PubMed "2018 Sep 20", Europe PMC
+   * "2024-12-16"). A dateRange filter also matches it, so a record published online within the
+   * range can show a later pubDate.
+   */
+  epubDate?: string;
   doi?: string;
   /** NLM PublicationType tags (PubMed, Europe PMC). Empty for databases without them. */
   publicationTypes: string[];
@@ -153,7 +159,10 @@ export interface SearchInput {
    */
   studyTypes?: StudyType[];
   dateRange?: DateRange;
-  /** "relevance" (default) or "date". */
+  /**
+   * "relevance" (default): each database's relevance order, re-sorted by design tier when merged.
+   * "date": newest first by the earlier of pubDate and epubDate, across databases.
+   */
   sort?: "relevance" | "date";
   /**
    * Preferred content language (ISO 639-1). Only the ChinaXiv adapter reads it:
@@ -201,6 +210,10 @@ export interface FulltextInput {
   id: string;
   /** DOI — if provided, skips the id→DOI lookup. */
   doi?: string;
+  /** Character position in the full text to return it from: a previous call's `nextOffset`. Default 0. */
+  offset?: number;
+  /** The most characters to return, up to the configured limit (`FulltextDeps.maxChars`). */
+  maxChars?: number;
 }
 
 export interface FulltextOutput {
@@ -210,8 +223,12 @@ export interface FulltextOutput {
   /** Extracted full text (markdown) or, on the fallback path, the abstract. Absent if nothing was available. */
   fulltext?: string;
   format: "markdown" | "pdf";
-  /** True if the text was capped at the character limit. */
+  /** True if the text goes on past the part returned; `nextOffset` says where. */
   truncated: boolean;
+  /** Length of the whole full text, of which `fulltext` is the part from the requested offset. Absent on the abstract fallback. */
+  totalChars?: number;
+  /** Set when `truncated`: pass it as `offset` to read on. */
+  nextOffset?: number;
   /** Set when the full text couldn't be retrieved: what each location answered, and what to do. */
   warning?: string;
 }

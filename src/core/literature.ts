@@ -4,8 +4,8 @@
  * `searchLiterature` fans a query out to one or more {@link DatabaseAdapter}s,
  * classifies every result's design from its metadata, merges the lists,
  * de-duplicates by DOI (keeping the better-classified copy, with any retraction
- * found on another copy), filters, and sorts by design tier. `fetchLiterature`
- * fetches specific ids from one database.
+ * found on another copy), filters, and sorts by design tier, or with `sort: "date"`
+ * newest first. `fetchLiterature` fetches specific ids from one database.
  *
  * Databases without NLM publication types (ChinaXiv, RussiaRxiv) always come
  * back `unknown`: the calling model reads the design from the abstract. A design
@@ -18,17 +18,10 @@
  */
 
 import { adaptersFor, getAdapter, unknownDatabase, type DatabaseAdapter } from "./adapters/registry.js";
-import { doiKey, isoDateBound } from "./adapters/util.js";
+import { doiKey, firstPublished, isoDateBound } from "./adapters/util.js";
 import { LRUBackend, type Cache } from "./cache.js";
 import { errors, isMedResearchError } from "./errors.js";
-import {
-  classifyArticle,
-  designPublicationTypes,
-  mergeDuplicate,
-  rankKey,
-  unassignedStudyTypes,
-  unclassifiedDroppedWarning,
-} from "./grader.js";
+import { classifyArticle, designPublicationTypes, filterWarnings, mergeDuplicate, noAnimalStudiesWarning, rankKey } from "./grader.js";
 import type {
   FetchOutput,
   GradedArticle,
@@ -72,7 +65,8 @@ function dedupeByDoi(articles: GradedArticle[]): GradedArticle[] {
 }
 
 /**
- * Search one or more databases and return classified, merged, de-duplicated results.
+ * Search one or more databases and return classified, merged, de-duplicated results,
+ * sorted by design tier, or with `sort: "date"` by first publication date, newest first.
  * Throws INVALID_INPUT for an unknown database, an empty query or an invalid date,
  * and the first database's error when every database searched failed.
  *
@@ -87,26 +81,10 @@ export async function searchLiterature(
   validateSearch(input);
   const selected = adapters ?? adaptersFor(input.database);
   if (selected.length === 0) throw errors.invalidInput("No database to search.");
-  const warnings: string[] = [];
-
-  const unassigned = unassignedStudyTypes(input.studyTypes);
-  if (unassigned.length > 0) {
-    warnings.push(
-      `No record is ever labeled ${unassigned.join(", ")}: metadata doesn't assign ${unassigned.length > 1 ? "these designs" : "this design"}. ` +
-        `Search without ${unassigned.length > 1 ? "them" : "it"} and judge the design from the abstract.`,
-    );
-  }
+  const warnings = filterWarnings(input.studyTypes, input.minDesignTier);
   // A design filter keeps only records carrying one of these publication types (null: no such filter).
   const designTypes = designPublicationTypes(input.studyTypes, input.minDesignTier);
-  if (designTypes?.length === 0) {
-    if (unassigned.length < (input.studyTypes?.length ?? 0)) {
-      warnings.push(
-        `No study type in studyTypes can reach minDesignTier ${input.minDesignTier}: meta-analyses and systematic reviews ` +
-          `are mostly unrated (designTier null), and minDesignTier drops unrated records. Filter with studyTypes alone.`,
-      );
-    }
-    return { articles: [], total: 0, query: input.query, warnings };
-  }
+  if (designTypes?.length === 0) return { articles: [], total: 0, query: input.query, warnings };
   const searched = designTypes ? selected.filter((a) => a.designMetadata !== false) : selected;
   const skipped = selected.filter((a) => !searched.includes(a));
   if (skipped.length > 0) {
@@ -126,7 +104,7 @@ export async function searchLiterature(
       try {
         const { count, ids, warning } = await adapter.search(input);
         if (warning) warnings.push(warning);
-        const articles = await adapter.fetch(ids.slice(0, maxResults), cache);
+        const articles = await adapter.fetch(ids.slice(0, maxResults), cache, (w) => warnings.push(`${adapter.name}: ${w}`));
         return { count, articles };
       } catch (err) {
         failures.push(err);
@@ -155,17 +133,18 @@ export async function searchLiterature(
   // drop must first pass its flag on to the copy that is kept.
   const minTier = input.minDesignTier ?? 0;
   const typeFilter = input.studyTypes?.length ? new Set(input.studyTypes) : null;
-  let droppedUnclassified = 0;
-  const merged = dedupeByDoi(graded).filter((a) => {
-    if ((a.designTier ?? 0) < minTier) {
-      if (a.designTier == null) droppedUnclassified += 1;
-      return false;
-    }
-    return !typeFilter || typeFilter.has(a.studyType);
-  });
-  if (droppedUnclassified > 0) warnings.push(unclassifiedDroppedWarning(droppedUnclassified));
-  // Stable sort — equal-rank items keep their per-adapter relevance order.
-  merged.sort((a, b) => rankKey(b) - rankKey(a));
+  const merged = dedupeByDoi(graded).filter(
+    (a) => (a.designTier ?? 0) >= minTier && (!typeFilter || typeFilter.has(a.studyType)),
+  );
+  const noAnimals = noAnimalStudiesWarning(input.studyTypes, input.minDesignTier, merged);
+  if (noAnimals) warnings.push(noAnimals);
+  // Stable sorts: equal items keep their database's order, databases in the order requested.
+  if (input.sort === "date") {
+    const published = new Map(merged.map((a) => [a, firstPublished(a)]));
+    merged.sort((a, b) => published.get(b)! - published.get(a)!);
+  } else {
+    merged.sort((a, b) => rankKey(b) - rankKey(a));
+  }
 
   return {
     articles: merged,
@@ -189,17 +168,15 @@ export async function fetchLiterature(
   const resolved = adapter ?? getAdapter(input.database);
   if (!resolved) throw unknownDatabase([input.database]);
 
-  const articles = resolved.fetchFull ? await resolved.fetchFull(input.ids, cache) : await resolved.fetch(input.ids, cache);
+  const warnings: string[] = [];
+  const articles = resolved.fetchFull
+    ? await resolved.fetchFull(input.ids, cache)
+    : await resolved.fetch(input.ids, cache, (w) => warnings.push(w));
   // Case-insensitive: adapters return canonical ids ("PPR123456") for any input case. A PMCID
   // fetched from Europe PMC comes back under its PMID, so it counts as found through `pmcid`.
   const found = new Set(articles.flatMap((a) => [a.pmid, a.pmcid ?? ""]).map((id) => id.toUpperCase()));
   const missing = input.ids.filter((id) => !found.has(id.toUpperCase()));
+  if (missing.length > 0) warnings.push(`${missing.length} id(s) could not be fetched from ${resolved.name}.`);
 
-  return {
-    articles,
-    missing,
-    ...(missing.length > 0
-      ? { warnings: [`${missing.length} id(s) could not be fetched from ${resolved.name}.`] }
-      : {}),
-  };
+  return { articles, missing, ...(warnings.length > 0 ? { warnings } : {}) };
 }

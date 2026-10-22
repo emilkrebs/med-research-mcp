@@ -294,6 +294,147 @@ describe("fetchFulltext resolution strategy", () => {
     const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), deps);
     expect(out.truncated).toBe(true);
     expect(out.fulltext).toHaveLength(1000);
+    expect(out).toMatchObject({ totalChars: 5000, nextOffset: 1000 });
+  });
+
+  describe("reading a long text in parts", () => {
+    const words = Array.from({ length: 2000 }, (_, i) => `word${i}`).join(" ");
+    const text = `# Title\n\n${words.slice(0, 4000)}\n\n${words.slice(4000)}`;
+    const setup = () => {
+      const fetchUrl = vi.fn(async () => htmlResource("<x/>"));
+      const deps: FulltextDeps = {
+        unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://oa.example/u"] }),
+        fetchUrl,
+        htmlToMarkdown: async () => text,
+        maxChars: 3000,
+      };
+      return { cache: new LRUBackend(), fetchUrl, deps };
+    };
+
+    it("ends a part at a space, not mid-word, and reads on from nextOffset out of the cache", async () => {
+      const { cache, fetchUrl, deps } = setup();
+      const parts: string[] = [];
+      let offset: number | undefined = 0;
+      while (offset !== undefined) {
+        const out = await fetchFulltext({ id: "12345678", doi: DOI, offset }, cache, fakeClient(), deps);
+        expect(out.totalChars).toBe(text.length);
+        expect(out.fulltext!.length).toBeLessThanOrEqual(3000);
+        expect(out.truncated).toBe(out.nextOffset !== undefined);
+        if (out.truncated) expect(out.fulltext).toMatch(/\s$/);
+        parts.push(out.fulltext!);
+        offset = out.nextOffset;
+      }
+      expect(parts.length).toBeGreaterThan(2);
+      expect(parts.join("")).toBe(text);
+      // One fetch: the cache holds the whole text, so later parts cost nothing.
+      expect(fetchUrl).toHaveBeenCalledTimes(1);
+    });
+
+    it("prefers a paragraph break, and takes a smaller maxChars but none above the configured limit", async () => {
+      const { cache, deps } = setup();
+      const first = await fetchFulltext({ id: "12345678", doi: DOI, maxChars: 4200 }, cache, fakeClient(), deps);
+      // Capped at deps.maxChars, then cut back to a space.
+      expect(first.fulltext!.length).toBeGreaterThan(2400);
+      expect(first.fulltext!.length).toBeLessThanOrEqual(3000);
+      const paragraph = await fetchFulltext({ id: "12345678", doi: DOI, offset: 2000, maxChars: 2500 }, cache, fakeClient(), deps);
+      expect(paragraph.nextOffset).toBe(text.indexOf("\n\n", 100) + 2);
+      const small = await fetchFulltext({ id: "12345678", doi: DOI, maxChars: 100 }, cache, fakeClient(), deps);
+      expect(small.fulltext!.length).toBeLessThanOrEqual(100);
+    });
+
+    it("raises INVALID_INPUT for an offset past the end or a bad number", async () => {
+      const { cache, deps } = setup();
+      await expect(fetchFulltext({ id: "12345678", doi: DOI, offset: text.length }, cache, fakeClient(), deps)).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+        userMessage: expect.stringContaining(`which has ${text.length} characters`),
+      });
+      await expect(fetchFulltext({ id: "12345678", doi: DOI, offset: -1 }, cache, fakeClient(), deps)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+      await expect(fetchFulltext({ id: "12345678", doi: DOI, maxChars: 0 }, cache, fakeClient(), deps)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    });
+
+    it("reads a direct text on from the same download, even when Unpaywall answers by then", async () => {
+      const unpaywall = vi.fn<() => Promise<UnpaywallLookup>>(async () => ({ status: "failed" }));
+      const fetchUrl = vi.fn(async (url: string) => htmlResource("<x/>", url));
+      const deps: FulltextDeps = {
+        unpaywall: { lookup: unpaywall, sharedContact: false } as unknown as UnpaywallClient,
+        fetchUrl,
+        htmlToMarkdown: async (_html, url) => (url.startsWith("https://doi.org/") ? text : `# Other\n\n${"other ".repeat(1000)}`),
+        maxChars: 3000,
+      };
+      const cache = new LRUBackend();
+      const first = await fetchFulltext({ id: "12345678", doi: DOI }, cache, fakeClient(), deps);
+      expect(first).toMatchObject({ source: "direct", truncated: true });
+
+      // The lookup that failed answers now, with a copy of another length.
+      unpaywall.mockResolvedValue({ status: "found", result: { doi: DOI, isOa: true, urls: ["https://oa.example/u"] } });
+      const parts = [first.fulltext!];
+      let offset = first.nextOffset;
+      while (offset !== undefined) {
+        const out = await fetchFulltext({ id: "12345678", doi: DOI, offset }, cache, fakeClient(), deps);
+        expect(out.source).toBe("direct");
+        parts.push(out.fulltext!);
+        offset = out.nextOffset;
+      }
+      expect(parts.join("")).toBe(text);
+      expect(fetchUrl).toHaveBeenCalledTimes(1);
+      // Never cached: a direct text may be licensed to this user alone.
+      expect(cache.getFulltext("12345678")).toBeNull();
+
+      // Read to the end, the text is let go: a new reading resolves afresh.
+      const again = await fetchFulltext({ id: "12345678", doi: DOI, offset: 3000 }, cache, fakeClient(), deps);
+      expect(again.source).toBe("unpaywall");
+    });
+
+    it("returns no text for an offset when the text can't be fetched again, not the abstract", async () => {
+      const deps: FulltextDeps = { unpaywall: fakeUnpaywall(null), fetchUrl: async () => paywalled() };
+      const out = await fetchFulltext({ id: "12345678", doi: DOI, offset: 50_000 }, new LRUBackend(), fakeClient({ abstract: "The abstract." }), deps);
+      expect(out).toMatchObject({ source: "none", truncated: false });
+      expect(out.fulltext).toBeUndefined();
+      expect(out.warning).toMatch(/^No full text found, so there is no part from offset 50000; call without offset for the abstract\. /);
+    });
+
+    it("never splits a character outside the BMP between parts", async () => {
+      const math = "𝛼".repeat(1000);
+      const deps: FulltextDeps = {
+        unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://oa.example/u"] }),
+        fetchUrl: async () => htmlResource("<x/>"),
+        htmlToMarkdown: async () => `# Formulas\n\n${math}`,
+        maxChars: 1001,
+      };
+      const cache = new LRUBackend();
+      const first = await fetchFulltext({ id: "12345678", doi: DOI }, cache, fakeClient(), deps);
+      expect(first.nextOffset).toBe(1000);
+      expect(first.fulltext!.at(-1)).not.toMatch(/[\uD800-\uDBFF]/);
+      const second = await fetchFulltext({ id: "12345678", doi: DOI, offset: first.nextOffset!, maxChars: 1 }, cache, fakeClient(), deps);
+      // A part of one code unit still holds the whole character.
+      expect(second.fulltext).toBe("𝛼");
+      // And when that character ends the text, the part is the last one.
+      const last = await fetchFulltext({ id: "12345678", doi: DOI, offset: 2010, maxChars: 1 }, cache, fakeClient(), deps);
+      expect(last).toMatchObject({ fulltext: "𝛼", truncated: false, totalChars: 2012 });
+      expect(last.nextOffset).toBeUndefined();
+    });
+  });
+
+  describe("MED_RESEARCH_FULLTEXT_MAX_CHARS", () => {
+    afterEach(() => {
+      delete process.env.MED_RESEARCH_FULLTEXT_MAX_CHARS;
+    });
+
+    it("takes a whole number of characters, 1 or more, and ignores anything else", async () => {
+      const deps: FulltextDeps = {
+        unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://oa.example/u"] }),
+        fetchUrl: async () => htmlResource("<x/>"),
+        htmlToMarkdown: async () => "A".repeat(60_000),
+      };
+      const read = async (value: string) => {
+        process.env.MED_RESEARCH_FULLTEXT_MAX_CHARS = value;
+        return (await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient(), deps)).nextOffset;
+      };
+      expect(await read("1500")).toBe(1500);
+      expect(await read("1500.5")).toBe(50_000);
+      expect(await read("0.5")).toBe(50_000);
+      expect(await read("0")).toBe(50_000);
+    });
   });
 
   it("skips the id→DOI lookup when a DOI is supplied", async () => {
@@ -720,6 +861,28 @@ describe("default extraction (real libraries)", () => {
     expect(md).toContain("Power was $1-\\beta = 0.8$ overall.");
     expect(md).not.toContain("documentclass");
     expect(md).not.toContain("Not in the output");
+  });
+
+  it("leaves out Europe PMC's reference-list section and headings over nothing", async () => {
+    // The shape of PMC11944689's back sections, which 0.6.0 printed as "## References\n\n## Associated Data" (2026-10-22).
+    const filler = "Creatine monohydrate was taken at 5 g/day for thirteen weeks alongside resistance training. ".repeat(8);
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+      <article><front><article-meta><title-group><article-title>Creatine and lean mass</article-title></title-group></article-meta></front>
+      <body>
+        <sec><title>Methods</title><p>${filler}</p></sec>
+        <sec sec-type="ref-list"><title>References</title><sec><ref-list><ref><label>1.</label>
+          <mixed-citation><named-content content-type="citation-string">Spahillari A. Not in the output.</named-content></mixed-citation></ref></ref-list></sec></sec>
+        <sec sec-type="associated-data"><title>Associated Data</title>
+          <sec sec-type="supplementary-materials"><title>Supplementary Materials</title>
+            <supplementary-material><media href="nutrients-17-01081-s001.zip"/></supplementary-material></sec>
+          <sec sec-type="data-availability-statement"><title>Data Availability Statement</title><p>Data are available on request.</p></sec>
+        </sec>
+      </body></article>`;
+    const md = await defaultJatsToMarkdown(xml);
+    expect(md).not.toContain("References");
+    expect(md).not.toContain("Not in the output");
+    expect(md).not.toContain("Supplementary Materials");
+    expect(md.endsWith("## Associated Data\n\n### Data Availability Statement\n\nData are available on request.")).toBe(true);
   });
 
   it("includes the OCR text of scanned articles, and returns nothing for an abstract-only article", async () => {

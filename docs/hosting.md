@@ -260,6 +260,13 @@ publisher pages.
   server answers **503** with `Retry-After: 5`.
 - **Body cap.** Bodies over `MED_RESEARCH_HTTP_MAX_BODY_BYTES` (default 1 MB)
   get **413**; non-`application/json` POSTs get **415**.
+- **Call budget.** A `literature_search` or `literature_fetch` call's database
+  requests must finish within 30 seconds, retries and waiting in the NCBI queue
+  included, so the call answers before a gateway in front of the server gives up
+  (nginx's `proxy_read_timeout`, for one, defaults to 60 s). A database that runs
+  out of time becomes a warning, or the error when no database answered.
+  `literature_fulltext` has no budget: its pages are fetched with their own
+  timeout, and its fallback needs the abstract. The stdio server sets none.
 
 ## Operations
 

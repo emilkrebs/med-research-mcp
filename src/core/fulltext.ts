@@ -14,7 +14,10 @@
  *                       says what each location answered
  *
  * Only open-access (Europe PMC, Unpaywall) texts are cached; a proxy or direct
- * text may be licensed to the user alone.
+ * text may be licensed to the user alone. A long text is returned in parts of at
+ * most `maxChars` characters; `offset` reads on from where the last part ended. A
+ * proxy or direct text that goes on is kept in memory while it is read (see
+ * {@link READING_TTL_MS}), so that every part comes from the same text.
  *
  * HTML is reduced to the article body with mozilla/readability, then converted
  * to markdown with turndown. A page counts as full text only if it holds text
@@ -29,6 +32,7 @@
  * body size: the URLs come from Unpaywall and DOI registrants, not from us.
  */
 
+import { LRUCache } from "lru-cache";
 import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors } from "./errors.js";
@@ -59,6 +63,19 @@ const isPmid = (id: string): boolean => /^\d+$/.test(id);
 const EUROPE_PMC_ID = /^(?:PMC|PPR)\d+$/i;
 /** Sources whose texts are open access, and so may be cached. */
 const OPEN_ACCESS_SOURCES: ReadonlySet<string> = new Set(["europepmc", "unpaywall"]);
+/**
+ * How long a proxy or direct text is kept in memory after its last part was read. Each part must
+ * come from the same text, and a later call can resolve the article differently: an Unpaywall
+ * lookup that failed can answer, a publisher that answered can refuse. Such a text never enters
+ * the {@link Cache}, which can outlive the session; this store dies with the process.
+ */
+const READING_TTL_MS = 30 * 60 * 1000;
+/**
+ * The most characters of text kept in memory while read, per cache: about 20 MB, a hundred or more
+ * articles. The hosted server shares one cache between its users, so a small store would let other
+ * readings push one out before its last part.
+ */
+const READING_MAX_CHARS = 10_000_000;
 
 /** A resource fetched from an arbitrary URL. Either `text` (HTML) or `bytes` (PDF) is set. */
 export interface FetchedResource {
@@ -85,7 +102,7 @@ export interface FulltextDeps {
   pdfToText?: (bytes: Uint8Array) => Promise<string>;
   /** Institutional proxy prefix. Defaults to $MED_RESEARCH_PROXY_PREFIX. */
   proxyPrefix?: string;
-  /** Character cap on the returned text. Defaults to $MED_RESEARCH_FULLTEXT_MAX_CHARS, then 50000. */
+  /** The most characters returned per call, and the ceiling for `FulltextInput.maxChars`. Defaults to $MED_RESEARCH_FULLTEXT_MAX_CHARS, then 50000. */
   maxChars?: number;
   /** Per-fetch timeout in ms. Default 20000. */
   timeoutMs?: number;
@@ -99,6 +116,35 @@ interface Extracted {
 }
 
 type Source = Exclude<FulltextSource, "none">;
+
+/** A proxy or direct text being read in parts. */
+interface Reading extends Extracted {
+  source: Source;
+  doi: string | undefined;
+}
+
+/**
+ * The texts being read in parts, per cache: callers that share a cache share what it holds, and
+ * keys include the proxy, so a text is only served to a caller who would fetch it the same way.
+ * Calls carry no reader's identity, so the latest reading of an article from its start is the one
+ * continued: two callers reading the same article at once, one from a proxy or direct text and one
+ * from an open-access copy, can get each other's parts.
+ */
+const readings = new WeakMap<Cache, LRUCache<string, Reading>>();
+
+function readingsOf(cache: Cache): LRUCache<string, Reading> {
+  let store = readings.get(cache);
+  if (!store) {
+    store = new LRUCache({
+      maxSize: READING_MAX_CHARS,
+      sizeCalculation: (r: Reading) => Math.max(1, r.fulltext.length),
+      ttl: READING_TTL_MS,
+      updateAgeOnGet: true,
+    });
+    readings.set(cache, store);
+  }
+  return store;
+}
 
 /** Why a location yielded no full text, for the fallback warning. */
 interface Miss {
@@ -134,23 +180,34 @@ export async function fetchFulltext(
     throw errors.noDoi(String(input.id ?? ""));
   }
 
-  const maxChars = deps.maxChars ?? envMaxChars() ?? DEFAULT_MAX_CHARS;
+  const offset = input.offset ?? 0;
+  if (!Number.isInteger(offset) || offset < 0) throw errors.invalidInput("offset must be a whole number of characters, 0 or more.");
+  if (input.maxChars !== undefined && (!Number.isInteger(input.maxChars) || input.maxChars < 1)) {
+    throw errors.invalidInput("maxChars must be a whole number of characters, 1 or more.");
+  }
+  const limit = deps.maxChars ?? envMaxChars() ?? DEFAULT_MAX_CHARS;
+  const maxChars = Math.min(input.maxChars ?? limit, limit);
   const now = deps.now ?? Date.now;
+  const proxyPrefix = deps.proxyPrefix === undefined ? envSetting("MED_RESEARCH_PROXY_PREFIX") : deps.proxyPrefix.trim() || undefined;
 
-  // 1. Cache hit — return immediately, re-clamped to the current limit. Only open-access texts
-  // count: 0.5.0 also cached proxy and direct texts, which a persistent cache may still hold.
+  // The part asked for. A proxy or direct text that goes on is kept for the next part, and any
+  // other text replaces it: the next part comes from the text this one came from.
+  const reading = readingsOf(cache);
+  const readingKey = `${id}\n${proxyPrefix ?? ""}`;
+  const serve = (text: Extracted, source: Source, doi: string | undefined): FulltextOutput => {
+    const out: FulltextOutput = { id, ...(doi ? { doi } : {}), source, ...part(text.fulltext, offset, maxChars), format: text.format };
+    if (out.truncated && !OPEN_ACCESS_SOURCES.has(source)) reading.set(readingKey, { ...text, source, doi });
+    else reading.delete(readingKey);
+    return out;
+  };
+
+  // 1. A text being read in parts, then a cached one: either holds the whole text, so every part is cheap.
+  const current = offset > 0 ? reading.get(readingKey) : undefined;
+  if (current) return serve(current, current.source, current.doi);
+  // Only open-access texts count: 0.5.0 also cached proxy and direct texts, which a persistent cache may still hold.
   const cached = cache.getFulltext(id);
   if (cached && OPEN_ACCESS_SOURCES.has(cached.source)) {
-    const { text, truncated } = clamp(cached.fulltext, maxChars);
-    const knownDoi = inputDoi ?? normalizeDoi(cache.getSummary(id)?.doi);
-    return {
-      id,
-      ...(knownDoi ? { doi: knownDoi } : {}),
-      source: cached.source as FulltextSource,
-      fulltext: text,
-      format: cached.format,
-      truncated,
-    };
+    return serve(cached, cached.source as Source, inputDoi ?? normalizeDoi(cache.getSummary(id)?.doi));
   }
 
   // 2. Resolve a DOI (from the argument, a cached summary, or a fresh esummary) and a PMCID.
@@ -171,15 +228,9 @@ export async function fetchFulltext(
   // No DOI or PMCID → nothing to hand to a publisher/OA lookup. Degrade to the abstract.
   if (!doi && !pmcid) {
     if (!article) throw errors.notFound(id);
-    return noneResult(
-      id,
-      undefined,
-      await abstract(),
-      "Could not resolve a DOI for this id, so no full-text source could be tried. Returned the abstract only.",
-    );
+    return noneResult(id, undefined, await abstract(), offset, "Could not resolve a DOI for this id, so no full-text source could be tried.");
   }
 
-  const proxyPrefix = deps.proxyPrefix === undefined ? envSetting("MED_RESEARCH_PROXY_PREFIX") : deps.proxyPrefix.trim() || undefined;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const fetchUrl = deps.fetchUrl ?? defaultFetchUrl;
   const htmlToMarkdown = deps.htmlToMarkdown ?? defaultHtmlToMarkdown;
@@ -234,8 +285,7 @@ export async function fetchFulltext(
       if (OPEN_ACCESS_SOURCES.has(source)) {
         cache.setFulltext(id, { source, fulltext: got.fulltext, format: got.format, fetchedAt: now() });
       }
-      const { text, truncated } = clamp(got.fulltext, maxChars);
-      return { id, ...(doi ? { doi } : {}), source, fulltext: text, format: got.format, truncated };
+      return serve(got, source, doi);
     }
     return null;
   };
@@ -267,10 +317,10 @@ export async function fetchFulltext(
     id,
     doi,
     text,
+    offset,
     fallbackWarning({
       doi,
       pmcid,
-      abstract: Boolean(text),
       unpaywall: unpaywallAnswer,
       unpaywallSharedContact: unpaywall.sharedContact,
       proxyConfigured: Boolean(proxyPrefix),
@@ -362,20 +412,31 @@ async function resolveAbstract(
   return undefined;
 }
 
+/**
+ * The fallback: the abstract, and why there is no full text. A caller reading on from an offset gets
+ * no text, since it would take the abstract for the next part of the full text it was reading.
+ */
 function noneResult(
   id: string,
   doi: string | undefined,
   abstract: string | undefined,
-  warning: string,
+  offset: number,
+  reason: string,
 ): FulltextOutput {
+  const returned =
+    offset > 0
+      ? `No full text found, so there is no part from offset ${offset}; call without offset for the abstract.`
+      : abstract
+        ? "No full text found; returned the abstract only."
+        : "No full text found, and no abstract is available.";
   return {
     id,
     ...(doi ? { doi } : {}),
     source: "none",
-    ...(abstract ? { fulltext: abstract } : {}),
+    ...(abstract && offset === 0 ? { fulltext: abstract } : {}),
     format: "markdown",
     truncated: false,
-    warning,
+    warning: reason ? `${returned} ${reason}` : returned,
   };
 }
 
@@ -404,11 +465,10 @@ function describeMiss(miss: Miss): string {
 const looksPaywalled = (miss: Miss): boolean =>
   miss.kind === "abstract-only" || (miss.kind === "status" && [401, 402, 403].includes(miss.status ?? 0));
 
-/** The fallback's warning: what each source answered, and what the user can do about it. */
+/** The fallback's reason: what each source answered, and what the user can do about it. */
 function fallbackWarning(ctx: {
   doi: string | undefined;
   pmcid: string | undefined;
-  abstract: boolean;
   /** What Unpaywall answered; undefined when there was no DOI to ask about. */
   unpaywall: UnpaywallLookup | undefined;
   /** Whether Unpaywall requests carry the project's shared contact address. */
@@ -416,7 +476,7 @@ function fallbackWarning(ctx: {
   proxyConfigured: boolean;
   misses: Miss[];
 }): string {
-  const parts = [ctx.abstract ? "No full text found; returned the abstract only." : "No full text found, and no abstract is available."];
+  const parts: string[] = [];
   const of = (source: Source): Miss[] => ctx.misses.filter((m) => m.source === source);
 
   const europePmc = of("europepmc")[0];
@@ -472,9 +532,37 @@ function fallbackWarning(ctx: {
   return parts.join(" ");
 }
 
-function clamp(text: string, maxChars: number): { text: string; truncated: boolean } {
-  if (text.length <= maxChars) return { text, truncated: false };
-  return { text: text.slice(0, maxChars), truncated: true };
+/**
+ * The part of a full text from `offset`, at most `maxChars` long. When the text goes on, the part
+ * ends after the last paragraph break, line break or space in its final fifth, if there is one, so
+ * that it doesn't stop mid-word, and never between the two halves of a surrogate pair; `nextOffset`
+ * is where the next part starts. Parts join up to the whole text. Throws INVALID_INPUT for an offset
+ * past the end.
+ */
+function part(
+  text: string,
+  offset: number,
+  maxChars: number,
+): Pick<FulltextOutput, "fulltext" | "truncated" | "totalChars" | "nextOffset"> {
+  if (offset > 0 && offset >= text.length) {
+    throw errors.invalidInput(`offset ${offset} is past the end of the text, which has ${text.length} characters.`);
+  }
+  const end = offset + maxChars;
+  const rest = { fulltext: text.slice(offset), truncated: false, totalChars: text.length };
+  if (end >= text.length) return rest;
+  const floor = end - Math.floor(maxChars / 5);
+  let cut = end;
+  for (const breakAt of ["\n\n", "\n", " "]) {
+    const at = text.lastIndexOf(breakAt, end - breakAt.length);
+    if (at >= floor && at > offset) {
+      cut = at + breakAt.length;
+      break;
+    }
+  }
+  // A character outside the BMP (𝛼, an emoji) is two code units: keep them in one part.
+  if (isHighSurrogate(text.charCodeAt(cut - 1))) cut += cut - 1 > offset ? -1 : 1;
+  if (cut >= text.length) return rest;
+  return { fulltext: text.slice(offset, cut), truncated: true, totalChars: text.length, nextOffset: cut };
 }
 
 // ─── Telling an article from its landing page ───────────────────
@@ -578,11 +666,14 @@ function normalizeDoi(doi: string | undefined): string | undefined {
   return /^10\.\d{4,9}\/\S+$/.test(d) ? d : undefined;
 }
 
+const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xdbff;
+
+/** $MED_RESEARCH_FULLTEXT_MAX_CHARS, a whole number of characters, 1 or more; undefined for anything else. */
 function envMaxChars(): number | undefined {
-  const raw = process.env.MED_RESEARCH_FULLTEXT_MAX_CHARS;
+  const raw = process.env.MED_RESEARCH_FULLTEXT_MAX_CHARS?.trim();
   if (!raw) return undefined;
   const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
+  return Number.isInteger(n) && n >= 1 ? n : undefined;
 }
 
 // ─── Default (network + library) implementations ────────────────
@@ -639,7 +730,8 @@ export async function defaultHtmlToMarkdown(html: string, url: string): Promise<
  * Convert a JATS XML article (as Europe PMC's full-text API returns it) to
  * markdown: title, abstract, then the body's sections as headings, paragraphs,
  * lists, tables (row by row), formulas (one readable form each), figure
- * captions and scanned-article OCR text. Reference lists are left out.
+ * captions and scanned-article OCR text. Reference lists are left out, and so
+ * are sections that would print nothing but their heading.
  *
  * Returns "" when the body holds less than {@link MIN_FULLTEXT_CHARS}: an
  * article Europe PMC has only as an abstract must not pass for full text.
@@ -687,9 +779,15 @@ export async function defaultJatsToMarkdown(xml: string): Promise<string> {
   const render = (el: Element, depth: number, out: string[]): void => {
     switch (el.localName) {
       case "sec": {
+        // Europe PMC wraps the reference list in a section of its own, titled "References".
+        if (el.getAttribute("sec-type") === "ref-list") return;
         const heading = child(el, "title");
+        const content: string[] = [];
+        for (const c of el.children) if (c !== heading) render(c, depth + 1, content);
+        // A heading over nothing, such as "Supplementary Materials" over files, is left out.
+        if (content.length === 0) return;
         if (heading) out.push(`${"#".repeat(Math.min(depth, 6))} ${squash(inline(heading))}`);
-        for (const c of el.children) if (c !== heading) render(c, depth + 1, out);
+        out.push(...content);
         return;
       }
       case "title":

@@ -49,6 +49,46 @@ export function isoDateBound(value: string | undefined, bound: "from" | "to"): s
   return `${m[1]}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/**
+ * A publication date as a number that sorts chronologically (YYYYMMDD, 0 for a missing month
+ * or day), from the forms the databases report: "2019 Nov-Dec" (the first month counts),
+ * "2021 Mar 15", "2021 Spring" (year only), "2024-12-16". Undefined without a year.
+ */
+export function dateKey(date: string | undefined): number | undefined {
+  const m = /^\s*(\d{4})(?:[-/ ]+(\d{1,2}|[a-z]{3})[a-z]*\.?(?:[-/ ]+(\d{1,2})\b)?)?/i.exec(date ?? "");
+  if (!m) return undefined;
+  const month = !m[2] ? 0 : /^\d+$/.test(m[2]) ? Number(m[2]) : MONTHS.indexOf(m[2].toLowerCase()) + 1;
+  if (month < 1 || month > 12) return Number(m[1]) * 10_000;
+  const day = m[3] && Number(m[3]) <= 31 ? Number(m[3]) : 0;
+  return Number(m[1]) * 10_000 + month * 100 + day;
+}
+
+/**
+ * When a record was first published, as a {@link dateKey}; -1 without a date. That is the earlier
+ * of its issue and electronic publication dates, as PubMed's website sorts by publication date
+ * ("Citations with more than one publication date, such as electronic and print, are sorted by their
+ * earliest publication date", PubMed Help, checked 2026-10-22) and both PubMed's and Europe PMC's date
+ * filters match, unless
+ * one date only narrows the other: PMID 42422741, issue "2026" and online "2026 Jun 24", was first
+ * published on June 24, as NCBI's own sort date for it says, not at the start of 2026 (2026-10-22).
+ */
+export function firstPublished(article: { pubDate?: string; epubDate?: string }): number {
+  const issue = dateKey(article.pubDate);
+  const online = dateKey(article.epubDate);
+  if (issue === undefined || online === undefined) return issue ?? online ?? -1;
+  if (narrows(online, issue)) return online;
+  if (narrows(issue, online)) return issue;
+  return Math.min(issue, online);
+}
+
+/** Whether a date key falls within the year or month another leaves open: 20260624 within 20260000 or 20260600. */
+function narrows(precise: number, vague: number): boolean {
+  const span = vague % 10_000 === 0 ? 10_000 : vague % 100 === 0 ? 100 : 0;
+  return precise > vague && precise < vague + span;
+}
+
 /** Split a comma/semicolon-separated author string ("Smith J, Doe A") into names. */
 export function splitAuthors(value: unknown): string[] {
   const s = first(value);

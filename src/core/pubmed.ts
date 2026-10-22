@@ -1,7 +1,9 @@
 /**
  * NCBI E-utilities client (esearch → esummary → efetch) and the searchPubMed
- * orchestrator. Abstracts are parsed from efetch XML with fast-xml-parser — no
- * regex XML scraping.
+ * orchestrator. efetch XML is parsed with fast-xml-parser. An AbstractText is
+ * mixed content (text with <i>, <sup>, <sub>, <b> inside), which the parser would
+ * split into child properties and lose; it is read as raw inner XML instead and
+ * turned into text by xmlToText.
  */
 
 import { XMLParser } from "fast-xml-parser";
@@ -9,8 +11,11 @@ import { LRUCache } from "lru-cache";
 import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors } from "./errors.js";
+import { firstPublished } from "./adapters/util.js";
+import { requestWithRetries } from "./request.js";
+import { xmlToText } from "./text.js";
 import { contactEmail, envSetting, PROJECT_TOOL, USER_AGENT } from "./version.js";
-import { classifyArticle, designPublicationTypes, unclassifiedDroppedWarning } from "./grader.js";
+import { classifyArticle, designPublicationTypes, filterWarnings, noAnimalStudiesWarning } from "./grader.js";
 import { CORRECTION_TYPES } from "./types.js";
 import type { Correction, CorrectionType, FetchInput, FetchOutput, GradedArticle, Article, SearchInput, SearchOutput, StudyType } from "./types.js";
 
@@ -24,19 +29,25 @@ const SOFT_BROAD_THRESHOLD = 10_000;
  * Spacing between requests, as a multiple of 1/limit. NCBI counts requests as they
  * arrive, and arrival times jitter: spaced exactly 1/3 s apart, 2 of 15 serialized
  * requests drew a 429; spaced 400 ms apart, 1 of 15 (2026-10-20). The rest is left
- * to retries.
+ * to retries (see ./request.ts).
  */
 const SPACING_MARGIN = 1.2;
-/** 429s retried, after NCBI's Retry-After, before RATE_LIMIT reaches the caller. */
-const RATE_LIMIT_RETRIES = 2;
-/** The longest Retry-After waited out (NCBI sends 2 s); a longer one goes to the caller. */
-const MAX_RETRY_WAIT_S = 5;
 /**
  * How long a search's PMIDs are reused. PubMed's relevance ranking varies between
  * identical requests: five identical searches returned five different top-20 lists
  * (2026-10-20), so within this window the same search returns the same papers.
  */
 const DEFAULT_SEARCH_TTL_MS = 60 * 60 * 1000;
+/**
+ * The fewest PMIDs taken from each of PubMed's two date orders for `sort: "date"`, and the multiple
+ * of maxResults taken when that is more (see {@link NcbiClient.newest}).
+ */
+const DATE_POOL_MIN = 100;
+const DATE_POOL_FACTOR = 4;
+/** PMIDs per esummary request, so that its GET URL stays short. */
+const ESUMMARY_BATCH = 200;
+/** How long a date search's summaries wait for the esummary of the PMIDs it returned. */
+const POOLED_SUMMARY_TTL_MS = 10 * 60 * 1000;
 
 export interface NcbiConfig {
   /**
@@ -64,7 +75,8 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 /**
  * Serializes requests and spaces them to respect NCBI's rate limit. A task runs
  * once every earlier one has finished and calls `pace()` before each request it
- * sends, so a task that waits out a 429 holds back the whole queue.
+ * sends, so a task that waits out a 429 or retries a server error holds back the
+ * whole queue.
  */
 class RateLimiter {
   private lastAt = 0;
@@ -97,6 +109,8 @@ interface EsummaryDoc {
   fulljournalname?: string;
   source?: string;
   pubdate?: string;
+  /** "2018 Sep 20", or "" when there is none. */
+  epubdate?: string;
   sortpubdate?: string;
   authors?: { name?: string }[];
   articleids?: { idtype?: string; value?: string }[];
@@ -128,6 +142,8 @@ export class NcbiClient {
   private readonly limiter: RateLimiter;
   private readonly parser: XMLParser;
   private readonly searches: LRUCache<string, { count: number; pmids: string[] }> | null;
+  /** Summaries of the PMIDs a date search returned, fetched to rank them, served once by esummary. */
+  private readonly pooled = new LRUCache<string, Article>({ max: 500, ttl: POOLED_SUMMARY_TTL_MS });
 
   constructor(config: NcbiConfig = {}) {
     this.tool = config.tool ?? PROJECT_TOOL;
@@ -142,6 +158,8 @@ export class NcbiClient {
       attributeNamePrefix: "@_",
       textNodeName: "#text",
       trimValues: true,
+      // Raw inner XML, entities undecoded: see extractAbstract.
+      stopNodes: ["*.AbstractText"],
     });
     const searchTtl = config.searchTtlMs ?? DEFAULT_SEARCH_TTL_MS;
     this.searches = searchTtl > 0 ? new LRUCache({ max: 200, ttl: searchTtl }) : null;
@@ -154,73 +172,86 @@ export class NcbiClient {
     return params;
   }
 
-  private async request(path: string, params: URLSearchParams): Promise<Response> {
+  /** The body of a successful response. */
+  private async request(path: string, params: URLSearchParams): Promise<string> {
     const url = `${EUTILS_BASE}/${path}?${this.commonParams(params).toString()}`;
-    return this.limiter.run(async (pace) => {
-      for (let attempt = 0; ; attempt += 1) {
-        await pace();
-        const ac = new AbortController();
-        const timer = setTimeout(() => ac.abort(), this.timeoutMs);
-        let res: Response;
-        try {
-          res = await fetch(url, { signal: ac.signal, headers: { "User-Agent": USER_AGENT } });
-        } catch (err) {
-          throw errors.network(err instanceof Error ? err.message : String(err));
-        } finally {
-          clearTimeout(timer);
-        }
-        if (res.status === 429) {
-          const retryAfter = Number(res.headers.get("retry-after")) || 1;
-          await res.body?.cancel();
-          if (attempt >= RATE_LIMIT_RETRIES || retryAfter > MAX_RETRY_WAIT_S) throw errors.rateLimit(retryAfter);
-          await sleep(retryAfter * 1000);
-          continue;
-        }
-        if (!res.ok) {
-          throw errors.network(`NCBI returned HTTP ${res.status}`);
-        }
-        return res;
-      }
-    });
+    return this.limiter.run((pace) =>
+      requestWithRetries(url, { timeoutMs: this.timeoutMs, source: "PubMed", headers: { "User-Agent": USER_AGENT }, beforeAttempt: pace }),
+    );
   }
 
   /**
    * Returns matching PMIDs (already truncated to maxResults) and the total count. A
    * studyTypes or minDesignTier filter narrows the query to the publication types it
    * can keep (see designPublicationTypes), so the count is of candidates for it.
-   * An identical search within `searchTtlMs` returns the same PMIDs.
+   * With `sort: "date"`, the PMIDs are those first published last, newest first (see
+   * {@link newest}). An identical search within `searchTtlMs` returns the same PMIDs.
    */
   async esearch(input: SearchInput): Promise<{ count: number; pmids: string[] }> {
     const maxResults = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
     const types = designPublicationTypes(input.studyTypes, input.minDesignTier);
     if (types?.length === 0) return { count: 0, pmids: [] };
     const term = types ? `(${input.query}) AND (${types.map((t) => `"${t}"[pt]`).join(" OR ")})` : input.query;
-    const params = new URLSearchParams({
-      db: "pubmed",
-      term,
-      retmode: "json",
-      retmax: String(maxResults),
-      sort: input.sort === "date" ? "pub_date" : "relevance",
-    });
+    const params = new URLSearchParams({ db: "pubmed", term, retmode: "json", retmax: String(maxResults) });
     if (input.dateRange?.from || input.dateRange?.to) {
       params.set("datetype", "pdat");
       if (input.dateRange.from) params.set("mindate", input.dateRange.from.replace(/-/g, "/"));
       if (input.dateRange.to) params.set("maxdate", input.dateRange.to.replace(/-/g, "/"));
     }
+    const byDate = input.sort === "date";
+    if (!byDate) params.set("sort", "relevance");
 
-    const key = params.toString();
+    const key = `${params.toString()}${byDate ? "&order=first-published" : ""}`;
     const cached = this.searches?.get(key);
     if (cached) return { count: cached.count, pmids: [...cached.pmids] };
-    const result = await this.runEsearch(params);
+    const result = byDate ? await this.newest(params, maxResults) : await this.runEsearch(params);
     this.searches?.set(key, result);
     return { count: result.count, pmids: [...result.pmids] };
   }
 
+  /**
+   * The `maxResults` PMIDs first published last ({@link firstPublished}), newest first. No esearch
+   * order is that one. `sort=pub_date` orders by issue date: for "semaglutide" it led with issues of
+   * December 2026 published online in August to October, and records published online on 2026-10-20
+   * weren't in its first 12 (2026-10-22). Without a sort, esearch orders by date added to PubMed
+   * ("The default sort order varies by database (for PubMed, it is most+recent)", NLM Data Guide,
+   * https://dataguide.nlm.nih.gov/eutilities/utilities.html, checked 2026-10-22), which misses
+   * records added long before their issue. So the first max(100, 4 × maxResults) of each order are
+   * pooled and sorted by first publication from esummary's dates. Checked against every record with a
+   * publication date since 2026-10-01, the first 100 of each order held all 10 newest records for each
+   * of five queries (semaglutide, creatine supplementation, vitamin D supplementation, intermittent
+   * fasting, long covid), and the first 200 all 50 newest for the two queries with 50 in that range;
+   * the first 10 of pub_date alone held 1 to 3 of the 10 newest (2026-10-22).
+   */
+  private async newest(params: URLSearchParams, maxResults: number): Promise<{ count: number; pmids: string[] }> {
+    const pool = String(Math.max(DATE_POOL_MIN, DATE_POOL_FACTOR * maxResults));
+    const byIssue = new URLSearchParams(params);
+    byIssue.set("retmax", pool);
+    byIssue.set("sort", "pub_date");
+    const byAdded = new URLSearchParams(params);
+    byAdded.set("retmax", pool);
+    const [issued, added] = await Promise.all([this.runEsearch(byIssue), this.runEsearch(byAdded)]);
+    const pmids = [...new Set([...issued.pmids, ...added.pmids])];
+    const summaries = new Map<string, Article>();
+    for (let i = 0; i < pmids.length; i += ESUMMARY_BATCH) {
+      for (const [pmid, article] of await this.esummary(pmids.slice(i, i + ESUMMARY_BATCH))) summaries.set(pmid, article);
+    }
+    const published = new Map([...summaries].map(([pmid, article]) => [pmid, firstPublished(article)]));
+    // Stable: equal dates keep the issue order, then the date-added one.
+    pmids.sort((a, b) => (published.get(b) ?? -1) - (published.get(a) ?? -1));
+    const newest = pmids.slice(0, maxResults);
+    for (const pmid of newest) {
+      const summary = summaries.get(pmid);
+      if (summary) this.pooled.set(pmid, summary);
+    }
+    return { count: issued.count, pmids: newest };
+  }
+
   private async runEsearch(params: URLSearchParams): Promise<{ count: number; pmids: string[] }> {
-    const res = await this.request("esearch.fcgi", params);
+    const body = await this.request("esearch.fcgi", params);
     let data: { esearchresult?: { count?: string; idlist?: string[]; ERROR?: string }; ERROR?: string };
     try {
-      data = (await res.json()) as typeof data;
+      data = JSON.parse(body) as typeof data;
     } catch (err) {
       throw errors.parseFailure(err instanceof Error ? err.message : "invalid JSON from esearch");
     }
@@ -239,24 +270,32 @@ export class NcbiClient {
   /** Fetches article metadata (no abstract). Preserves nothing about order. */
   async esummary(pmids: string[]): Promise<Map<string, Article>> {
     const out = new Map<string, Article>();
-    if (pmids.length === 0) return out;
+    // A date search has just fetched the summaries of the PMIDs it returned.
+    const missing = pmids.filter((pmid) => {
+      const pooled = this.pooled.get(pmid);
+      if (!pooled) return true;
+      this.pooled.delete(pmid);
+      out.set(pmid, pooled);
+      return false;
+    });
+    if (missing.length === 0) return out;
 
     const params = new URLSearchParams({
       db: "pubmed",
-      id: pmids.join(","),
+      id: missing.join(","),
       retmode: "json",
     });
-    const res = await this.request("esummary.fcgi", params);
+    const body = await this.request("esummary.fcgi", params);
     let data: { result?: Record<string, EsummaryDoc | string[]> };
     try {
-      data = (await res.json()) as typeof data;
+      data = JSON.parse(body) as typeof data;
     } catch (err) {
       throw errors.parseFailure(err instanceof Error ? err.message : "invalid JSON from esummary");
     }
 
     const result = data.result;
     if (!result) return out;
-    for (const pmid of pmids) {
+    for (const pmid of missing) {
       const doc = result[pmid];
       // NCBI returns an ERROR-DOC object (uid + error, no title) for uids it doesn't
       // recognize — e.g. a nonexistent PMID — rather than omitting the key entirely.
@@ -280,6 +319,7 @@ export class NcbiClient {
       pubDate: doc.pubdate ?? "",
       publicationTypes: toArray(doc.pubtype),
     };
+    if (doc.epubdate?.trim()) article.epubDate = doc.epubdate.trim();
     if (doi) article.doi = doi;
     if (pmcid && /^PMC\d+$/i.test(pmcid)) article.pmcid = pmcid.toUpperCase();
     return article;
@@ -296,9 +336,7 @@ export class NcbiClient {
       retmode: "xml",
       rettype: "abstract",
     });
-    const res = await this.request("efetch.fcgi", params);
-    const xml = await res.text();
-    return this.parseEfetch(xml);
+    return this.parseEfetch(await this.request("efetch.fcgi", params));
   }
 
   /** Exposed for testing: parse an efetch XML string. */
@@ -319,10 +357,9 @@ export class NcbiClient {
       const pmid = extractPmid(citation.PMID);
       if (!pmid) continue;
       const articleNode = citation.Article ?? {};
+      const abstract = extractAbstract(articleNode.Abstract);
       out.set(pmid, {
-        ...(extractAbstract(articleNode.Abstract) !== undefined
-          ? { abstract: extractAbstract(articleNode.Abstract) }
-          : {}),
+        ...(abstract !== undefined ? { abstract } : {}),
         publicationTypes: extractPubTypes(articleNode.PublicationTypeList),
         meshHeadings: extractMesh(citation.MeshHeadingList),
         corrections: extractCorrections(citation.CommentsCorrectionsList),
@@ -339,20 +376,20 @@ function extractPmid(node: unknown): string | undefined {
   return text != null ? String(text) : undefined;
 }
 
+/** Sections as "LABEL: text" lines. Each AbstractText arrives as its raw inner XML (a stop node). */
 function extractAbstract(abstractNode: unknown): string | undefined {
   if (!abstractNode || typeof abstractNode !== "object") return undefined;
   const at = (abstractNode as Record<string, unknown>).AbstractText;
   if (at == null) return undefined;
   const parts = toArray(at)
     .map((node) => {
-      if (typeof node === "string" || typeof node === "number") return String(node);
+      if (typeof node === "string" || typeof node === "number") return xmlToText(String(node));
       if (!node || typeof node !== "object") return "";
       const rec = node as Record<string, unknown>;
       const label = rec["@_Label"];
-      const text = rec["#text"] ?? "";
-      return label ? `${String(label)}: ${String(text)}` : String(text);
+      const text = xmlToText(String(rec["#text"] ?? ""));
+      return label && text ? `${String(label)}: ${text}` : text;
     })
-    .map((s) => s.trim())
     .filter(Boolean);
   const joined = parts.join("\n").trim();
   return joined || undefined;
@@ -424,16 +461,16 @@ export async function searchPubMed(
   cache: Cache = new LRUBackend(),
   client: NcbiClient = new NcbiClient(),
 ): Promise<SearchOutput> {
-  const warnings: string[] = [];
+  // As in searchLiterature: what the filter leaves out is said whatever PubMed returns.
+  const warnings = filterWarnings(input.studyTypes, input.minDesignTier);
+  if (designPublicationTypes(input.studyTypes, input.minDesignTier)?.length === 0) {
+    return { articles: [], total: 0, query: input.query, warnings };
+  }
   const { count, pmids } = await client.esearch(input);
 
   if (pmids.length === 0) {
-    return {
-      articles: [],
-      total: count,
-      query: input.query,
-      warnings: [count === 0 ? "No articles matched this query. Try broader terms or fewer field tags." : "No results returned."],
-    };
+    warnings.push(count === 0 ? "No articles matched this query. Try broader terms or fewer field tags." : "No results returned.");
+    return { articles: [], total: count, query: input.query, warnings };
   }
   if (count > SOFT_BROAD_THRESHOLD) {
     warnings.push(
@@ -490,21 +527,18 @@ export async function searchPubMed(
   const typeFilter = input.studyTypes?.length ? new Set<StudyType>(input.studyTypes) : null;
 
   const articles: GradedArticle[] = [];
-  let droppedUnclassified = 0;
   for (const pmid of pmids) {
     const summary = summaries.get(pmid);
     if (!summary) continue;
     const abstract = abstracts.get(pmid);
     const article: Article = abstract ? { ...summary, abstract } : summary;
     const graded = classifyArticle(article);
-    if ((graded.designTier ?? 0) < minTier) {
-      if (graded.designTier == null) droppedUnclassified += 1;
-      continue;
-    }
+    if ((graded.designTier ?? 0) < minTier) continue;
     if (typeFilter && !typeFilter.has(graded.studyType)) continue;
     articles.push(graded);
   }
-  if (droppedUnclassified > 0) warnings.push(unclassifiedDroppedWarning(droppedUnclassified));
+  const noAnimals = noAnimalStudiesWarning(input.studyTypes, input.minDesignTier, articles);
+  if (noAnimals) warnings.push(noAnimals);
 
   return {
     articles,

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { SQLiteBackend } from "../src/core/cache";
+import { CACHE_FORMAT_VERSION, SQLiteBackend } from "../src/core/cache";
 import { FULLTEXT_TTL_MS, SUMMARY_TTL_MS } from "../src/core/cache";
 import type { FulltextData, NcbiArticle } from "../src/core/types";
 
@@ -87,6 +87,61 @@ describe("SQLiteBackend persistence", () => {
     expect(second.getFulltext("12345678")?.fulltext).toBe(FULLTEXT.fulltext);
     second.close();
   });
+
+  /** A file as 0.6.0 left it: tables without a version in their names. */
+  function writtenBy060(path: string): Database.Database {
+    const raw = new Database(path);
+    raw.exec(`
+      CREATE TABLE summaries (pmid TEXT PRIMARY KEY, article TEXT NOT NULL, fetched_at INTEGER NOT NULL);
+      CREATE TABLE abstracts (pmid TEXT PRIMARY KEY, abstract TEXT NOT NULL, fetched_at INTEGER NOT NULL);
+      CREATE TABLE fulltexts (pmid TEXT PRIMARY KEY, source TEXT NOT NULL, fulltext TEXT NOT NULL, format TEXT NOT NULL, fetched_at INTEGER NOT NULL);
+    `);
+    raw.prepare("INSERT INTO summaries VALUES (?, ?, ?)").run("12345678", JSON.stringify(ARTICLE), Date.now());
+    raw.prepare("INSERT INTO abstracts VALUES (?, ?, ?)").run("12345678", "(= 0.03), 31 &#xb1; 8 years", Date.now());
+    raw.prepare("INSERT INTO fulltexts VALUES (?, ?, ?, ?, ?)").run("12345678", "unpaywall", "# References", "markdown", Date.now());
+    return raw;
+  }
+
+  it("never serves what 0.6.0 or earlier stored, whose abstracts were parsed without their inline markup", () => {
+    const path = freshPath();
+    writtenBy060(path).close();
+
+    const upgraded = new SQLiteBackend(path);
+    expect(upgraded.getSummary("12345678")).toBeNull();
+    expect(upgraded.getAbstract("12345678")).toBeNull();
+    expect(upgraded.getFulltext("12345678")).toBeNull();
+    expect(upgraded.size).toBe(0);
+    upgraded.close();
+    // The old tables are emptied, not dropped.
+    const raw = new Database(path);
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM abstracts").get()).toEqual({ n: 0 });
+    raw.close();
+  });
+
+  it("never serves what 0.6.0 writes while it runs on the same file", () => {
+    const path = freshPath();
+    const old = writtenBy060(path);
+    const current = new SQLiteBackend(path);
+    old.prepare("INSERT OR REPLACE INTO abstracts VALUES (?, ?, ?)").run("12345678", "(= 0.03)", Date.now());
+    old.close();
+    expect(current.getAbstract("12345678")).toBeNull();
+    current.setAbstract("12345678", "(r = 0.03)");
+    expect(current.getAbstract("12345678")).toBe("(r = 0.03)");
+    current.close();
+  });
+
+  it("leaves a newer version's tables alone", () => {
+    const path = freshPath();
+    const raw = new Database(path);
+    raw.exec(`CREATE TABLE abstracts_v${CACHE_FORMAT_VERSION + 1} (pmid TEXT PRIMARY KEY, abstract TEXT NOT NULL, fetched_at INTEGER NOT NULL)`);
+    raw.prepare(`INSERT INTO abstracts_v${CACHE_FORMAT_VERSION + 1} VALUES (?, ?, ?)`).run("12345678", "newer abstract", Date.now());
+    raw.close();
+
+    new SQLiteBackend(path).close();
+    const reopened = new Database(path);
+    expect(reopened.prepare(`SELECT abstract FROM abstracts_v${CACHE_FORMAT_VERSION + 1}`).get()).toEqual({ abstract: "newer abstract" });
+    reopened.close();
+  });
 });
 
 describe("SQLiteBackend full-text TTL", () => {
@@ -166,7 +221,7 @@ describe("SQLiteBackend resilience", () => {
     // Seed the schema via the backend, then inject invalid JSON directly.
     new SQLiteBackend(path).close();
     const raw = new Database(path);
-    raw.prepare("INSERT OR REPLACE INTO summaries (pmid, article, fetched_at) VALUES (?, ?, ?)").run(
+    raw.prepare(`INSERT OR REPLACE INTO summaries_v${CACHE_FORMAT_VERSION} (pmid, article, fetched_at) VALUES (?, ?, ?)`).run(
       "bad",
       "{ not valid json",
       Date.now(),

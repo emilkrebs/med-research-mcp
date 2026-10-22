@@ -27,6 +27,11 @@ export const FULLTEXT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  */
 export const SUMMARY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
+/**
+ * Where the library keeps what it fetched. What it stores changes between versions (see
+ * {@link CACHE_FORMAT_VERSION}): a persistent implementation should keep each version's entries
+ * apart, in its keys or tables, as {@link SQLiteBackend} does.
+ */
 export interface Cache {
   /** Returns a cached summary, or null on a miss or if older than {@link SUMMARY_TTL_MS}. */
   getSummary(pmid: string): Article | null;
@@ -115,18 +120,36 @@ export class NullCache implements Cache {
 
 // ─── SQLite backend ─────────────────────────────────────────────
 
+/**
+ * The version of what the cache stores. The SQLite backend keeps each version's entries in tables
+ * of their own (`abstracts_v1`) and empties older versions' tables when it opens a file: abstracts
+ * never expire, so text parsed by an older version would otherwise be served for good. An older
+ * version still running on the same file goes on writing to its own tables, which this one never reads.
+ *
+ * 1 (0.6.1): PubMed abstracts lost the text of inline markup and kept character references;
+ * Europe PMC titles and abstracts carried HTML; Europe PMC full texts could end in an empty
+ * References heading. Up to 0.6.0 the tables had no version in their names.
+ */
+export const CACHE_FORMAT_VERSION = 1;
+
+const SUMMARIES = `summaries_v${CACHE_FORMAT_VERSION}`;
+const ABSTRACTS = `abstracts_v${CACHE_FORMAT_VERSION}`;
+const FULLTEXTS = `fulltexts_v${CACHE_FORMAT_VERSION}`;
+/** A table of some version's, as named up to 0.6.0 ("abstracts") or since ("abstracts_v1"). */
+const VERSIONED_TABLE = /^(?:summaries|abstracts|fulltexts)(?:_v(\d+))?$/;
+
 const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS summaries (
+CREATE TABLE IF NOT EXISTS ${SUMMARIES} (
     pmid       TEXT PRIMARY KEY,
     article    TEXT NOT NULL,
     fetched_at INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS abstracts (
+CREATE TABLE IF NOT EXISTS ${ABSTRACTS} (
     pmid       TEXT PRIMARY KEY,
     abstract   TEXT NOT NULL,
     fetched_at INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS fulltexts (
+CREATE TABLE IF NOT EXISTS ${FULLTEXTS} (
     pmid       TEXT PRIMARY KEY,
     source     TEXT NOT NULL,
     fulltext   TEXT NOT NULL,
@@ -189,20 +212,21 @@ export class SQLiteBackend implements Cache {
     this.db.pragma("journal_mode = WAL"); // concurrent reads while another process writes
     this.db.pragma("synchronous = NORMAL"); // safe with WAL, faster writes
     this.db.exec(SCHEMA_SQL);
+    this.clearOlderVersions();
 
     this.stmts = {
-      getSummary: this.db.prepare("SELECT article, fetched_at FROM summaries WHERE pmid = ?"),
-      vacuumSummary: this.db.prepare("DELETE FROM summaries WHERE fetched_at < ?"),
-      setSummary: this.db.prepare("INSERT OR REPLACE INTO summaries (pmid, article, fetched_at) VALUES (?, ?, ?)"),
-      delSummary: this.db.prepare("DELETE FROM summaries WHERE pmid = ?"),
-      getAbstract: this.db.prepare("SELECT abstract FROM abstracts WHERE pmid = ?"),
-      setAbstract: this.db.prepare("INSERT OR REPLACE INTO abstracts (pmid, abstract, fetched_at) VALUES (?, ?, ?)"),
-      getFulltext: this.db.prepare("SELECT source, fulltext, format, fetched_at FROM fulltexts WHERE pmid = ?"),
+      getSummary: this.db.prepare(`SELECT article, fetched_at FROM ${SUMMARIES} WHERE pmid = ?`),
+      vacuumSummary: this.db.prepare(`DELETE FROM ${SUMMARIES} WHERE fetched_at < ?`),
+      setSummary: this.db.prepare(`INSERT OR REPLACE INTO ${SUMMARIES} (pmid, article, fetched_at) VALUES (?, ?, ?)`),
+      delSummary: this.db.prepare(`DELETE FROM ${SUMMARIES} WHERE pmid = ?`),
+      getAbstract: this.db.prepare(`SELECT abstract FROM ${ABSTRACTS} WHERE pmid = ?`),
+      setAbstract: this.db.prepare(`INSERT OR REPLACE INTO ${ABSTRACTS} (pmid, abstract, fetched_at) VALUES (?, ?, ?)`),
+      getFulltext: this.db.prepare(`SELECT source, fulltext, format, fetched_at FROM ${FULLTEXTS} WHERE pmid = ?`),
       setFulltext: this.db.prepare(
-        "INSERT OR REPLACE INTO fulltexts (pmid, source, fulltext, format, fetched_at) VALUES (?, ?, ?, ?, ?)",
+        `INSERT OR REPLACE INTO ${FULLTEXTS} (pmid, source, fulltext, format, fetched_at) VALUES (?, ?, ?, ?, ?)`,
       ),
-      delFulltext: this.db.prepare("DELETE FROM fulltexts WHERE pmid = ?"),
-      vacuumFulltext: this.db.prepare("DELETE FROM fulltexts WHERE fetched_at < ?"),
+      delFulltext: this.db.prepare(`DELETE FROM ${FULLTEXTS} WHERE pmid = ?`),
+      vacuumFulltext: this.db.prepare(`DELETE FROM ${FULLTEXTS} WHERE fetched_at < ?`),
     };
 
     this.vacuum();
@@ -256,17 +280,29 @@ export class SQLiteBackend implements Cache {
     this.stmts.setFulltext.run(pmid, data.source, data.fulltext, data.format, data.fetchedAt ?? Date.now());
   }
 
+  /**
+   * Empty the tables of older versions (see {@link CACHE_FORMAT_VERSION}); a newer version's are left
+   * alone. They are emptied, not dropped: an older version still running on the file would fail.
+   */
+  private clearOlderVersions(): void {
+    const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").pluck().all() as string[];
+    for (const name of tables) {
+      const match = VERSIONED_TABLE.exec(name);
+      if (match && Number(match[1] ?? 0) < CACHE_FORMAT_VERSION) this.db.exec(`DELETE FROM ${name}`);
+    }
+  }
+
   /** Delete every expired summary and full-text row. Runs on construction; call periodically if desired. */
   vacuum(): void {
     this.stmts.vacuumSummary.run(Date.now() - SUMMARY_TTL_MS);
     this.stmts.vacuumFulltext.run(Date.now() - FULLTEXT_TTL_MS);
   }
 
-  /** Total rows across all three tables — handy for debugging. */
+  /** Total rows across this version's three tables — handy for debugging. */
   get size(): number {
     const count = (table: string): number =>
       (this.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
-    return count("summaries") + count("abstracts") + count("fulltexts");
+    return count(SUMMARIES) + count(ABSTRACTS) + count(FULLTEXTS);
   }
 
   /** Close the database connection. Call on process exit; operations afterward throw. */
