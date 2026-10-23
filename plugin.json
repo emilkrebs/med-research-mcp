@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "med-research",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Evidence-graded scientific literature search across PubMed, Europe PMC, ChinaXiv and RussiaRxiv, plus full-text resolution — three MCP tools with EBM appraisal and setup skills.",
   "author": {
     "name": "Emil Krebs",
