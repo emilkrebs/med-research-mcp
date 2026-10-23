@@ -150,6 +150,44 @@ describe("searchLiterature fan-out", () => {
     expect(out.warnings).toBeUndefined();
   });
 
+  it("says a zero is not evidence of absence, naming the query", async () => {
+    // PubMed ANDs space-separated terms, so 4 keywords can match nothing while the literature holds
+    // hits ("psilocybin glucose" returns 14). A bare 0 was read as "no such evidence exists" (2026-10-23).
+    const out = await searchLiterature(
+      { query: "psilocybin glucose metabolism glycemic", database: "pubmed" },
+      new LRUBackend(),
+      [fakeAdapter("pubmed", [], 0)],
+    );
+    expect(out.articles).toEqual([]);
+    expect(out.total).toBe(0);
+    expect(out.warnings).toEqual([expect.stringContaining("not evidence of absence")]);
+    expect(out.warnings?.[0]).toContain("psilocybin glucose metabolism glycemic");
+  });
+
+  it("doesn't repeat the zero warning when a design filter or a failed database explains it", async () => {
+    const filtered = await searchLiterature(
+      { query: "x", database: "europepmc", studyTypes: ["randomized-controlled-trial"] },
+      new LRUBackend(),
+      [fakeAdapter("europepmc", [], 0)],
+    );
+    expect(filtered.warnings ?? []).not.toContainEqual(expect.stringContaining("not evidence of absence"));
+
+    const failing: DatabaseAdapter = {
+      id: "boom",
+      name: "Boom DB",
+      search: async () => {
+        throw new Error("upstream 503");
+      },
+      fetch: async () => [],
+    };
+    const partial = await searchLiterature({ query: "x", database: "all" }, new LRUBackend(), [
+      fakeAdapter("pubmed", [], 0),
+      failing,
+    ]);
+    expect(partial.warnings ?? []).not.toContainEqual(expect.stringContaining("not evidence of absence"));
+    expect(partial.warnings?.some((w) => w.includes("Boom DB"))).toBe(true);
+  });
+
   describe("a retraction indexed in only one database", () => {
     const retractedPubmed: NcbiArticle = {
       ...epmcRct,

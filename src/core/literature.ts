@@ -138,6 +138,16 @@ export async function searchLiterature(
   );
   const noAnimals = noAnimalStudiesWarning(input.studyTypes, input.minDesignTier, merged);
   if (noAnimals) warnings.push(noAnimals);
+  // A search that matched nothing reads as "no such evidence exists". PubMed ANDs space-separated
+  // terms, so a long-enough query returns 0 while the literature holds hits: say the zero is a
+  // property of the query, not a finding about the literature. Skipped when a database failed (the
+  // zero is partly its failure) and when a design filter narrowed the query (the filter explains it).
+  if (total === 0 && failures.length === 0 && !input.studyTypes?.length && !input.minDesignTier) {
+    warnings.push(
+      `No record matched every term of the query "${input.query}". Terms are ANDed, so this is not ` +
+        `evidence of absence: retry with fewer keywords or OR-joined synonyms.`,
+    );
+  }
   // Stable sorts: equal items keep their database's order, databases in the order requested.
   if (input.sort === "date") {
     const published = new Map(merged.map((a) => [a, firstPublished(a)]));
