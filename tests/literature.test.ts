@@ -164,13 +164,16 @@ describe("searchLiterature fan-out", () => {
     expect(out.warnings?.[0]).toContain("psilocybin glucose metabolism glycemic");
   });
 
-  it("doesn't repeat the zero warning when a design filter or a failed database explains it", async () => {
+  it("doesn't add the zero warning when a design filter, a date range or a failed database explains it", async () => {
     const filtered = await searchLiterature(
       { query: "x", database: "europepmc", studyTypes: ["randomized-controlled-trial"] },
       new LRUBackend(),
       [fakeAdapter("europepmc", [], 0)],
     );
     expect(filtered.warnings ?? []).not.toContainEqual(expect.stringContaining("not evidence of absence"));
+
+    const dated = await searchLiterature({ query: "x y", dateRange: { from: "2020" } }, new LRUBackend(), [fakeAdapter("pubmed", [], 0)]);
+    expect(dated.warnings).toBeUndefined();
 
     const failing: DatabaseAdapter = {
       id: "boom",
