@@ -132,7 +132,10 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .trim()
       .min(1, "The query is empty.")
       .describe(
-        "Search query. PubMed field tags ([tiab], [mesh], [au]) apply to the pubmed database; for other databases they are removed. " +
+        "Search query: 2-5 keywords, not a sentence. Every space-separated word is required (ANDed), so each extra word " +
+          "narrows the results and a long phrase finds nothing. If 0 results come back, retry with fewer keywords before " +
+          "concluding that no evidence exists. " +
+          "PubMed field tags ([tiab], [mesh], [au]) apply to the pubmed database; for other databases they are removed. " +
           "The query is sent to third-party databases: never include names, dates of birth, record numbers or other details that " +
           "identify a person; describe the condition or intervention instead.",
       ),

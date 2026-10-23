@@ -138,6 +138,14 @@ export async function searchLiterature(
   );
   const noAnimals = noAnimalStudiesWarning(input.studyTypes, input.minDesignTier, merged);
   if (noAnimals) warnings.push(noAnimals);
+  // A bare 0 reads as "no evidence exists"; filters and failures explain a zero themselves.
+  const dated = Boolean(input.dateRange?.from || input.dateRange?.to);
+  if (total === 0 && failures.length === 0 && !input.studyTypes?.length && !input.minDesignTier && !dated) {
+    warnings.push(
+      `No record matched every term of the query "${input.query}". This is not evidence of absence: ` +
+        `retry with fewer, more general keywords.`,
+    );
+  }
   // Stable sorts: equal items keep their database's order, databases in the order requested.
   if (input.sort === "date") {
     const published = new Map(merged.map((a) => [a, firstPublished(a)]));
