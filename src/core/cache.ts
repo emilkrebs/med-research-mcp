@@ -126,7 +126,7 @@ export class NullCache implements Cache {
  * never expire, so text parsed by an older version would otherwise be served for good. An older
  * version still running on the same file goes on writing to its own tables, which this one never reads.
  *
- * 1 (0.6.2): PubMed abstracts lost the text of inline markup and kept character references;
+ * 1 (0.6.1): PubMed abstracts lost the text of inline markup and kept character references;
  * Europe PMC titles and abstracts carried HTML; Europe PMC full texts could end in an empty
  * References heading. Up to 0.6.0 the tables had no version in their names.
  */
