@@ -42,12 +42,20 @@ const SPACING_MARGIN = 1.2;
  */
 const DEFAULT_SEARCH_TTL_MS = 60 * 60 * 1000;
 /**
- * The fewest PMIDs taken from each of PubMed's two date orders for `sort: "date"`, and the multiple
- * of the records asked for taken when that is more (see {@link NcbiClient.newest}). The pool grows
- * from the minimum by doubling, so a walk through the pages pools again only a few times.
+ * The fewest PMIDs taken from each of PubMed's two date orders for `sort: "date"` (see
+ * {@link NcbiClient.newest}). The pool grows from it by doubling, so a walk through the pages pools
+ * again only a few times.
  */
 const DATE_POOL_MIN = 100;
-const DATE_POOL_FACTOR = 4;
+/**
+ * How many of the newest records a date pool of `pool` PMIDs per order is taken to hold: a quarter of
+ * `pool`, half from 800 on. Compared with pools of 4,096 per order, pools of 200, 400, 800, 1,600 and
+ * 3,200 held the right records to at least the 81st, 195th, 510th, 1,279th and 1,945th (semaglutide,
+ * creatine supplementation, vitamin D supplementation, long covid, intermittent fasting; 2026-10-28).
+ */
+function finalDepth(pool: number): number {
+  return Math.floor(pool / (pool >= 800 ? 2 : 4));
+}
 /** PMIDs the search lists may hold in all, so that a few long lists don't crowd out the rest. */
 const SEARCHES_MAX_PMIDS = 200_000;
 /** Publication dates kept for date pools: two full pools of 9,999 PMIDs, five times over. */
@@ -300,8 +308,8 @@ export class NcbiClient {
    * first 12 (2026-10-22). Without a sort, esearch orders by date added to PubMed ("The default sort
    * order varies by database (for PubMed, it is most+recent)", NLM Data Guide,
    * https://dataguide.nlm.nih.gov/eutilities/utilities.html, checked 2026-10-22), which misses
-   * records added long before their issue. So 4 × `end` PMIDs (100 at least) of each order are pooled
-   * and sorted by first publication from esummary's dates. Checked against every record with a
+   * records added long before their issue. So PMIDs of each order are pooled, enough for {@link finalDepth}
+   * to reach `end` (100 at least), and sorted by first publication from esummary's dates. Checked against every record with a
    * publication date since 2026-10-01, the first 100 of each order held all 10 newest records for each
    * of five queries (semaglutide, creatine supplementation, vitamin D supplementation, intermittent
    * fasting, long covid), and the first 200 all 50 newest for the two queries with 50 in that range;
@@ -310,7 +318,7 @@ export class NcbiClient {
   private async newest(params: URLSearchParams, end: number, offset: number, known?: PmidList): Promise<PmidList> {
     if (known && offset >= known.count) return known;
     let pool = DATE_POOL_MIN;
-    while (pool < DATE_POOL_FACTOR * end) pool *= 2;
+    while (finalDepth(pool) < end) pool *= 2;
     pool = Math.min(ESEARCH_LIMIT, pool);
     const byIssue = new URLSearchParams(params);
     byIssue.set("retmax", String(pool));
@@ -348,9 +356,9 @@ export class NcbiClient {
       if (summary) this.pooled.set(pmid, summary);
     }
     // Every record was pooled, or as many as esearch serves: the whole order is as good as it gets.
-    // Otherwise a larger pool could still bring in newer records than all but the first quarter of this one.
+    // Otherwise a larger pool could still bring in newer records than all but the first finalDepth of this one.
     const whole = issued.count <= pool || pool === ESEARCH_LIMIT;
-    const depth = whole ? pmids.length : Math.max(kept.length, Math.floor(pool / DATE_POOL_FACTOR));
+    const depth = whole ? pmids.length : Math.max(kept.length, finalDepth(pool));
     return { count: issued.count, pmids, depth };
   }
 
@@ -574,8 +582,9 @@ export async function searchPubMed(
     throw errors.invalidInput("page must be a whole number, 1 or more.");
   }
   const page = input.page ?? 1;
+  const maxResults = pageWindow(input).size;
   if (designPublicationTypes(input.studyTypes, input.minDesignTier)?.length === 0) {
-    return { articles: [], total: 0, query: input.query, page, warnings };
+    return { articles: [], total: 0, query: input.query, page, maxResults, warnings };
   }
   const { count, pmids, more, warning } = await client.esearch(input);
   if (warning) warnings.push(warning);
@@ -584,7 +593,7 @@ export async function searchPubMed(
   if (pmids.length === 0) {
     if (count === 0) warnings.push("No articles matched this query. Try broader terms or fewer field tags.");
     else if (!warning) warnings.push("No results returned.");
-    return { articles: [], total: count, query: input.query, page, ...nextPage, warnings };
+    return { articles: [], total: count, query: input.query, page, maxResults, ...nextPage, warnings };
   }
   if (count > SOFT_BROAD_THRESHOLD) {
     warnings.push(
@@ -659,6 +668,7 @@ export async function searchPubMed(
     total: count,
     query: input.query,
     page,
+    maxResults,
     ...nextPage,
     ...(warnings.length > 0 ? { warnings } : {}),
   };

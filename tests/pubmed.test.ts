@@ -759,6 +759,20 @@ describe("NcbiClient requests", () => {
     expect(retmaxes()).toEqual(["100", "100", "200", "200"]);
   });
 
+  it('with sort "date", takes a pool of 800 or more PMIDs of each order as final to half of it', async () => {
+    const fetchMock = dateFetch(5000);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const page = async (n: number) => (await client.esearch({ query: "x", sort: "date", maxResults: 50, page: n })).pmids;
+    const retmaxes = () => esearchRequests(fetchMock).map((u) => u.searchParams.get("retmax"));
+
+    // Record 400 is within the first half of 800; record 500 needs 1,600, where a quarter would have needed 3,200.
+    expect(await page(8)).toEqual(range(4601, 4650).reverse());
+    expect(retmaxes()).toEqual(["800", "800"]);
+    expect(await page(10)).toEqual(range(4501, 4550).reverse());
+    expect(retmaxes()).toEqual(["800", "800", "1600", "1600"]);
+  });
+
   it('with sort "date", keeps the records served when a larger pool brings in a newer one, and summarizes none twice', async () => {
     // The newest record, 5000, is the 151st of the date-added order: outside the first pool of 100.
     const fetchMock = dateFetch(5000, 150);

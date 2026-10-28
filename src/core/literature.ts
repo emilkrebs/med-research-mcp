@@ -94,9 +94,11 @@ export async function searchLiterature(
   if (selected.length === 0) throw errors.invalidInput("No database to search.");
   const warnings = filterWarnings(input.studyTypes, input.minDesignTier);
   const page = input.page ?? 1;
+  const { offset, size } = pageWindow(input);
+  const empty = { articles: [], total: 0, query: input.query, page, maxResults: size, warnings };
   // A design filter keeps only records carrying one of these publication types (null: no such filter).
   const designTypes = designPublicationTypes(input.studyTypes, input.minDesignTier);
-  if (designTypes?.length === 0) return { articles: [], total: 0, query: input.query, page, warnings };
+  if (designTypes?.length === 0) return empty;
   const searched = designTypes ? selected.filter((a) => a.designMetadata !== false) : selected;
   const skipped = selected.filter((a) => !searched.includes(a));
   if (skipped.length > 0) {
@@ -105,9 +107,8 @@ export async function searchLiterature(
         `design metadata, so the studyTypes/minDesignTier filter would keep none. Search without the filter and read the abstracts.`,
     );
   }
-  if (searched.length === 0) return { articles: [], total: 0, query: input.query, page, warnings };
+  if (searched.length === 0) return empty;
 
-  const { offset, size } = pageWindow(input);
   const hasNextPage = offset + size < MAX_PAGED_RECORDS;
 
   // Fan out. One adapter failing must not sink the others — it degrades to a warning.
@@ -179,6 +180,7 @@ export async function searchLiterature(
     total,
     query: input.query,
     page,
+    maxResults: size,
     ...(more && hasNextPage ? { nextPage: page + 1 } : {}),
     ...(warnings.length > 0 ? { warnings } : {}),
   };

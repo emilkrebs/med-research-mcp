@@ -500,9 +500,15 @@ describe("searchLiterature paging", () => {
   it("returns the page even when nothing is searched", async () => {
     const chinaxiv: DatabaseAdapter = { ...fakeAdapter("chinaxiv", [chinaxivRct]), designMetadata: false };
     const none = await searchLiterature({ query: "x", studyTypes: ["cohort"], page: 2 }, new LRUBackend(), [fakeAdapter("pubmed", [pubmedMeta])]);
-    expect(none).toMatchObject({ articles: [], page: 2 });
+    expect(none).toMatchObject({ articles: [], page: 2, maxResults: 10 });
     const skipped = await searchLiterature({ query: "x", database: "chinaxiv", studyTypes: ["randomized-controlled-trial"], page: 2 }, new LRUBackend(), [chinaxiv]);
-    expect(skipped).toMatchObject({ articles: [], page: 2 });
+    expect(skipped).toMatchObject({ articles: [], page: 2, maxResults: 10 });
+  });
+
+  it("returns the page size, so that nextPage is asked for with it", async () => {
+    expect(await run({}, 11)).toMatchObject({ maxResults: 10, nextPage: 2 });
+    expect(await run({ maxResults: 20 }, 50)).toMatchObject({ maxResults: 20, nextPage: 2 });
+    expect(await run({ maxResults: 100 }, 51)).toMatchObject({ maxResults: 50 });
   });
 
   it("sets nextPage while a database has records past the page, and not once every count is within it", async () => {

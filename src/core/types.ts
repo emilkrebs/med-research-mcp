@@ -179,6 +179,8 @@ export interface SearchOutput {
   total: number;
   query: string;
   page: number;
+  /** The records per database the page holds: ask for nextPage with it, as pages of another size start elsewhere. */
+  maxResults: number;
   /** The page to ask for next; absent when no database searched has records past this page, or paging can't reach them. */
   nextPage?: number;
   warnings?: string[];
