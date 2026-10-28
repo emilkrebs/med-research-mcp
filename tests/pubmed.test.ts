@@ -502,7 +502,7 @@ describe("NcbiClient requests", () => {
     expect(fetchMock.mock.calls.length).toBe(requests + 1);
   });
 
-  it('with sort "date", takes 4 × maxResults from each order and asks esummary for at most 200 at a time', async () => {
+  it('with sort "date", pools enough for the page by doubling from 100, and asks esummary for at most 200 at a time', async () => {
     const ids = (from: number) => Array.from({ length: 200 }, (_, i) => String(from + i));
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const url = new URL(String(input));
@@ -513,8 +513,9 @@ describe("NcbiClient requests", () => {
       return esearchResponse(url.searchParams.get("sort") === "pub_date" ? ids(1000) : ids(2000));
     });
     vi.stubGlobal("fetch", fetchMock);
-    const out = await new NcbiClient({ email: "test@example.com" }).esearch({ query: "x", sort: "date", maxResults: 50 });
-    expect(out.pmids).toHaveLength(50);
+    // A pool of 100 is taken to hold only its first 25 records, fewer than 30, so it doubles to 200.
+    const out = await new NcbiClient({ email: "test@example.com" }).esearch({ query: "x", sort: "date", maxResults: 30 });
+    expect(out.pmids).toHaveLength(30);
     const summaries = fetchMock.mock.calls.map(([u]) => new URL(String(u))).filter((u) => u.pathname.endsWith("esummary.fcgi"));
     expect(summaries.map((u) => u.searchParams.get("id")!.split(",").length)).toEqual([200, 200]);
     const retmax = fetchMock.mock.calls.map(([u]) => new URL(String(u))).find((u) => u.pathname.endsWith("esearch.fcgi"))!.searchParams.get("retmax");
@@ -709,6 +710,15 @@ describe("NcbiClient requests", () => {
     expect(last.pmids).toEqual(range(9951, 9999));
     expect(last).toMatchObject({ more: false });
     expect(last).not.toHaveProperty("warning");
+  });
+
+  it("doesn't warn about the 9,999 limit for a page past the end of a smaller search", async () => {
+    const fetchMock = relevanceFetch(5_981);
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await quick().esearch({ query: "x", maxResults: 1, page: 10_000 });
+    expect(out).toEqual({ count: 5_981, pmids: [], more: false });
+    // Only the count is asked for, as for a search that is capped.
+    expect(esearchRequests(fetchMock).map((u) => u.searchParams.get("retmax"))).toEqual(["0"]);
   });
 
   /**

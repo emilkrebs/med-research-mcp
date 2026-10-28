@@ -558,14 +558,20 @@ describe("searchLiterature paging", () => {
   it("raises INVALID_INPUT for a page starting at or past the 10,000th record, before searching", async () => {
     const search = vi.fn(async (_input: SearchInput) => ({ count: 50_000, ids: ["1"] }));
     const adapters: DatabaseAdapter[] = [{ ...fakeAdapter("pubmed", [pubmedMeta]), search }];
-    for (const input of [{ page: 1001 }, { page: 201, maxResults: 50 }, { page: 5001, maxResults: 2.5 }, { page: 1_000_000 }]) {
+    for (const input of [
+      { page: 1001 },
+      { page: 201, maxResults: 50 },
+      { page: 5001, maxResults: 2.5 },
+      { page: 10_001, maxResults: 1 },
+      { page: 1_000_000 },
+    ]) {
       await expect(searchLiterature({ query: "x", ...input }, new LRUBackend(), adapters), JSON.stringify(input)).rejects.toMatchObject({
         code: "INVALID_INPUT",
         userMessage: expect.stringContaining("Narrow the query"),
       });
     }
     expect(search).not.toHaveBeenCalled();
-    for (const input of [{ page: 1000 }, { page: 200, maxResults: 50 }, { page: 5000, maxResults: 2.5 }]) {
+    for (const input of [{ page: 1000 }, { page: 200, maxResults: 50 }, { page: 5000, maxResults: 2.5 }, { page: 10_000, maxResults: 1 }]) {
       await expect(searchLiterature({ query: "x", ...input }, new LRUBackend(), adapters), JSON.stringify(input)).resolves.toMatchObject({
         page: input.page,
       });
@@ -577,6 +583,12 @@ describe("searchLiterature paging", () => {
     expect(past).toMatchObject({ articles: [], total: 25, page: 4 });
     expect(past).not.toHaveProperty("nextPage");
     expect(past.warnings).toEqual([expect.stringContaining("Page 4 is past the last result")]);
+
+    // The last reachable page of a one-record page size is record 10,000, not a cap.
+    const boundary = await run({ page: 10_000, maxResults: 1 }, 5);
+    expect(boundary).toMatchObject({ articles: [], total: 5, page: 10_000, maxResults: 1 });
+    expect(boundary).not.toHaveProperty("nextPage");
+    expect(boundary.warnings).toEqual([expect.stringContaining("Page 10000 is past the last result")]);
   });
 
   it("doesn't call a page past the last result when it holds records, is the first or found nothing, and names the databases that answered when one failed", async () => {

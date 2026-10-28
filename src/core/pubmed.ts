@@ -247,7 +247,8 @@ export class NcbiClient {
     const key = `${params.toString()}${byDate ? "&order=first-published" : ""}`;
     if (offset >= ESEARCH_LIMIT) {
       const count = this.searches?.get(key)?.count ?? (await this.runEsearch(new URLSearchParams([...params, ["retmax", "0"]]))).count;
-      return { count, pmids: [], more: false, warning: CAP_WARNING };
+      // A search smaller than the limit isn't capped: the page is simply past its end.
+      return { count, pmids: [], more: false, ...(count > ESEARCH_LIMIT ? { warning: CAP_WARNING } : {}) };
     }
     const end = Math.min(offset + size, ESEARCH_LIMIT);
     const list = await this.searchList(key, end, (known) => (byDate ? this.newest(params, end, offset, known) : this.relevant(params, end, known)));
