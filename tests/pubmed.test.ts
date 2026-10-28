@@ -788,6 +788,38 @@ describe("NcbiClient requests", () => {
     expect(esearchRequests(fetchMock)).toHaveLength(2);
   });
 
+  it('with sort "date", answers a page past the last record from the counts, without summarizing the pool', async () => {
+    const fetchMock = dateFetch(676);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    expect(await client.esearch({ query: "x", sort: "date", maxResults: 50, page: 70 })).toEqual({ count: 676, pmids: [], more: false });
+    expect(esearchRequests(fetchMock)).toHaveLength(2);
+    expect(summaryRequests(fetchMock)).toHaveLength(0);
+
+    // Once the search is known, a page past its end sends nothing.
+    await client.esearch({ query: "y", sort: "date" });
+    const requests = fetchMock.mock.calls.length;
+    expect((await client.esearch({ query: "y", sort: "date", maxResults: 50, page: 70 })).pmids).toEqual([]);
+    expect(fetchMock.mock.calls.length).toBe(requests);
+  });
+
+  it('with sort "date", keeps the dates a failed call summarized, so the next one summarizes only the rest', async () => {
+    const dates = dateFetch(5000);
+    let summaries = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request) =>
+      new URL(String(input)).pathname.endsWith("esummary.fcgi") && ++summaries === 2 ? new Response("", { status: 400 }) : dates(input),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const search = () => client.esearch({ query: "x", sort: "date", maxResults: 50 });
+
+    await expect(search()).rejects.toMatchObject({ code: "NETWORK_ERROR" });
+    expect((await search()).pmids).toEqual(range(4951, 5000).reverse());
+    const batches = summaryRequests(fetchMock).map((u) => u.searchParams.get("id"));
+    expect(batches).toHaveLength(3);
+    expect(batches[2]).toBe(batches[1]);
+  });
+
   it("waits out a 429 and retries, holding back the queue, instead of failing the call", async () => {
     vi.useFakeTimers();
     const responses = [tooMany("2"), esearchResponse(["1"]), esearchResponse(["2"])];

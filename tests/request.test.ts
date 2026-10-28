@@ -147,7 +147,7 @@ describe("requestWithRetries", () => {
       const [first, second] = await call;
       // 8 s instead of 15, and no retry: it would start with less than 2 s left.
       expect(first).toMatchObject({ code: "NETWORK_ERROR", message: "Network error: Europe PMC didn't answer within 8 s" });
-      expect(second).toMatchObject({ code: "NETWORK_ERROR", message: "Network error: Europe PMC wasn't asked: the call ran out of time" });
+      expect(second).toMatchObject({ code: "TIMEOUT", message: "Europe PMC wasn't asked: the call ran out of time" });
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
@@ -163,7 +163,7 @@ describe("requestWithRetries", () => {
       await vi.advanceTimersByTimeAsync(21_000);
       expect(await slow).toMatchObject({ code: "NETWORK_ERROR" });
       // Its turn came after its deadline: it fails without being sent.
-      expect(await bounded).toMatchObject({ message: "Network error: PubMed wasn't asked: the call ran out of time" });
+      expect(await bounded).toMatchObject({ code: "TIMEOUT", message: "PubMed wasn't asked: the call ran out of time" });
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 

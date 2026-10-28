@@ -264,7 +264,8 @@ publisher pages.
   requests must finish within 30 seconds, retries and waiting in the NCBI queue
   included, so the call answers before a gateway in front of the server gives up
   (nginx's `proxy_read_timeout`, for one, defaults to 60 s). A database that runs
-  out of time becomes a warning, or the error when no database answered.
+  out of time becomes a warning, or the error (`TIMEOUT` when a request couldn't
+  even be sent) when no database answered.
   `literature_fulltext` has no budget: its pages are fetched with their own
   timeout, and its fallback needs the abstract. The stdio server sets none.
 

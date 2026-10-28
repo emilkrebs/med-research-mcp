@@ -161,8 +161,10 @@ export async function searchLiterature(
         `retry with fewer, more general keywords.`,
     );
   }
-  if (page > 1 && total > 0 && failures.length === 0 && perAdapter.every(({ count }) => count <= offset)) {
-    warnings.push(`Page ${page} is past the last result: the databases searched have no more records for this query.`);
+  // Failed databases count 0: the page is past the end of those that answered.
+  if (page > 1 && total > 0 && perAdapter.every(({ count }) => count <= offset)) {
+    const databases = failures.length > 0 ? "databases that answered" : "databases searched";
+    warnings.push(`Page ${page} is past the last result: the ${databases} have no more records for this query.`);
   }
   // Stable sorts: equal items keep their database's order, databases in the order requested.
   if (input.sort === "date") {

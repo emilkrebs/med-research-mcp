@@ -158,7 +158,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .optional()
       .describe(
         "Page of results, from 1 (default): page 2 holds each database's next maxResults records. Ask for the nextPage " +
-          "a result gives to read past the first page; each page is merged and sorted on its own. Paging reaches only " +
+          "a result gives to read past the first page, with the same maxResults (another one shifts the pages, repeating or " +
+          "skipping records); each page is merged and sorted on its own. Paging reaches only " +
           "the first 10,000 records of a search: narrow the query instead.",
       ),
     minDesignTier: z
@@ -220,7 +221,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         "a newer version (updated), animals-not-humans indexing, preprints, letters, machine-translated text and " +
         "machine-generated abstracts (chinaxiv, russiarxiv: check originalUrl before relying on a number). Results are " +
         'merged, de-duplicated by DOI, and sorted by design tier (or by date with sort: "date"). Results come in pages of ' +
-        "maxResults per database; when nextPage is set, pass it as page for the next ones. Always cheap — no LLM calls. " +
+        "maxResults per database; when nextPage is set, pass it as page, with the same maxResults, for the next ones. " +
+        "Always cheap — no LLM calls. " +
         "Use literature_fetch to get full metadata for specific ids, and literature_fulltext for the article body.",
       // Strict, so a misnamed key (e.g. `databases`) errors instead of being stripped and silently searching PubMed.
       inputSchema: z.object(literatureSearchShape).strict(),

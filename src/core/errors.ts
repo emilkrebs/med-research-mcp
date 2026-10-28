@@ -8,6 +8,7 @@ export type ResearchErrorCode =
   | "QUERY_TOO_BROAD"
   | "PARSE_FAILURE"
   | "NETWORK_ERROR"
+  | "TIMEOUT"
   | "NOT_FOUND"
   | "INVALID_INPUT";
 
@@ -90,6 +91,20 @@ export const errors = {
       code: "NETWORK_ERROR",
       message: `Network error: ${detail}`,
       userMessage: "Couldn't reach the database. Check your connection and try again.",
+      recoverable: true,
+    });
+  },
+
+  /** A call with a deadline (see withDeadline in ./request.ts) used it up before it could send a request. */
+  outOfTime(source: string): ResearchApiException {
+    return new ResearchApiException({
+      code: "TIMEOUT",
+      message: `${source} wasn't asked: the call ran out of time`,
+      userMessage:
+        `The call ran out of time before ${source} was asked: this server gives each search or fetch a fixed time, and ` +
+        `the database itself didn't fail. Retry once: what this call fetched is kept, so the next one gets further. If it ` +
+        `fails again, ask for an earlier page or narrow the query (more specific terms, a dateRange); deep pages of a ` +
+        `sort: "date" search cost the most.`,
       recoverable: true,
     });
   },

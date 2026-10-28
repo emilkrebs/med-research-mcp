@@ -42,7 +42,7 @@ const callDeadline = new AsyncLocalStorage<number>();
 
 /**
  * Run a call whose requests must be done within `ms`: each attempt's timeout is cut to what is
- * left, and once too little is left, requests fail with NETWORK_ERROR instead of being sent. A
+ * left, and once too little is left, requests fail with TIMEOUT instead of being sent. A
  * deadline inside another keeps the earlier of the two.
  */
 export function withDeadline<T>(ms: number, call: () => Promise<T>): Promise<T> {
@@ -63,7 +63,8 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 /**
  * GET a URL and return the body of the successful response. Throws RATE_LIMIT for a 429 its
- * retries don't clear, and NETWORK_ERROR for any other failure, after retrying the transient ones.
+ * retries don't clear, TIMEOUT when the call's deadline leaves no time to send it, and NETWORK_ERROR
+ * for any other failure, after retrying the transient ones.
  */
 export async function requestWithRetries(url: string, options: RequestOptions): Promise<string> {
   const started = Date.now();
@@ -77,7 +78,7 @@ export async function requestWithRetries(url: string, options: RequestOptions): 
   for (let attempt = 1; ; attempt += 1) {
     await options.beforeAttempt?.();
     const left = Math.min(attempt === 1 ? Infinity : retryDeadline, deadline) - Date.now();
-    if (left < MIN_ATTEMPT_MS) throw failure ?? errors.network(`${options.source} wasn't asked: the call ran out of time`);
+    if (left < MIN_ATTEMPT_MS) throw failure ?? errors.outOfTime(options.source);
     const timeoutMs = Math.min(options.timeoutMs, left);
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), timeoutMs);

@@ -50,6 +50,8 @@ const DATE_POOL_MIN = 100;
 const DATE_POOL_FACTOR = 4;
 /** PMIDs the search lists may hold in all, so that a few long lists don't crowd out the rest. */
 const SEARCHES_MAX_PMIDS = 200_000;
+/** Publication dates kept for date pools: two full pools of 9,999 PMIDs, five times over. */
+const PUBLISHED_MAX = 100_000;
 const CAP_WARNING =
   `PubMed serves only the first ${ESEARCH_LIMIT.toLocaleString("en-US")} records of a search: narrow the query ` +
   `(more specific terms, a dateRange or a studyTypes filter) to reach the rest.`;
@@ -150,8 +152,6 @@ interface PmidList {
   count: number;
   pmids: string[];
   depth: number;
-  /** A date search's {@link firstPublished} of the PMIDs it has summarized. */
-  published?: Map<string, number>;
 }
 
 export class NcbiClient {
@@ -168,6 +168,11 @@ export class NcbiClient {
   private readonly growing = new Map<string, Promise<PmidList>>();
   /** Summaries of the PMIDs a date search returned, fetched to rank them, served once by esummary. */
   private readonly pooled = new LRUCache<string, Article>({ max: 500, ttl: POOLED_SUMMARY_TTL_MS });
+  /**
+   * {@link firstPublished} of the PMIDs date searches have summarized, kept as they arrive: a deep date
+   * page that runs out of time leaves them for the next call, which summarizes only the rest.
+   */
+  private readonly published: LRUCache<string, number> | null;
 
   constructor(config: NcbiConfig = {}) {
     this.tool = config.tool ?? PROJECT_TOOL;
@@ -190,6 +195,7 @@ export class NcbiClient {
       searchTtl > 0
         ? new LRUCache({ maxSize: SEARCHES_MAX_PMIDS, sizeCalculation: (list: PmidList) => Math.max(1, list.pmids.length), ttl: searchTtl })
         : null;
+    this.published = searchTtl > 0 ? new LRUCache({ max: PUBLISHED_MAX, ttl: searchTtl }) : null;
   }
 
   private commonParams(params: URLSearchParams): URLSearchParams {
@@ -302,6 +308,7 @@ export class NcbiClient {
    * the first 10 of pub_date alone held 1 to 3 of the 10 newest (2026-10-22).
    */
   private async newest(params: URLSearchParams, end: number, offset: number, known?: PmidList): Promise<PmidList> {
+    if (known && offset >= known.count) return known;
     let pool = DATE_POOL_MIN;
     while (pool < DATE_POOL_FACTOR * end) pool *= 2;
     pool = Math.min(ESEARCH_LIMIT, pool);
@@ -311,14 +318,23 @@ export class NcbiClient {
     const byAdded = new URLSearchParams(params);
     byAdded.set("retmax", String(pool));
     const [issued, added] = await Promise.all([this.runEsearch(byIssue), this.runEsearch(byAdded)]);
+    // A page past the end needs no ranking: summarizing the pool would only spend the call's time.
+    if (offset >= issued.count) return known ?? { count: issued.count, pmids: [], depth: 0 };
     const candidates = [...new Set([...issued.pmids, ...added.pmids])];
-    const published = new Map(known?.published);
+    const published = new Map<string, number>();
     const summaries = new Map<string, Article>();
-    const unknown = candidates.filter((pmid) => !published.has(pmid));
+    const unknown: string[] = [];
+    for (const pmid of candidates) {
+      const date = this.published?.get(pmid);
+      if (date === undefined) unknown.push(pmid);
+      else published.set(pmid, date);
+    }
     for (let i = 0; i < unknown.length; i += ESUMMARY_BATCH) {
       for (const [pmid, article] of await this.esummary(unknown.slice(i, i + ESUMMARY_BATCH))) {
+        const date = firstPublished(article);
         summaries.set(pmid, article);
-        published.set(pmid, firstPublished(article));
+        published.set(pmid, date);
+        this.published?.set(pmid, date);
       }
     }
     // Stable: equal dates keep the issue order, then the date-added one.
@@ -335,7 +351,7 @@ export class NcbiClient {
     // Otherwise a larger pool could still bring in newer records than all but the first quarter of this one.
     const whole = issued.count <= pool || pool === ESEARCH_LIMIT;
     const depth = whole ? pmids.length : Math.max(kept.length, Math.floor(pool / DATE_POOL_FACTOR));
-    return { count: issued.count, pmids, depth, published };
+    return { count: issued.count, pmids, depth };
   }
 
   private async runEsearch(params: URLSearchParams): Promise<{ count: number; pmids: string[] }> {

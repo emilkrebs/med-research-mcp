@@ -573,7 +573,7 @@ describe("searchLiterature paging", () => {
     expect(past.warnings).toEqual([expect.stringContaining("Page 4 is past the last result")]);
   });
 
-  it("doesn't call a page past the last result when it holds records, is the first, found nothing, or a database failed", async () => {
+  it("doesn't call a page past the last result when it holds records, is the first or found nothing, and names the databases that answered when one failed", async () => {
     const adapter = (articles: NcbiArticle[], count: number) => fakeAdapter("pubmed", articles, count);
     const filled = await searchLiterature({ query: "x", page: 2 }, new LRUBackend(), [adapter([pubmedMeta], 11)]);
     expect(filled.warnings).toBeUndefined();
@@ -594,7 +594,10 @@ describe("searchLiterature paging", () => {
       fetch: async () => [],
     };
     const partial = await searchLiterature({ query: "x", database: "all", page: 4 }, new LRUBackend(), [adapter([], 25), failing]);
-    expect(partial.warnings).toEqual([expect.stringContaining("Boom DB search failed")]);
+    expect(partial.warnings).toEqual([
+      expect.stringContaining("Boom DB search failed"),
+      "Page 4 is past the last result: the databases that answered have no more records for this query.",
+    ]);
   });
 
   it("doesn't call a page past the last result while a database still counts records beyond it", async () => {
