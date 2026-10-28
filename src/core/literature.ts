@@ -7,6 +7,9 @@
  * found on another copy), filters, and sorts by design tier, or with `sort: "date"`
  * newest first. `fetchLiterature` fetches specific ids from one database.
  *
+ * `page` n takes each database's records (n−1)·maxResults+1 to n·maxResults, in its own
+ * order; a page is merged, de-duplicated and sorted on its own, not with the pages before it.
+ *
  * Databases without NLM publication types (ChinaXiv, RussiaRxiv) always come
  * back `unknown`: the calling model reads the design from the abstract. A design
  * filter (studyTypes, minDesignTier) is passed down to the databases that have
@@ -18,7 +21,7 @@
  */
 
 import { adaptersFor, getAdapter, unknownDatabase, type DatabaseAdapter } from "./adapters/registry.js";
-import { doiKey, firstPublished, isoDateBound } from "./adapters/util.js";
+import { doiKey, firstPublished, isoDateBound, pageWindow } from "./adapters/util.js";
 import { LRUBackend, type Cache } from "./cache.js";
 import { errors, isMedResearchError } from "./errors.js";
 import { classifyArticle, designPublicationTypes, filterWarnings, mergeDuplicate, noAnimalStudiesWarning, rankKey } from "./grader.js";
@@ -31,11 +34,12 @@ import type {
   SearchOutput,
 } from "./types.js";
 
-const MAX_RESULTS_CAP = 50;
-
-/** Throws INVALID_INPUT for an empty query or a date range PubMed would silently ignore. */
+/** Throws INVALID_INPUT for an empty query, a page that isn't a whole number from 1, or a date range PubMed would silently ignore. */
 function validateSearch(input: SearchInput): void {
   if (!input.query?.trim()) throw errors.invalidInput("The query is empty.");
+  if (input.page !== undefined && (!Number.isInteger(input.page) || input.page < 1)) {
+    throw errors.invalidInput("page must be a whole number, 1 or more.");
+  }
   const { from, to } = input.dateRange ?? {};
   const start = from ? isoDateBound(from, "from") : undefined;
   const end = to ? isoDateBound(to, "to") : undefined;
@@ -82,9 +86,10 @@ export async function searchLiterature(
   const selected = adapters ?? adaptersFor(input.database);
   if (selected.length === 0) throw errors.invalidInput("No database to search.");
   const warnings = filterWarnings(input.studyTypes, input.minDesignTier);
+  const page = input.page ?? 1;
   // A design filter keeps only records carrying one of these publication types (null: no such filter).
   const designTypes = designPublicationTypes(input.studyTypes, input.minDesignTier);
-  if (designTypes?.length === 0) return { articles: [], total: 0, query: input.query, warnings };
+  if (designTypes?.length === 0) return { articles: [], total: 0, query: input.query, page, warnings };
   const searched = designTypes ? selected.filter((a) => a.designMetadata !== false) : selected;
   const skipped = selected.filter((a) => !searched.includes(a));
   if (skipped.length > 0) {
@@ -93,18 +98,20 @@ export async function searchLiterature(
         `design metadata, so the studyTypes/minDesignTier filter would keep none. Search without the filter and read the abstracts.`,
     );
   }
-  if (searched.length === 0) return { articles: [], total: 0, query: input.query, warnings };
+  if (searched.length === 0) return { articles: [], total: 0, query: input.query, page, warnings };
 
-  const maxResults = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
+  const { offset, size } = pageWindow(input);
 
   // Fan out. One adapter failing must not sink the others — it degrades to a warning.
   const failures: unknown[] = [];
+  let more = false;
   const perAdapter = await Promise.all(
     searched.map(async (adapter) => {
       try {
-        const { count, ids, warning } = await adapter.search(input);
+        const { count, ids, warning, more: served } = await adapter.search(input);
         if (warning) warnings.push(warning);
-        const articles = await adapter.fetch(ids.slice(0, maxResults), cache, (w) => warnings.push(`${adapter.name}: ${w}`));
+        if (served ?? count > offset + size) more = true;
+        const articles = await adapter.fetch(ids.slice(0, size), cache, (w) => warnings.push(`${adapter.name}: ${w}`));
         return { count, articles };
       } catch (err) {
         failures.push(err);
@@ -146,6 +153,9 @@ export async function searchLiterature(
         `retry with fewer, more general keywords.`,
     );
   }
+  if (page > 1 && total > 0 && graded.length === 0 && failures.length === 0) {
+    warnings.push(`Page ${page} is past the last result: the databases searched have no more records for this query.`);
+  }
   // Stable sorts: equal items keep their database's order, databases in the order requested.
   if (input.sort === "date") {
     const published = new Map(merged.map((a) => [a, firstPublished(a)]));
@@ -158,6 +168,8 @@ export async function searchLiterature(
     articles: merged,
     total,
     query: input.query,
+    page,
+    ...(more ? { nextPage: page + 1 } : {}),
     ...(warnings.length > 0 ? { warnings } : {}),
   };
 }

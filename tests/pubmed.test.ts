@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { NcbiClient, searchPubMed, fetchPubMed } from "../src/core/pubmed";
+import { PubMedAdapter } from "../src/core/adapters/pubmed";
 import { PROJECT_CONTACT_EMAIL } from "../src/core/version";
 import { LRUBackend } from "../src/core/cache";
-import type { NcbiArticle } from "../src/core/types";
+import type { NcbiArticle, SearchInput } from "../src/core/types";
 
 const EFETCH_XML = `<?xml version="1.0" ?>
 <PubmedArticleSet>
@@ -267,6 +268,37 @@ describe("searchPubMed orchestration", () => {
     expect(out.articles[0]?.meshHeadings).toEqual(["Humans"]);
     // 22222222's efetch record carries a retraction link (see the retraction test below).
     expect(out.articles[1]?.studyType).toBe("review");
+    expect(out.page).toBe(1);
+    expect(out).not.toHaveProperty("nextPage");
+  });
+
+  it("returns the page, and nextPage while PubMed holds records past it", async () => {
+    const client = fakeClient();
+    const esearch = vi.spyOn(client, "esearch").mockResolvedValue({ count: 25, pmids: ["11111111", "22222222"] });
+    const run = (input: Partial<SearchInput>) => searchPubMed({ query: "x", ...input }, new LRUBackend(), client);
+
+    expect(await run({})).toMatchObject({ page: 1, nextPage: 2, total: 25 });
+    expect(await run({ page: 2 })).toMatchObject({ page: 2, nextPage: 3 });
+    expect(esearch).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 }));
+    expect(await run({ page: 3 })).not.toHaveProperty("nextPage");
+    // The page holds records 11 to 25 of 25.
+    expect(await run({ page: 2, maxResults: 15 })).not.toHaveProperty("nextPage");
+    expect(await run({ maxResults: 25 })).not.toHaveProperty("nextPage");
+    expect(await run({ maxResults: 24 })).toMatchObject({ nextPage: 2 });
+  });
+
+  it("offers no nextPage past the 9,999 records PubMed serves, and passes on esearch's warning", async () => {
+    const client = fakeClient();
+    const esearch = vi.spyOn(client, "esearch").mockResolvedValue({ count: 50_000, pmids: ["11111111", "22222222"] });
+    const run = (page: number) => searchPubMed({ query: "x", page, maxResults: 50 }, new LRUBackend(), client);
+    expect(await run(199)).toMatchObject({ nextPage: 200 });
+    expect(await run(200)).not.toHaveProperty("nextPage");
+
+    esearch.mockResolvedValue({ count: 50_000, pmids: [], warning: "PubMed serves only the first 9,999 records of a search." });
+    const past = await run(201);
+    expect(past).toMatchObject({ articles: [], total: 50_000, page: 201 });
+    expect(past).not.toHaveProperty("nextPage");
+    expect(past.warnings).toEqual(["PubMed serves only the first 9,999 records of a search.", "No results returned."]);
   });
 
   it("filters by minDesignTier, and says it leaves out unrated records", async () => {
@@ -474,6 +506,151 @@ describe("NcbiClient requests", () => {
     expect(retmax).toBe("200");
   });
 
+  /** An esearch response reporting `count` hits, `ids` of them listed. */
+  const esearchOf = (count: number, ids: string[]): Response =>
+    new Response(JSON.stringify({ esearchresult: { count: String(count), idlist: ids } }), { status: 200 });
+  const esearchRequests = (mock: { mock: { calls: unknown[][] } }): URL[] =>
+    mock.mock.calls.map(([u]) => new URL(String(u))).filter((u) => u.pathname.endsWith("esearch.fcgi"));
+  const range = (from: number, to: number): string[] => Array.from({ length: to - from + 1 }, (_, i) => String(from + i));
+  // An API key lifts the request pacing from 3 to 10 a second.
+  const quick = (config: { searchTtlMs?: number } = {}) => new NcbiClient({ email: "test@example.com", apiKey: "test-key", ...config });
+
+  /** A PubMed whose relevance search holds `count` hits, "1", "2", … in that order, served by retstart and retmax. */
+  const relevanceFetch = (count: number) =>
+    vi.fn(async (input: string | URL | Request) => {
+      const params = new URL(String(input)).searchParams;
+      const start = Number(params.get("retstart") ?? 0);
+      const length = Math.max(0, Math.min(Number(params.get("retmax")), count - start));
+      return esearchOf(count, range(start + 1, start + length));
+    });
+
+  it("cuts the pages of a relevance search from one block of 500 PMIDs, in a single request", async () => {
+    const fetchMock = relevanceFetch(2000);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+
+    expect((await client.esearch({ query: "x" })).pmids).toEqual(range(1, 10));
+    expect(await client.esearch({ query: "x", page: 2 })).toEqual({ count: 2000, pmids: range(11, 20) });
+    // Pages of another size are cut from the same list.
+    expect((await client.esearch({ query: "x", maxResults: 50, page: 10 })).pmids).toEqual(range(451, 500));
+    const requests = esearchRequests(fetchMock);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.searchParams.get("retmax")).toBe("500");
+    expect(requests[0]!.searchParams.has("retstart")).toBe(false);
+
+    // Without a search cache, a page is cut from a request of its own.
+    const uncached = quick({ searchTtlMs: 0 });
+    expect((await uncached.esearch({ query: "x", page: 2 })).pmids).toEqual(range(11, 20));
+  });
+
+  it("extends the list with retstart for a page past the first block, and serves later pages from it", async () => {
+    const fetchMock = relevanceFetch(2000);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const page = async (n: number) => (await client.esearch({ query: "x", maxResults: 50, page: n })).pmids;
+    const requested = () => esearchRequests(fetchMock).map((u) => [u.searchParams.get("retstart"), u.searchParams.get("retmax")]);
+
+    expect(await page(1)).toEqual(range(1, 50));
+    expect(await page(11)).toEqual(range(501, 550));
+    expect(requested()).toEqual([[null, "500"], ["500", "500"]]);
+    expect(await page(12)).toEqual(range(551, 600));
+    expect(await page(1)).toEqual(range(1, 50));
+    expect(requested()).toHaveLength(2);
+    expect(await page(21)).toEqual(range(1001, 1050));
+    expect(requested()[2]).toEqual(["1000", "500"]);
+
+    // A first request for a distant page takes every block up to it.
+    const fresh = relevanceFetch(2000);
+    vi.stubGlobal("fetch", fresh);
+    expect((await quick().esearch({ query: "y", maxResults: 50, page: 11 })).pmids).toEqual(range(501, 550));
+    expect(esearchRequests(fresh).map((u) => [u.searchParams.get("retstart"), u.searchParams.get("retmax")])).toEqual([[null, "1000"]]);
+  });
+
+  it("drops a PMID an extending block repeats, as PubMed's relevance order drifts, so no page repeats one", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) =>
+      new URL(String(input)).searchParams.has("retstart") ? esearchOf(600, ["3", ...range(501, 600)]) : esearchOf(600, range(1, 500)),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const seen: string[] = [];
+    for (let page = 1; page <= 12; page++) seen.push(...(await client.esearch({ query: "x", maxResults: 50, page })).pmids);
+    expect(seen).toEqual(range(1, 600));
+    expect(esearchRequests(fetchMock)).toHaveLength(2);
+    // Past the last record there is nothing to fetch.
+    expect((await client.esearch({ query: "x", maxResults: 50, page: 13 })).pmids).toEqual([]);
+    expect(esearchRequests(fetchMock)).toHaveLength(2);
+  });
+
+  it("returns no PMIDs and a warning for a page starting past PubMed's first 9,999 records", async () => {
+    const fetchMock = relevanceFetch(20_000);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+
+    const out = await client.esearch({ query: "x", maxResults: 50, page: 201 });
+    expect(out).toEqual({ count: 20_000, pmids: [], warning: expect.stringContaining("first 9,999 records") });
+    // Only the count is asked for.
+    expect(esearchRequests(fetchMock).map((u) => u.searchParams.get("retmax"))).toEqual(["0"]);
+
+    // With the search cached, its count is reused.
+    await client.esearch({ query: "y", maxResults: 50 });
+    expect(await client.esearch({ query: "y", maxResults: 50, page: 300 })).toMatchObject({ count: 20_000, pmids: [], warning: expect.any(String) });
+    expect(esearchRequests(fetchMock)).toHaveLength(2);
+  });
+
+  it("serves the records up to the 9,999th, and none from the next one", async () => {
+    vi.stubGlobal("fetch", relevanceFetch(20_000));
+    // Page 200 of 50 starts at record 9,951: it holds the 49 records served.
+    const last = await quick().esearch({ query: "x", maxResults: 50, page: 200 });
+    expect(last.pmids).toEqual(range(9951, 9999));
+    expect(last).not.toHaveProperty("warning");
+
+    const edge = quick();
+    expect((await edge.esearch({ query: "y", maxResults: 3, page: 3333 })).pmids).toEqual(range(9997, 9999));
+    expect(await edge.esearch({ query: "y", maxResults: 3, page: 3334 })).toMatchObject({ pmids: [], warning: expect.any(String) });
+  });
+
+  /** A PubMed whose `count` hits "1" … `count` were published in that order: the issue-date order lists the oldest first, the date-added order the newest. */
+  const dateFetch = (count: number) =>
+    vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("esummary.fcgi")) {
+        const ids = url.searchParams.get("id")!.split(",");
+        const docs = ids.map((id) => [id, { uid: id, title: id, pubdate: String(1000 + Number(id)) }]);
+        return new Response(JSON.stringify({ result: { uids: ids, ...Object.fromEntries(docs) } }));
+      }
+      const length = Math.min(Number(url.searchParams.get("retmax")), count);
+      const byIssue = url.searchParams.get("sort") === "pub_date";
+      return esearchOf(count, Array.from({ length }, (_, i) => String(byIssue ? i + 1 : count - i)));
+    });
+
+  it('with sort "date", cuts the pages of a result the pool holds whole from one order', async () => {
+    const fetchMock = dateFetch(25);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const page = async (n: number) => (await client.esearch({ query: "x", sort: "date", page: n })).pmids;
+
+    expect(await page(1)).toEqual(range(16, 25).reverse());
+    expect(await page(2)).toEqual(range(6, 15).reverse());
+    expect(await page(3)).toEqual(range(1, 5).reverse());
+    expect(esearchRequests(fetchMock)).toHaveLength(2);
+  });
+
+  it('with sort "date", pools more of each order for a page past the part of the pool that is final', async () => {
+    const fetchMock = dateFetch(5000);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const page = async (n: number) => (await client.esearch({ query: "x", sort: "date", page: n })).pmids;
+    const retmaxes = () => esearchRequests(fetchMock).map((u) => u.searchParams.get("retmax"));
+
+    expect(await page(1)).toEqual(range(4991, 5000).reverse());
+    // The first 100 of each order are final to 25 records, so page 2 (to record 20) needs no new request.
+    expect(await page(2)).toEqual(range(4981, 4990).reverse());
+    expect(retmaxes()).toEqual(["100", "100"]);
+    // Page 3 reaches record 30, so 4 × 30 of each order are pooled.
+    expect(await page(3)).toEqual(range(4971, 4980).reverse());
+    expect(retmaxes()).toEqual(["100", "100", "120", "120"]);
+  });
+
   it("waits out a 429 and retries, holding back the queue, instead of failing the call", async () => {
     vi.useFakeTimers();
     const responses = [tooMany("2"), esearchResponse(["1"]), esearchResponse(["2"])];
@@ -522,6 +699,22 @@ describe("NcbiClient requests", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ result: { uids: ["37968687"], "37968687": doc } }), { status: 200 })));
     const out = await new NcbiClient({ email: "test@example.com" }).esummary(["37968687"]);
     expect(out.get("37968687")).toMatchObject({ pmcid: "PMC10647179", doi: "10.1186/s12916-023-03146-5" });
+  });
+});
+
+describe("PubMedAdapter.search", () => {
+  it("passes on the page's PMIDs and esearch's warning, and says no page follows past PubMed's 9,999 records", async () => {
+    const esearch = vi.fn(async (_input: SearchInput): Promise<{ count: number; pmids: string[]; warning?: string }> => ({ count: 30_000, pmids: [], warning: "Past 9,999." }));
+    const adapter = new PubMedAdapter({ esearch } as unknown as NcbiClient);
+    expect(await adapter.search({ query: "x", page: 201, maxResults: 50 })).toEqual({ count: 30_000, ids: [], warning: "Past 9,999.", more: false });
+    expect(esearch).toHaveBeenCalledWith({ query: "x", page: 201, maxResults: 50 });
+
+    esearch.mockResolvedValue({ count: 30_000, pmids: ["1"] });
+    expect((await adapter.search({ query: "x", page: 200, maxResults: 50 })).more).toBe(false);
+    expect((await adapter.search({ query: "x", page: 199, maxResults: 50 })).more).toBe(true);
+
+    esearch.mockResolvedValue({ count: 2, pmids: ["1", "2"] });
+    expect(await adapter.search({ query: "x" })).toEqual({ count: 2, ids: ["1", "2"], more: false });
   });
 });
 

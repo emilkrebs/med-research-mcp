@@ -11,7 +11,7 @@ import { LRUCache } from "lru-cache";
 import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors } from "./errors.js";
-import { firstPublished } from "./adapters/util.js";
+import { firstPublished, pageWindow } from "./adapters/util.js";
 import { requestWithRetries } from "./request.js";
 import { xmlToText } from "./text.js";
 import { contactEmail, envSetting, PROJECT_TOOL, USER_AGENT } from "./version.js";
@@ -20,7 +20,10 @@ import { CORRECTION_TYPES } from "./types.js";
 import type { Correction, CorrectionType, FetchInput, FetchOutput, GradedArticle, Article, SearchInput, SearchOutput, StudyType } from "./types.js";
 
 const EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
-const MAX_RESULTS_CAP = 50;
+/** esearch serves only the first 9,999 PMIDs of a PubMed search ("'retstart' cannot be larger than 9998"). */
+export const ESEARCH_LIMIT = 9_999;
+/** PMIDs a relevance search takes per esearch request, so that its pages are cut from one list (see DEFAULT_SEARCH_TTL_MS). */
+const RELEVANCE_BLOCK = 500;
 /** Above this esearch count, refuse and ask the caller to narrow. */
 const DEFAULT_BROAD_THRESHOLD = 100_000;
 /** Above this, still run but attach a warning. */
@@ -40,7 +43,7 @@ const SPACING_MARGIN = 1.2;
 const DEFAULT_SEARCH_TTL_MS = 60 * 60 * 1000;
 /**
  * The fewest PMIDs taken from each of PubMed's two date orders for `sort: "date"`, and the multiple
- * of maxResults taken when that is more (see {@link NcbiClient.newest}).
+ * of the records asked for taken when that is more (see {@link NcbiClient.newest}).
  */
 const DATE_POOL_MIN = 100;
 const DATE_POOL_FACTOR = 4;
@@ -132,6 +135,13 @@ function toArray<T>(value: T | T[] | undefined | null): T[] {
   return Array.isArray(value) ? value : [value];
 }
 
+/** A search's PMIDs in order, of which the first `depth` are final; later pages extend it. */
+interface PmidList {
+  count: number;
+  pmids: string[];
+  depth: number;
+}
+
 export class NcbiClient {
   private readonly email: string | undefined;
   private readonly apiKey: string | undefined;
@@ -141,7 +151,7 @@ export class NcbiClient {
   private readonly timeoutMs: number;
   private readonly limiter: RateLimiter;
   private readonly parser: XMLParser;
-  private readonly searches: LRUCache<string, { count: number; pmids: string[] }> | null;
+  private readonly searches: LRUCache<string, PmidList> | null;
   /** Summaries of the PMIDs a date search returned, fetched to rank them, served once by esummary. */
   private readonly pooled = new LRUCache<string, Article>({ max: 500, ttl: POOLED_SUMMARY_TTL_MS });
 
@@ -181,18 +191,20 @@ export class NcbiClient {
   }
 
   /**
-   * Returns matching PMIDs (already truncated to maxResults) and the total count. A
+   * Returns the PMIDs of the page asked for (`page`, `maxResults`) and the total count. A
    * studyTypes or minDesignTier filter narrows the query to the publication types it
    * can keep (see designPublicationTypes), so the count is of candidates for it.
    * With `sort: "date"`, the PMIDs are those first published last, newest first (see
-   * {@link newest}). An identical search within `searchTtlMs` returns the same PMIDs.
+   * {@link newest}). An identical search within `searchTtlMs` returns the same PMIDs, and
+   * its later pages are cut from the same list. Past PubMed's first 9,999 records, no PMIDs
+   * and a warning.
    */
-  async esearch(input: SearchInput): Promise<{ count: number; pmids: string[] }> {
-    const maxResults = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
+  async esearch(input: SearchInput): Promise<{ count: number; pmids: string[]; warning?: string }> {
+    const { offset, size } = pageWindow(input);
     const types = designPublicationTypes(input.studyTypes, input.minDesignTier);
     if (types?.length === 0) return { count: 0, pmids: [] };
     const term = types ? `(${input.query}) AND (${types.map((t) => `"${t}"[pt]`).join(" OR ")})` : input.query;
-    const params = new URLSearchParams({ db: "pubmed", term, retmode: "json", retmax: String(maxResults) });
+    const params = new URLSearchParams({ db: "pubmed", term, retmode: "json" });
     if (input.dateRange?.from || input.dateRange?.to) {
       params.set("datetype", "pdat");
       if (input.dateRange.from) params.set("mindate", input.dateRange.from.replace(/-/g, "/"));
@@ -202,34 +214,63 @@ export class NcbiClient {
     if (!byDate) params.set("sort", "relevance");
 
     const key = `${params.toString()}${byDate ? "&order=first-published" : ""}`;
-    const cached = this.searches?.get(key);
-    if (cached) return { count: cached.count, pmids: [...cached.pmids] };
-    const result = byDate ? await this.newest(params, maxResults) : await this.runEsearch(params);
-    this.searches?.set(key, result);
-    return { count: result.count, pmids: [...result.pmids] };
+    let list = this.searches?.get(key);
+    if (offset >= ESEARCH_LIMIT) {
+      const count = list?.count ?? (await this.runEsearch(new URLSearchParams([...params, ["retmax", "0"]]))).count;
+      return {
+        count,
+        pmids: [],
+        warning:
+          `PubMed serves only the first ${ESEARCH_LIMIT.toLocaleString("en-US")} records of a search: narrow the query ` +
+          `(more specific terms, a dateRange or a studyTypes filter) to reach the rest.`,
+      };
+    }
+    const end = Math.min(offset + size, ESEARCH_LIMIT);
+    if (!list || list.depth < Math.min(end, list.count)) {
+      list = byDate ? await this.newest(params, end, offset) : await this.relevant(params, end, list);
+      this.searches?.set(key, list);
+    }
+    return { count: list.count, pmids: list.pmids.slice(offset, end) };
   }
 
   /**
-   * The `maxResults` PMIDs first published last ({@link firstPublished}), newest first. No esearch
-   * order is that one. `sort=pub_date` orders by issue date: for "semaglutide" it led with issues of
-   * December 2026 published online in August to October, and records published online on 2026-10-20
-   * weren't in its first 12 (2026-10-22). Without a sort, esearch orders by date added to PubMed
-   * ("The default sort order varies by database (for PubMed, it is most+recent)", NLM Data Guide,
+   * The first `end` PMIDs in relevance order, rounded up to a whole block, extending `known`. PubMed's
+   * relevance order differs between identical requests, so pages cut from separate requests would
+   * repeat and skip records; a block extending a list keeps each PMID where it first appeared.
+   */
+  private async relevant(params: URLSearchParams, end: number, known?: PmidList): Promise<PmidList> {
+    const have = known?.pmids ?? [];
+    const block = new URLSearchParams(params);
+    if (have.length > 0) block.set("retstart", String(have.length));
+    block.set("retmax", String(Math.min(ESEARCH_LIMIT, Math.ceil(end / RELEVANCE_BLOCK) * RELEVANCE_BLOCK) - have.length));
+    const { count, pmids } = await this.runEsearch(block);
+    const seen = new Set(have);
+    const all = [...have, ...pmids.filter((pmid) => !seen.has(pmid))];
+    return { count, pmids: all, depth: all.length };
+  }
+
+  /**
+   * PMIDs first published last ({@link firstPublished}), newest first, the first `end` of them final.
+   * No esearch order is that one. `sort=pub_date` orders by issue date: for "semaglutide" it led with
+   * issues of December 2026 published online in August to October, and records published online on
+   * 2026-10-20 weren't in its first 12 (2026-10-22). Without a sort, esearch orders by date added to
+   * PubMed ("The default sort order varies by database (for PubMed, it is most+recent)", NLM Data Guide,
    * https://dataguide.nlm.nih.gov/eutilities/utilities.html, checked 2026-10-22), which misses
-   * records added long before their issue. So the first max(100, 4 × maxResults) of each order are
+   * records added long before their issue. So the first max(100, 4 × end) of each order are
    * pooled and sorted by first publication from esummary's dates. Checked against every record with a
    * publication date since 2026-10-01, the first 100 of each order held all 10 newest records for each
    * of five queries (semaglutide, creatine supplementation, vitamin D supplementation, intermittent
    * fasting, long covid), and the first 200 all 50 newest for the two queries with 50 in that range;
-   * the first 10 of pub_date alone held 1 to 3 of the 10 newest (2026-10-22).
+   * the first 10 of pub_date alone held 1 to 3 of the 10 newest (2026-10-22). The summaries of the
+   * PMIDs from `offset` to `end`, the page asked for, are kept for its esummary.
    */
-  private async newest(params: URLSearchParams, maxResults: number): Promise<{ count: number; pmids: string[] }> {
-    const pool = String(Math.max(DATE_POOL_MIN, DATE_POOL_FACTOR * maxResults));
+  private async newest(params: URLSearchParams, end: number, offset: number): Promise<PmidList> {
+    const pool = Math.min(ESEARCH_LIMIT, Math.max(DATE_POOL_MIN, DATE_POOL_FACTOR * end));
     const byIssue = new URLSearchParams(params);
-    byIssue.set("retmax", pool);
+    byIssue.set("retmax", String(pool));
     byIssue.set("sort", "pub_date");
     const byAdded = new URLSearchParams(params);
-    byAdded.set("retmax", pool);
+    byAdded.set("retmax", String(pool));
     const [issued, added] = await Promise.all([this.runEsearch(byIssue), this.runEsearch(byAdded)]);
     const pmids = [...new Set([...issued.pmids, ...added.pmids])];
     const summaries = new Map<string, Article>();
@@ -239,12 +280,13 @@ export class NcbiClient {
     const published = new Map([...summaries].map(([pmid, article]) => [pmid, firstPublished(article)]));
     // Stable: equal dates keep the issue order, then the date-added one.
     pmids.sort((a, b) => (published.get(b) ?? -1) - (published.get(a) ?? -1));
-    const newest = pmids.slice(0, maxResults);
-    for (const pmid of newest) {
+    for (const pmid of pmids.slice(offset, end)) {
       const summary = summaries.get(pmid);
       if (summary) this.pooled.set(pmid, summary);
     }
-    return { count: issued.count, pmids: newest };
+    // Every record was pooled, or as many as esearch serves: the whole order is as good as it gets.
+    const whole = issued.count <= pool || pool === ESEARCH_LIMIT;
+    return { count: issued.count, pmids, depth: whole ? pmids.length : Math.floor(pool / DATE_POOL_FACTOR) };
   }
 
   private async runEsearch(params: URLSearchParams): Promise<{ count: number; pmids: string[] }> {
@@ -463,18 +505,22 @@ export async function searchPubMed(
 ): Promise<SearchOutput> {
   // As in searchLiterature: what the filter leaves out is said whatever PubMed returns.
   const warnings = filterWarnings(input.studyTypes, input.minDesignTier);
+  const page = input.page ?? 1;
   if (designPublicationTypes(input.studyTypes, input.minDesignTier)?.length === 0) {
-    return { articles: [], total: 0, query: input.query, warnings };
+    return { articles: [], total: 0, query: input.query, page, warnings };
   }
-  const { count, pmids } = await client.esearch(input);
+  const { count, pmids, warning } = await client.esearch(input);
+  if (warning) warnings.push(warning);
+  const { offset, size } = pageWindow(input);
+  const nextPage = count > offset + size && offset + size < ESEARCH_LIMIT ? { nextPage: page + 1 } : {};
 
   if (pmids.length === 0) {
     warnings.push(count === 0 ? "No articles matched this query. Try broader terms or fewer field tags." : "No results returned.");
-    return { articles: [], total: count, query: input.query, warnings };
+    return { articles: [], total: count, query: input.query, page, ...nextPage, warnings };
   }
   if (count > SOFT_BROAD_THRESHOLD) {
     warnings.push(
-      `Query matched ${count.toLocaleString()} articles; showing the top ${pmids.length}. Add field tags like [tiab] or [mesh] for more precise results.`,
+      `Query matched ${count.toLocaleString()} articles; showing ${pmids.length} of them. Add field tags like [tiab] or [mesh] for more precise results.`,
     );
   }
 
@@ -544,6 +590,8 @@ export async function searchPubMed(
     articles,
     total: count,
     query: input.query,
+    page,
+    ...nextPage,
     ...(warnings.length > 0 ? { warnings } : {}),
   };
 }

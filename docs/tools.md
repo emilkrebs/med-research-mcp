@@ -16,22 +16,33 @@ Typical workflow: start with `literature_search`, read promising papers with `li
 | --- | --- | --- | --- |
 | `query` | `string` | yes | Search query, not empty. 2–5 keywords, not a sentence: PubMed ANDs every space-separated word, so each extra word narrows the result and a long phrase matches nothing. If a search returns 0, retry with fewer keywords before concluding that no evidence exists. PubMed field tags (`[tiab]`, `[mesh]`, `[au]`, `[pt]`) apply to `pubmed`; for other databases they're removed, since those would search them as words. |
 | `database` | `string \| string[]` | no | `"pubmed"` (default), `"europepmc"`, `"chinaxiv"`, `"russiarxiv"`, an array of these, or `"all"`, in lower case. Any other value is refused. See [Databases](#databases). |
-| `maxResults` | `number` | no | Results per database. Default `10`, max `50`. |
+| `maxResults` | `number` | no | Results per database and page. Default `10`, max `50`. |
+| `page` | `number` | no | Page, an integer from `1` (default). Page n holds each database's records (n−1)·`maxResults`+1 to n·`maxResults`, in that database's own order. To read on, pass the `nextPage` of the previous result. See [Paging](#paging). |
 | `minDesignTier` | `number` | no | Drop results below this design tier (`0`–`5`; `4` = RCTs). Also leaves out every record with a `null` tier (unlabeled records and most meta-analyses and systematic reviews), with a warning. Narrows the query like `studyTypes`, so those records are never fetched. |
 | `studyTypes` | `string[]` | no | Keep only these study types. To keep reviews and trials, use this instead of `minDesignTier`. The filter goes into the query (see [Design filters](#design-filters)), so `maxResults` counts matching records. `cohort`, `case-control`, `cross-sectional` and `in-vitro` are never assigned from metadata, so filtering on them returns nothing, with a warning. `animal-study` comes only from veterinary publication types: laboratory animal studies aren't labeled with it but flagged `animals-not-humans`, and a search that finds no `animal-study` says so. An empty list means no filter. |
 | `dateRange` | `{ from?, to? }` | no | Publication date filter: `YYYY-MM-DD`, `YYYY-MM` or `YYYY` (a year or month covers all of it). Applies to every database, and matches the electronic publication date too (see [Dates](#dates)). A date that doesn't exist (`2020-13`), or `from` after `to`, is refused. |
-| `sort` | `"relevance" \| "date"` | no | `"relevance"` (default): each database's relevance order, re-sorted by design tier when merged. `"date"`: newest first by first publication (the earlier of `pubDate` and `epubDate`), across databases. PubMed has no such order, so the newest are found among the first 100 or more of its issue-date and date-added orders. |
+| `sort` | `"relevance" \| "date"` | no | `"relevance"` (default): each database's relevance order, re-sorted by design tier when merged. `"date"`: newest first by first publication (the earlier of `pubDate` and `epubDate`), across databases. PubMed has no such order, so the newest are found among a pool of its issue-date and date-added orders: at least 100 PMIDs of each, more on later pages. |
 | `language` | `string` | no | ISO 639-1 hint. Only `chinaxiv` reads it: `"ru"` searches the RussiaRxiv corpus. |
 
-Returns `{ articles, total, query, warnings? }`:
+Returns `{ articles, total, query, page, nextPage?, warnings? }`:
 
 - **`articles`**: one record per paper, sorted by design tier (or by date). Each has `pmid` (the database's id: a PMID for PubMed, otherwise that database's id), `title`, `abstract`, `authors`, `journal`, `pubDate`, `epubDate` (when there is one, see [Dates](#dates)), `doi`, `publicationTypes`, `corrections` (retraction, erratum and update links), and for non-PubMed records `database`, `url` and `language`. ChinaXiv and RussiaRxiv records add `originalUrl`, the record they were translated from. Every record carries the [study design labels](#study-design-labels): `studyType`, `designTier` and, when any apply, `flags`. MeSH headings are left out to keep results compact; `literature_fetch` returns them.
-- **`total`**: the hit counts each database reported, summed, before truncation to `maxResults`. With a design filter, these count the records the narrowed query matched.
-- **`warnings`**: a database that failed while others answered (its error's message becomes a warning, and the others' results are still returned), records with no tier that `minDesignTier` leaves out, study types below `minDesignTier`, databases a design filter skipped, PubMed records returned without their abstract and retraction links because `efetch` failed, an `animal-study` filter that found none, a ChinaXiv or RussiaRxiv search that matched nothing because of its query rules, and a search that matched no record at all — unless a design filter, a date range or a failed database already explains the zero — so a zero is not mistaken for an absence of evidence. When every database searched fails, the tool returns the [error](#errors) instead, so a failed search never looks like an empty one.
+- **`total`**: the hit counts each database reported, summed, before paging. With a design filter, these count the records the narrowed query matched.
+- **`page`**: the page returned.
+- **`nextPage`**: present when some database searched has records past this page; pass it as `page` to continue. Absent on the last page.
+- **`warnings`**: a database that failed while others answered (its error's message becomes a warning, and the others' results are still returned), records with no tier that `minDesignTier` leaves out, study types below `minDesignTier`, databases a design filter skipped, PubMed records returned without their abstract and retraction links because `efetch` failed, an `animal-study` filter that found none, a ChinaXiv or RussiaRxiv search that matched nothing because of its query rules, a `page` past the last result (it returns no articles), PubMed records beyond its 9,999-record limit (narrow the query), and a search that matched no record at all — unless a design filter, a date range or a failed database already explains the zero — so a zero is not mistaken for an absence of evidence. When every database searched fails, the tool returns the [error](#errors) instead, so a failed search never looks like an empty one.
 
 PubMed ranks results by relevance differently from one identical request to the next (five identical searches returned five different top-20 lists, 2026-10-20). So that a repeated search returns the same papers, the server reuses a PubMed search's results for an hour.
 
 Titles and abstracts are plain text. PubMed's and Europe PMC's markup (HTML, JATS, MathML) is removed: italics and bold keep their text, character references are decoded (`&#xb1;` → `±`, `&copy;` → `©`), a superscript of digits and signs becomes superscript characters (`10⁻³`, `kg⁻¹`, `³¹P`), subscripts become plain text (`HbA1c`), and the sections of a structured abstract start lines as `LABEL: text`.
+
+### Paging
+
+`maxResults` caps each database's share of a page at 50, and `page` reads past it. Each page is merged, de-duplicated by DOI and sorted (by design tier, or by date) on its own, not together with earlier pages. A page past the end returns no articles and a warning (`Page N is past the last result…`); `page` `0` or a fraction is refused (the schema rejects it first; `INVALID_INPUT` in library calls).
+
+- **PubMed** serves only the first 9,999 records of a search (an `esearch` limit): later pages return no PubMed records and a warning to narrow the query. Because its relevance order differs between identical requests, the client takes PMIDs in blocks of 500 from one request and cuts pages from that cached list (within the one-hour cache), extending it with `retstart` when a later page needs more. With `sort: "date"`, the date pool is max(100, 4 × (offset + `maxResults`)) PMIDs of each order, at most 9,999, so deep date pages cost more requests.
+- **Europe PMC** ignores a `page` parameter; the adapter pages with `cursorMark`, remembers the cursors, and reaches a later page cold by walking cheap `idlist` requests.
+- **ChinaXiv and RussiaRxiv** page with an opaque ChinaRxiv cursor. A cold later page walks from page 1 with one request per page, against ChinaRxiv's anonymous limit of 30 requests per minute.
 
 ### Dates
 
@@ -134,7 +145,7 @@ Two limits matter:
 
 ## Errors
 
-A failing tool returns an `isError` result whose text holds this payload (`UNKNOWN` for unexpected errors). Parameters the schema rejects (an unknown database, an empty query, `maxResults` over 50) come back as an `isError` result with the validation message instead. `literature_search` fails only when every database it searched failed, or on input it refuses; `literature_fetch` lists ids it couldn't fetch in `missing`, and fails outright only when a PubMed request fails (unreachable, or rate-limited).
+A failing tool returns an `isError` result whose text holds this payload (`UNKNOWN` for unexpected errors). Parameters the schema rejects (an unknown database, an empty query, `maxResults` over 50, a `page` below 1 or not an integer) come back as an `isError` result with the validation message instead. `literature_search` fails only when every database it searched failed, or on input it refuses; `literature_fetch` lists ids it couldn't fetch in `missing`, and fails outright only when a PubMed request fails (unreachable, or rate-limited).
 
 ```ts
 {
@@ -152,6 +163,6 @@ A failing tool returns an `isError` result whose text holds this payload (`UNKNO
 | `QUERY_TOO_BROAD` | A PubMed query matched more than 100,000 records (in a multi-database search: a warning) | Add `[tiab]` or `[mesh]` terms or `AND` clauses |
 | `PARSE_FAILURE`, `NETWORK_ERROR` | The database was unreachable or answered something unreadable. A server error (HTTP 500, 502, 503, 504), a timeout or a dropped connection has already been retried twice, within 20 seconds; on the HTTP server, a search's or fetch's requests also had to finish within 30 seconds | Retry once, then report the database as unreachable |
 | `NOT_FOUND` | `literature_fulltext` got an id it can't resolve (no such PMID, or another database's id without a DOI), or a DOI doi.org doesn't know and there's no abstract to return | Check the id, or pass the DOI |
-| `INVALID_INPUT` | A date that doesn't exist, or `from` after `to`; a full-text `offset` past the end of the text; in library calls also an unknown database or an empty query (the MCP schema refuses those itself) | Correct the parameter the message names |
+| `INVALID_INPUT` | A date that doesn't exist, or `from` after `to`; a full-text `offset` past the end of the text; in library calls also an unknown database, an empty query or a `page` below 1 or not a whole number (the MCP schema refuses those itself) | Correct the parameter the message names |
 
 In a multi-database search, a database that fails while others answer becomes a warning, `<database> search failed: <message>`, not an error.

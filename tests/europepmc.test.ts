@@ -260,6 +260,125 @@ describe("Europe PMC ids", () => {
   });
 });
 
+/** A fake Europe PMC that pages by cursorMark (`c{position}`) over `total` records, ids 1000 + position. */
+function cursorHttp(total: number): { http: AdapterHttp; urls: URLSearchParams[] } {
+  const urls: URLSearchParams[] = [];
+  const http: AdapterHttp = {
+    json: async <T>(url: string): Promise<T> => {
+      const p = new URL(url).searchParams;
+      urls.push(p);
+      const cursor = p.get("cursorMark") ?? "*";
+      const start = cursor === "*" ? 0 : Number(cursor.slice(1));
+      const n = Math.max(0, Math.min(Number(p.get("pageSize")), total - start));
+      const result = Array.from({ length: n }, (_, i) => ({ id: String(1000 + start + i), source: "MED" }));
+      return { hitCount: total, nextCursorMark: `c${start + n}`, resultList: { result } } as T;
+    },
+    text: async () => "",
+  };
+  return { http, urls };
+}
+
+const idRange = (from: number, to: number): string[] => Array.from({ length: to - from }, (_, i) => String(1000 + from + i));
+
+describe("EuropePmcAdapter paging", () => {
+  it("page 1 starts at cursorMark * and returns the first records", async () => {
+    const { http, urls } = cursorHttp(100);
+    const out = await new EuropePmcAdapter(http).search({ query: "creatine", maxResults: 10 });
+    expect(out).toEqual({ count: 100, ids: idRange(0, 10) });
+    expect(urls).toHaveLength(1);
+    expect(urls[0]!.get("cursorMark")).toBe("*");
+    expect(urls[0]!.get("resultType")).toBe("core");
+    expect(urls[0]!.get("pageSize")).toBe("10");
+  });
+
+  it("page 2 after page 1 reuses the remembered cursor in one request", async () => {
+    const { http, urls } = cursorHttp(100);
+    const adapter = new EuropePmcAdapter(http);
+    await adapter.search({ query: "creatine", maxResults: 10 });
+    const out = await adapter.search({ query: "creatine", maxResults: 10, page: 2 });
+    expect(out.ids).toEqual(idRange(10, 20));
+    expect(urls).toHaveLength(2);
+    expect(urls[1]!.get("cursorMark")).toBe("c10");
+    expect(urls[1]!.get("resultType")).toBe("core");
+  });
+
+  it("walks cold to a later page with id-only requests, then remembers the cursors it passed", async () => {
+    const { http, urls } = cursorHttp(100);
+    const adapter = new EuropePmcAdapter(http);
+    const out = await adapter.search({ query: "creatine", maxResults: 10, page: 3 });
+    expect(out.ids).toEqual(idRange(20, 30));
+    expect(urls.map((u) => [u.get("resultType"), u.get("pageSize"), u.get("cursorMark")])).toEqual([
+      ["idlist", "20", "*"],
+      ["core", "10", "c20"],
+    ]);
+
+    // The walk memoized position 20 and the page position 30: neighbours cost one request.
+    urls.length = 0;
+    expect((await adapter.search({ query: "creatine", maxResults: 10, page: 4 })).ids).toEqual(idRange(30, 40));
+    expect((await adapter.search({ query: "creatine", maxResults: 10, page: 3 })).ids).toEqual(idRange(20, 30));
+    expect(urls).toHaveLength(2);
+  });
+
+  it("walks in steps of at most 1000 ids", async () => {
+    const { http, urls } = cursorHttp(2000);
+    const out = await new EuropePmcAdapter(http).search({ query: "creatine", maxResults: 50, page: 30 });
+    expect(out.ids).toEqual(idRange(1450, 1500));
+    expect(urls.map((u) => [u.get("resultType"), u.get("pageSize"), u.get("cursorMark")])).toEqual([
+      ["idlist", "1000", "*"],
+      ["idlist", "450", "c1000"],
+      ["core", "50", "c1450"],
+    ]);
+  });
+
+  it("starts from the nearest remembered position, not from the start", async () => {
+    const { http, urls } = cursorHttp(100);
+    const adapter = new EuropePmcAdapter(http);
+    await adapter.search({ query: "creatine", maxResults: 10 });
+    urls.length = 0;
+    expect((await adapter.search({ query: "creatine", maxResults: 10, page: 4 })).ids).toEqual(idRange(30, 40));
+    expect(urls.map((u) => [u.get("resultType"), u.get("pageSize"), u.get("cursorMark")])).toEqual([
+      ["idlist", "20", "c10"],
+      ["core", "10", "c30"],
+    ]);
+  });
+
+  it("does not share cursors between queries or sorts", async () => {
+    const { http, urls } = cursorHttp(100);
+    const adapter = new EuropePmcAdapter(http);
+    await adapter.search({ query: "creatine", maxResults: 10 });
+    urls.length = 0;
+    await adapter.search({ query: "creatine", maxResults: 10, page: 2, sort: "date" });
+    await adapter.search({ query: "peptide", maxResults: 10, page: 2 });
+    expect(urls.map((u) => [u.get("resultType"), u.get("cursorMark")])).toEqual([
+      ["idlist", "*"],
+      ["core", "c10"],
+      ["idlist", "*"],
+      ["core", "c10"],
+    ]);
+    expect(urls[1]!.get("sort")).toBe("FIRST_PDATE_D desc");
+  });
+
+  it("returns no ids, with the hit count, for a page past the end", async () => {
+    const { http, urls } = cursorHttp(25);
+    const adapter = new EuropePmcAdapter(http);
+    expect(await adapter.search({ query: "creatine", maxResults: 10, page: 4 })).toEqual({ count: 25, ids: [] });
+    expect(urls).toHaveLength(1);
+    // The last page is partial; the page right after the last record is empty.
+    expect((await adapter.search({ query: "creatine", maxResults: 10, page: 3 })).ids).toEqual(idRange(20, 25));
+    const exact = new EuropePmcAdapter(cursorHttp(20).http);
+    expect(await exact.search({ query: "creatine", maxResults: 10, page: 3 })).toEqual({ count: 20, ids: [] });
+  });
+
+  it("treats a walk response without a new cursor as the end", async () => {
+    const http: AdapterHttp = {
+      json: async <T>(): Promise<T> =>
+        ({ hitCount: 50, resultList: { result: [{ id: "1", source: "MED" }, { id: "2", source: "MED" }] } }) as T,
+      text: async () => "",
+    };
+    expect(await new EuropePmcAdapter(http).search({ query: "x", maxResults: 2, page: 2 })).toEqual({ count: 50, ids: [] });
+  });
+});
+
 describe("EuropePmcAdapter design filters", () => {
   it("narrows the query with PUB_TYPE, and sends none when the filter can keep nothing", async () => {
     const { http, urls } = recordingHttp({ hitCount: 0, resultList: { result: [] } });

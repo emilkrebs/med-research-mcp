@@ -149,7 +149,16 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
           "Options: pubmed, europepmc (Europe + preprints), chinaxiv (Chinese preprints) and russiarxiv (Soviet-era " +
           "papers), both via ChinaRxiv, a third-party service that machine-translates them into English.",
       ),
-    maxResults: z.number().int().min(1).max(50).optional().describe("Results per database. Default 10, max 50."),
+    maxResults: z.number().int().min(1).max(50).optional().describe("Results per database and page. Default 10, max 50."),
+    page: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe(
+        "Page of results, from 1 (default): page 2 holds each database's next maxResults records. Ask for the nextPage " +
+          "a result gives to read past the first page; each page is merged and sorted on its own.",
+      ),
     minDesignTier: z
       .number()
       .min(0)
@@ -208,7 +217,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         "protocol and editorial records (designTier 0), and warns of an expression of concern, an erratum (corrected), " +
         "a newer version (updated), animals-not-humans indexing, preprints, letters, machine-translated text and " +
         "machine-generated abstracts (chinaxiv, russiarxiv: check originalUrl before relying on a number). Results are " +
-        'merged, de-duplicated by DOI, and sorted by design tier (or by date with sort: "date"). Always cheap — no LLM calls. ' +
+        'merged, de-duplicated by DOI, and sorted by design tier (or by date with sort: "date"). Results come in pages of ' +
+        "maxResults per database; when nextPage is set, pass it as page for the next ones. Always cheap — no LLM calls. " +
         "Use literature_fetch to get full metadata for specific ids, and literature_fulltext for the article body.",
       // Strict, so a misnamed key (e.g. `databases`) errors instead of being stripped and silently searching PubMed.
       inputSchema: z.object(literatureSearchShape).strict(),

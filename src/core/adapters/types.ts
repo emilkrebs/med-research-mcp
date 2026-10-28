@@ -23,10 +23,11 @@ export interface DatabaseAdapter {
    */
   designMetadata?: boolean;
   /**
-   * Execute a search and return matching ids + total count, and a warning when the
-   * database's own query rules likely explain an empty result.
+   * Execute a search and return the ids of the page asked for (`page`, `maxResults`) + total count,
+   * and a warning when the database's own query rules likely explain an empty result. `more` is
+   * false when no later page can be served although `count` goes on; absent, `count` decides.
    */
-  search(input: SearchInput): Promise<{ count: number; ids: string[]; warning?: string }>;
+  search(input: SearchInput): Promise<{ count: number; ids: string[]; warning?: string; more?: boolean }>;
   /**
    * Fetch full metadata ({@link Article}[]) for one or more ids. Order is not
    * guaranteed; ids with no result are simply absent from the returned array.

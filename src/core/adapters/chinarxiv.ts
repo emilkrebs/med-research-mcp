@@ -31,17 +31,23 @@
  * "gut OR microbiota" each match 55 ChinaXiv records, "vitamin" 87 and
  * "depression" 229, but "vitamin depression" none (2026-10-20). An empty result
  * for a query of several words says so.
+ *
+ * Paging: the API pages by an opaque `cursor` (`next_cursor` of the previous response,
+ * null at the end), and the page size baked into a cursor overrides the request's
+ * `limit` (checked 2026-10-28). The adapter memoizes the cursor of each page it has
+ * seen and walks to a later page cold with one request per page, all of `limit` = size.
  */
 
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { cleanDoi, first, isoDateBound, strArray, withoutPubMedTags } from "./util.js";
+import { cleanDoi, first, isoDateBound, pageWindow, strArray, withoutPubMedTags } from "./util.js";
 import type { Cache } from "../cache.js";
 import type { Article, SearchInput } from "../types.js";
 import { envSetting } from "../version.js";
 
 const BASE = "https://chinarxiv.org/api/v1/papers";
-const MAX_RESULTS_CAP = 50;
+/** Bound on the cursor memo, like the base class's search memo. */
+const CURSOR_CAP = 500;
 /** Bound on the complete-record memo, like the base class's search memo. */
 const FULL_CAP = 1000;
 
@@ -137,30 +143,69 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
     return this.corpus;
   }
 
+  /** Page index of a search (with its limit) → the cursor that returns that page. */
+  private readonly cursors = new Map<string, string>();
+
+  private setCursor(key: string, pageIndex: number, cursor: string): void {
+    if (this.cursors.size >= CURSOR_CAP) this.cursors.clear();
+    this.cursors.set(`${key}|${pageIndex}`, cursor);
+  }
+
+  /** The greatest page index up to `pageIndex` with a memoized cursor (page 0 needs none). */
+  private nearestPage(key: string, pageIndex: number): { index: number; cursor?: string } {
+    let best: { index: number; cursor?: string } = { index: 0 };
+    for (const [k, cursor] of this.cursors) {
+      if (!k.startsWith(`${key}|`)) continue;
+      const index = Number(k.slice(key.length + 1));
+      if (index <= pageIndex && index > best.index) best = { index, cursor };
+    }
+    return best;
+  }
+
   async search(input: SearchInput): Promise<{ count: number; ids: string[]; warning?: string }> {
-    const limit = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
+    const { offset, size } = pageWindow(input);
+    const pageIndex = offset / size;
     // PubMed field tags mean nothing here and would be searched as words.
     const q = withoutPubMedTags(input.query);
-    const params = new URLSearchParams({ q, limit: String(limit), source: this.sourceFor(input) });
+    const params = new URLSearchParams({ q, limit: String(size), source: this.sourceFor(input) });
     const from = isoDateBound(input.dateRange?.from, "from");
     const to = isoDateBound(input.dateRange?.to, "to");
     if (from) params.set("from_date", from);
     if (to) params.set("to_date", to);
+    const key = params.toString();
 
-    const data = await this.http.json<PaperResponse>(`${BASE}?${params.toString()}`);
+    const result = (count: number, ids: string[]) =>
+      count === 0 && /\S\s+\S/.test(q)
+        ? {
+            count,
+            ids,
+            warning:
+              `${this.name} matched nothing: it returns only records containing every word of the query and treats ` +
+              `AND/OR as words. Try one or two key words.`,
+          }
+        : { count, ids };
+    const page = async (cursor: string | undefined): Promise<PaperResponse> => {
+      const withCursor = new URLSearchParams(params);
+      if (cursor) withCursor.set("cursor", cursor);
+      return this.http.json<PaperResponse>(`${BASE}?${withCursor.toString()}`);
+    };
+
+    let { index, cursor } = this.nearestPage(key, pageIndex);
+    while (index < pageIndex) {
+      const walked = await page(cursor);
+      const parsed = parsePapers(walked);
+      this.remember(parsed.articles);
+      if (!walked?.next_cursor) return result(parsed.count, []);
+      cursor = walked.next_cursor;
+      index += 1;
+      this.setCursor(key, index, cursor);
+    }
+
+    const data = await page(cursor);
     const parsed = parsePapers(data);
     this.remember(parsed.articles);
-    const ids = parsed.articles.map((a) => a.pmid);
-    if (parsed.count === 0 && /\S\s+\S/.test(q)) {
-      return {
-        count: 0,
-        ids,
-        warning:
-          `${this.name} matched nothing: it returns only records containing every word of the query and treats ` +
-          `AND/OR as words. Try one or two key words.`,
-      };
-    }
-    return { count: parsed.count, ids };
+    if (data?.next_cursor) this.setCursor(key, pageIndex + 1, data.next_cursor);
+    return result(parsed.count, parsed.articles.map((a) => a.pmid));
   }
 
   /**
