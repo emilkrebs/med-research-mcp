@@ -95,16 +95,19 @@ export const errors = {
     });
   },
 
-  /** A call with a deadline (see withDeadline in ./request.ts) used it up before it could send a request. */
-  outOfTime(source: string): ResearchApiException {
+  /**
+   * A call with a deadline (see withDeadline in ./request.ts) used it up: before it could send a request, or,
+   * with `detail` (what the last attempt got), while waiting for an answer or before a retry.
+   */
+  outOfTime(source: string, detail?: string): ResearchApiException {
     return new ResearchApiException({
       code: "TIMEOUT",
-      message: `${source} wasn't asked: the call ran out of time`,
+      message: detail ? `${detail}: the call ran out of time` : `${source} wasn't asked: the call ran out of time`,
       userMessage:
-        `The call ran out of time before ${source} was asked: this server gives each search or fetch a fixed time, and ` +
-        `the database itself didn't fail. Retry once: what this call fetched is kept, so the next one gets further. If it ` +
-        `fails again, ask for an earlier page or narrow the query (more specific terms, a dateRange); deep pages of a ` +
-        `sort: "date" search cost the most.`,
+        `This server gives each search or fetch a fixed time, and it ran out ${detail ? "while waiting for" : "before asking"} ` +
+        `${source}. Retry: what the call fetched is kept, so each retry gets further, and a deep page of a sort: "date" ` +
+        `search can take two or three. If retries stop getting further, ask for an earlier page or narrow the query ` +
+        `(more specific terms, a dateRange).`,
       recoverable: true,
     });
   },
