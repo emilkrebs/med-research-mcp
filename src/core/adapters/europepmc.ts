@@ -29,10 +29,7 @@
  * Titles and abstracts carry HTML (`<h4>` section headings, `<sup>`, `<i>`), titles
  * of MEDLINE records sometimes escaped (`&lt;i&gt;`); both are turned into text.
  *
- * Paging: the API ignores `page` and pages by `cursorMark` (first request `*`, then
- * the response's `nextCursorMark`; checked 2026-10-28, also with a sort). The adapter
- * memoizes the cursor at each position it has seen; to reach a later page cold it walks
- * there with cheap `resultType=idlist` requests of up to 1000 ids.
+ * Paging: the API ignores `page`; only `cursorMark` pages, also with a sort (checked 2026-10-28).
  *
  * Ids are only unique within a source: non-PubMed sources such as CBA (Chinese
  * Biological Abstracts) reuse plain numbers that collide with PMIDs, so those
@@ -41,6 +38,7 @@
  * NBK…, patents) are unique across sources, so they stay as-is.
  */
 
+import { LRUCache } from "lru-cache";
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
 import { cleanDoi, first, isoDateBound, pageWindow, splitAuthors, strArray, toIso1, withoutPubMedTags } from "./util.js";
@@ -49,10 +47,25 @@ import { htmlToText } from "../text.js";
 import type { Article, Correction, CorrectionType, SearchInput } from "../types.js";
 
 const BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest/search";
-/** Bound on the cursor memo, like the base class's search memo. */
-const CURSOR_CAP = 500;
+const CURSOR_MEMO_MAX = 500;
+const CURSOR_MEMO_TTL_MS = 60 * 60 * 1000;
 /** The most ids an `idlist` request returns. */
 const WALK_PAGE_SIZE = 1000;
+
+/** What earlier requests of one query learned: the `cursorMark` at each position, and the hit count. */
+interface QueryPaging {
+  cursors: Map<number, string>;
+  count?: number;
+}
+
+/** The cursor at the greatest memoized position up to `offset` (position 0 is `*`). */
+function nearestCursor(cursors: Map<number, string>, offset: number): { position: number; cursor: string } {
+  let best = { position: 0, cursor: "*" };
+  for (const [position, cursor] of cursors) {
+    if (position <= offset && position > best.position) best = { position, cursor };
+  }
+  return best;
+}
 
 interface EpmcResult {
   id?: string;
@@ -187,44 +200,7 @@ export class EuropePmcAdapter extends RestAdapter {
     return query;
   }
 
-  /** Search position → the `cursorMark` that returns the records from there on, per query. */
-  private readonly cursors = new Map<string, string>();
-
-  private setCursor(key: string, position: number, cursor: string): void {
-    if (this.cursors.size >= CURSOR_CAP) this.cursors.clear();
-    this.cursors.set(`${key}|${position}`, cursor);
-  }
-
-  /** The cursor at the greatest memoized position up to `offset` (position 0 is `*`). */
-  private nearestCursor(key: string, offset: number): { position: number; cursor: string } {
-    let best = { position: 0, cursor: "*" };
-    for (const [k, cursor] of this.cursors) {
-      if (!k.startsWith(`${key}|`)) continue;
-      const position = Number(k.slice(key.length + 1));
-      if (position <= offset && position > best.position) best = { position, cursor };
-    }
-    return best;
-  }
-
-  /** The cursor at `offset`, walked to with id-only requests; the hit count when the results end before it. */
-  private async cursorAt(base: URLSearchParams, key: string, offset: number): Promise<{ cursor: string } | { count: number }> {
-    let { position, cursor } = this.nearestCursor(key, offset);
-    while (position < offset) {
-      const step = Math.min(WALK_PAGE_SIZE, offset - position);
-      const params = new URLSearchParams(base);
-      params.set("resultType", "idlist");
-      params.set("pageSize", String(step));
-      params.set("cursorMark", cursor);
-      const data = await this.http.json<EpmcResponse>(`${BASE}?${params.toString()}`);
-      const got = data?.resultList?.result?.length ?? 0;
-      const next = data?.nextCursorMark;
-      if (got < step || !next || next === cursor) return { count: Number(data?.hitCount ?? 0) };
-      position += got;
-      cursor = next;
-      this.setCursor(key, position, cursor);
-    }
-    return { cursor };
-  }
+  private readonly paging = new LRUCache<string, QueryPaging>({ max: CURSOR_MEMO_MAX, ttl: CURSOR_MEMO_TTL_MS });
 
   async search(input: SearchInput): Promise<{ count: number; ids: string[] }> {
     const types = designPublicationTypes(input.studyTypes, input.minDesignTier);
@@ -233,20 +209,49 @@ export class EuropePmcAdapter extends RestAdapter {
     const base = new URLSearchParams({ query: this.buildQuery(input, types), format: "json" });
     if (input.sort === "date") base.set("sort", "FIRST_PDATE_D desc");
     const key = base.toString();
+    let paging = this.paging.get(key);
+    if (!paging) this.paging.set(key, (paging = { cursors: new Map() }));
+    const known = paging;
 
-    const at = await this.cursorAt(base, key, offset);
-    if ("count" in at) return { count: at.count, ids: [] };
-
-    const params = new URLSearchParams(base);
-    params.set("resultType", "core");
-    params.set("pageSize", String(size));
-    params.set("cursorMark", at.cursor);
-    const data = await this.http.json<EpmcResponse>(`${BASE}?${params.toString()}`);
-    const { count, articles } = parseEuropePmc(data);
-    this.remember(articles);
-    const next = data?.nextCursorMark;
-    if (next && next !== at.cursor) this.setCursor(key, offset + (data?.resultList?.result?.length ?? 0), next);
-    return { count, ids: articles.map((a) => a.pmid) };
+    for (let retry = true; ; retry = false) {
+      if (offset > 0 && known.count !== undefined && offset >= known.count) return { count: known.count, ids: [] };
+      let { position, cursor } = nearestCursor(known.cursors, offset);
+      // Only a cursor from an earlier request can have gone stale.
+      let stale = position > 0 ? position : undefined;
+      const get = async (resultType: string, pageSize: number): Promise<EpmcResponse> => {
+        const params = new URLSearchParams(base);
+        params.set("resultType", resultType);
+        params.set("pageSize", String(pageSize));
+        params.set("cursorMark", cursor);
+        const data = await this.http.json<EpmcResponse>(`${BASE}?${params.toString()}`);
+        stale = undefined;
+        if (data?.hitCount != null) known.count = Number(data.hitCount);
+        return data;
+      };
+      try {
+        while (position < offset) {
+          const step = Math.min(WALK_PAGE_SIZE, offset - position);
+          const data = await get("idlist", step);
+          const got = data?.resultList?.result?.length ?? 0;
+          const next = data?.nextCursorMark;
+          if (got < step || !next || next === cursor || offset >= (known.count ?? Infinity)) {
+            return { count: known.count ?? 0, ids: [] };
+          }
+          position += got;
+          cursor = next;
+          known.cursors.set(position, cursor);
+        }
+        const data = await get("core", size);
+        const { count, articles } = parseEuropePmc(data);
+        this.remember(articles);
+        const next = data?.nextCursorMark;
+        if (next && next !== cursor) known.cursors.set(offset + (data?.resultList?.result?.length ?? 0), next);
+        return { count, ids: articles.map((a) => a.pmid) };
+      } catch (error) {
+        if (stale === undefined || !retry) throw error;
+        known.cursors.delete(stale);
+      }
+    }
   }
 
   protected async fetchOne(id: string): Promise<Article | null> {

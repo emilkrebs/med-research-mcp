@@ -3,12 +3,14 @@
  * so parsers can be unit-tested in isolation.
  */
 
-/** The most records a search asks each database for at once. */
 export const MAX_RESULTS_CAP = 50;
+
+/** The most records of one search reachable by paging, per database (PubMed itself serves 9,999). */
+export const MAX_PAGED_RECORDS = 10_000;
 
 /** The records a search asks each database for: `size` of them, from position `offset` (0-based). */
 export function pageWindow(input: { maxResults?: number; page?: number }): { offset: number; size: number } {
-  const size = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
+  const size = Math.floor(Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP));
   return { offset: (Math.max(input.page ?? 1, 1) - 1) * size, size };
 }
 

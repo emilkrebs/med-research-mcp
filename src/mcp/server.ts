@@ -154,10 +154,12 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .number()
       .int()
       .min(1)
+      .max(10_000)
       .optional()
       .describe(
         "Page of results, from 1 (default): page 2 holds each database's next maxResults records. Ask for the nextPage " +
-          "a result gives to read past the first page; each page is merged and sorted on its own.",
+          "a result gives to read past the first page; each page is merged and sorted on its own. Paging reaches only " +
+          "the first 10,000 records of a search: narrow the query instead.",
       ),
     minDesignTier: z
       .number()

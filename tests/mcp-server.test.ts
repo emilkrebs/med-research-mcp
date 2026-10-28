@@ -36,14 +36,26 @@ describe("createServer", () => {
     const { tools } = await client.listTools();
     const search = tools.find((t) => t.name === "literature_search")!;
     const page = (search.inputSchema as { properties: Record<string, unknown> }).properties.page;
-    expect(page).toMatchObject({ type: "integer", minimum: 1 });
+    expect(page).toMatchObject({ type: "integer", minimum: 1, maximum: 10_000 });
     expect((search.inputSchema as { required?: string[] }).required ?? []).not.toContain("page");
 
-    for (const bad of [0, -1, 1.5, "2"]) {
+    for (const bad of [0, -1, 1.5, "2", 10_001]) {
       const result = await client.callTool({ name: "literature_search", arguments: { query: "x", page: bad } });
       expect(result.isError, JSON.stringify(bad)).toBe(true);
       expect((result.content as { text: string }[])[0]!.text, JSON.stringify(bad)).toContain("page");
     }
+    await client.close();
+    await server.close();
+  });
+
+  it("literature_search refuses a page the core can't reach, with INVALID_INPUT", async () => {
+    const { client, server } = await connect();
+    // Within the schema's bound, but record 99,991 of a search.
+    const result = await client.callTool({ name: "literature_search", arguments: { query: "x", page: 10_000 } });
+    expect(result.isError).toBe(true);
+    const text = (result.content as { text: string }[])[0]!.text;
+    expect(text).toContain("INVALID_INPUT");
+    expect(text).toContain("Narrow the query");
     await client.close();
     await server.close();
   });

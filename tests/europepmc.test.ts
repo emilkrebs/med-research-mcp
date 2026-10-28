@@ -369,6 +369,21 @@ describe("EuropePmcAdapter paging", () => {
     expect(await exact.search({ query: "creatine", maxResults: 10, page: 3 })).toEqual({ count: 20, ids: [] });
   });
 
+  it("stops a cold walk at the first response whose hit count shows the page is past the end", async () => {
+    const { http, urls } = cursorHttp(4_000_000);
+    const adapter = new EuropePmcAdapter(http);
+    const out = await adapter.search({ query: "creatine", maxResults: 50, page: 100_000 });
+    expect(out).toEqual({ count: 4_000_000, ids: [] });
+    expect(urls).toHaveLength(1);
+    // The hit count is known now: further pages past the end cost nothing.
+    expect(await adapter.search({ query: "creatine", maxResults: 50, page: 90_000 })).toEqual({ count: 4_000_000, ids: [] });
+    expect(urls).toHaveLength(1);
+
+    const small = cursorHttp(1500);
+    expect(await new EuropePmcAdapter(small.http).search({ query: "x", maxResults: 50, page: 40 })).toEqual({ count: 1500, ids: [] });
+    expect(small.urls).toHaveLength(1);
+  });
+
   it("treats a walk response without a new cursor as the end", async () => {
     const http: AdapterHttp = {
       json: async <T>(): Promise<T> =>
@@ -376,6 +391,55 @@ describe("EuropePmcAdapter paging", () => {
       text: async () => "",
     };
     expect(await new EuropePmcAdapter(http).search({ query: "x", maxResults: 2, page: 2 })).toEqual({ count: 50, ids: [] });
+  });
+
+  it("drops a rejected memoized cursor and walks again from an earlier one", async () => {
+    const { http: inner, urls } = cursorHttp(100);
+    let rejected = "";
+    const http: AdapterHttp = {
+      ...inner,
+      json: async <T>(url: string): Promise<T> => {
+        if (new URL(url).searchParams.get("cursorMark") === rejected) {
+          rejected = "";
+          throw new Error("HTTP 400");
+        }
+        return inner.json<T>(url);
+      },
+    };
+    const adapter = new EuropePmcAdapter(http);
+    await adapter.search({ query: "creatine", maxResults: 10 });
+    await adapter.search({ query: "creatine", maxResults: 10, page: 2 });
+
+    urls.length = 0;
+    rejected = "c20";
+    const out = await adapter.search({ query: "creatine", maxResults: 10, page: 3 });
+    expect(out.ids).toEqual(idRange(20, 30));
+    expect(urls.length).toBeLessThanOrEqual(2);
+    expect(urls.some((u) => u.get("cursorMark") === "c10")).toBe(true);
+  });
+
+  it("retries a rejected memoized cursor once, and never a failure it did not cause", async () => {
+    const { http: inner } = cursorHttp(100);
+    let calls = 0;
+    const failing: AdapterHttp = {
+      ...inner,
+      json: async <T>(url: string): Promise<T> => {
+        calls++;
+        if (calls > 1) throw new Error("HTTP 400");
+        return inner.json<T>(url);
+      },
+    };
+    const adapter = new EuropePmcAdapter(failing);
+    await adapter.search({ query: "creatine", maxResults: 10 });
+    calls = 1;
+    await expect(adapter.search({ query: "creatine", maxResults: 10, page: 2 })).rejects.toThrow("HTTP 400");
+    // The memoized cursor failed (call 2), the retry from the start failed too (call 3): no third attempt.
+    expect(calls).toBe(3);
+
+    const down: AdapterHttp = { json: async () => { calls++; throw new Error("HTTP 503"); }, text: async () => "" };
+    calls = 0;
+    await expect(new EuropePmcAdapter(down).search({ query: "creatine", maxResults: 10, page: 3 })).rejects.toThrow("HTTP 503");
+    expect(calls).toBe(1);
   });
 });
 

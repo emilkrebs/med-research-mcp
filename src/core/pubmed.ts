@@ -21,7 +21,7 @@ import type { Correction, CorrectionType, FetchInput, FetchOutput, GradedArticle
 
 const EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
 /** esearch serves only the first 9,999 PMIDs of a PubMed search ("'retstart' cannot be larger than 9998"). */
-export const ESEARCH_LIMIT = 9_999;
+const ESEARCH_LIMIT = 9_999;
 /** PMIDs a relevance search takes per esearch request, so that its pages are cut from one list (see DEFAULT_SEARCH_TTL_MS). */
 const RELEVANCE_BLOCK = 500;
 /** Above this esearch count, refuse and ask the caller to narrow. */
@@ -43,10 +43,16 @@ const SPACING_MARGIN = 1.2;
 const DEFAULT_SEARCH_TTL_MS = 60 * 60 * 1000;
 /**
  * The fewest PMIDs taken from each of PubMed's two date orders for `sort: "date"`, and the multiple
- * of the records asked for taken when that is more (see {@link NcbiClient.newest}).
+ * of the records asked for taken when that is more (see {@link NcbiClient.newest}). The pool grows
+ * from the minimum by doubling, so a walk through the pages pools again only a few times.
  */
 const DATE_POOL_MIN = 100;
 const DATE_POOL_FACTOR = 4;
+/** PMIDs the search lists may hold in all, so that a few long lists don't crowd out the rest. */
+const SEARCHES_MAX_PMIDS = 200_000;
+const CAP_WARNING =
+  `PubMed serves only the first ${ESEARCH_LIMIT.toLocaleString("en-US")} records of a search: narrow the query ` +
+  `(more specific terms, a dateRange or a studyTypes filter) to reach the rest.`;
 /** PMIDs per esummary request, so that its GET URL stays short. */
 const ESUMMARY_BATCH = 200;
 /** How long a date search's summaries wait for the esummary of the PMIDs it returned. */
@@ -135,11 +141,17 @@ function toArray<T>(value: T | T[] | undefined | null): T[] {
   return Array.isArray(value) ? value : [value];
 }
 
-/** A search's PMIDs in order, of which the first `depth` are final; later pages extend it. */
+/**
+ * A search's PMIDs in order, which later pages extend. Pages up to `depth` are cut from it: for a date
+ * search the first `depth` PMIDs are final; for a relevance one, `depth` is how far into PubMed's
+ * order the list reaches, and `pmids` may be shorter, as it drops repeats.
+ */
 interface PmidList {
   count: number;
   pmids: string[];
   depth: number;
+  /** A date search's {@link firstPublished} of the PMIDs it has summarized. */
+  published?: Map<string, number>;
 }
 
 export class NcbiClient {
@@ -152,6 +164,8 @@ export class NcbiClient {
   private readonly limiter: RateLimiter;
   private readonly parser: XMLParser;
   private readonly searches: LRUCache<string, PmidList> | null;
+  /** The list extensions under way, by search: a call that finds one waits for it instead of extending the same list. */
+  private readonly growing = new Map<string, Promise<PmidList>>();
   /** Summaries of the PMIDs a date search returned, fetched to rank them, served once by esummary. */
   private readonly pooled = new LRUCache<string, Article>({ max: 500, ttl: POOLED_SUMMARY_TTL_MS });
 
@@ -172,7 +186,10 @@ export class NcbiClient {
       stopNodes: ["*.AbstractText"],
     });
     const searchTtl = config.searchTtlMs ?? DEFAULT_SEARCH_TTL_MS;
-    this.searches = searchTtl > 0 ? new LRUCache({ max: 200, ttl: searchTtl }) : null;
+    this.searches =
+      searchTtl > 0
+        ? new LRUCache({ maxSize: SEARCHES_MAX_PMIDS, sizeCalculation: (list: PmidList) => Math.max(1, list.pmids.length), ttl: searchTtl })
+        : null;
   }
 
   private commonParams(params: URLSearchParams): URLSearchParams {
@@ -191,18 +208,18 @@ export class NcbiClient {
   }
 
   /**
-   * Returns the PMIDs of the page asked for (`page`, `maxResults`) and the total count. A
-   * studyTypes or minDesignTier filter narrows the query to the publication types it
-   * can keep (see designPublicationTypes), so the count is of candidates for it.
+   * Returns the PMIDs of the page asked for (`page`, `maxResults`), the total count, and whether
+   * a later page can hold records. A studyTypes or minDesignTier filter narrows the query to the
+   * publication types it can keep (see designPublicationTypes), so the count is of candidates for it.
    * With `sort: "date"`, the PMIDs are those first published last, newest first (see
    * {@link newest}). An identical search within `searchTtlMs` returns the same PMIDs, and
-   * its later pages are cut from the same list. Past PubMed's first 9,999 records, no PMIDs
-   * and a warning.
+   * its later pages are cut from the same list. A search matching more than PubMed's first 9,999
+   * records gets a warning from the page that reaches the 9,999th on, and no PMIDs past it.
    */
-  async esearch(input: SearchInput): Promise<{ count: number; pmids: string[]; warning?: string }> {
+  async esearch(input: SearchInput): Promise<{ count: number; pmids: string[]; more: boolean; warning?: string }> {
     const { offset, size } = pageWindow(input);
     const types = designPublicationTypes(input.studyTypes, input.minDesignTier);
-    if (types?.length === 0) return { count: 0, pmids: [] };
+    if (types?.length === 0) return { count: 0, pmids: [], more: false };
     const term = types ? `(${input.query}) AND (${types.map((t) => `"${t}"[pt]`).join(" OR ")})` : input.query;
     const params = new URLSearchParams({ db: "pubmed", term, retmode: "json" });
     if (input.dateRange?.from || input.dateRange?.to) {
@@ -214,79 +231,111 @@ export class NcbiClient {
     if (!byDate) params.set("sort", "relevance");
 
     const key = `${params.toString()}${byDate ? "&order=first-published" : ""}`;
-    let list = this.searches?.get(key);
     if (offset >= ESEARCH_LIMIT) {
-      const count = list?.count ?? (await this.runEsearch(new URLSearchParams([...params, ["retmax", "0"]]))).count;
-      return {
-        count,
-        pmids: [],
-        warning:
-          `PubMed serves only the first ${ESEARCH_LIMIT.toLocaleString("en-US")} records of a search: narrow the query ` +
-          `(more specific terms, a dateRange or a studyTypes filter) to reach the rest.`,
-      };
+      const count = this.searches?.get(key)?.count ?? (await this.runEsearch(new URLSearchParams([...params, ["retmax", "0"]]))).count;
+      return { count, pmids: [], more: false, warning: CAP_WARNING };
     }
     const end = Math.min(offset + size, ESEARCH_LIMIT);
-    if (!list || list.depth < Math.min(end, list.count)) {
-      list = byDate ? await this.newest(params, end, offset) : await this.relevant(params, end, list);
-      this.searches?.set(key, list);
-    }
-    return { count: list.count, pmids: list.pmids.slice(offset, end) };
+    const list = await this.searchList(key, end, (known) => (byDate ? this.newest(params, end, offset, known) : this.relevant(params, end, known)));
+    return {
+      count: list.count,
+      pmids: list.pmids.slice(offset, end),
+      more: list.count > end && end < ESEARCH_LIMIT,
+      ...(offset + size >= ESEARCH_LIMIT && list.count > ESEARCH_LIMIT ? { warning: CAP_WARNING } : {}),
+    };
   }
 
   /**
-   * The first `end` PMIDs in relevance order, rounded up to a whole block, extending `known`. PubMed's
-   * relevance order differs between identical requests, so pages cut from separate requests would
-   * repeat and skip records; a block extending a list keeps each PMID where it first appeared.
+   * The search's list, extended by `grow` while it doesn't reach `end`. One extension runs at a time
+   * per search: a concurrent call waits for it, then extends only if the list is still short.
+   */
+  private async searchList(key: string, end: number, grow: (known?: PmidList) => Promise<PmidList>): Promise<PmidList> {
+    const searches = this.searches;
+    if (!searches) return grow();
+    for (;;) {
+      const known = searches.get(key);
+      if (known && known.depth >= Math.min(end, known.count)) return known;
+      const running = this.growing.get(key);
+      if (!running) {
+        const growth = grow(known)
+          .then((list) => {
+            searches.set(key, list);
+            return list;
+          })
+          .finally(() => this.growing.delete(key));
+        this.growing.set(key, growth);
+        return growth;
+      }
+      await running.catch(() => undefined);
+    }
+  }
+
+  /**
+   * Relevance order up to `end`, rounded up to a whole block, extending `known`. PubMed's relevance
+   * order differs between identical requests, so pages cut from separate requests would repeat and
+   * skip records; a block extending a list keeps each PMID where it first appeared.
    */
   private async relevant(params: URLSearchParams, end: number, known?: PmidList): Promise<PmidList> {
-    const have = known?.pmids ?? [];
+    const from = known?.depth ?? 0;
+    const to = Math.min(ESEARCH_LIMIT, Math.ceil(end / RELEVANCE_BLOCK) * RELEVANCE_BLOCK);
     const block = new URLSearchParams(params);
-    if (have.length > 0) block.set("retstart", String(have.length));
-    block.set("retmax", String(Math.min(ESEARCH_LIMIT, Math.ceil(end / RELEVANCE_BLOCK) * RELEVANCE_BLOCK) - have.length));
+    if (from > 0) block.set("retstart", String(from));
+    block.set("retmax", String(to - from));
     const { count, pmids } = await this.runEsearch(block);
+    const have = known?.pmids ?? [];
     const seen = new Set(have);
-    const all = [...have, ...pmids.filter((pmid) => !seen.has(pmid))];
-    return { count, pmids: all, depth: all.length };
+    return { count, pmids: [...have, ...pmids.filter((pmid) => !seen.has(pmid))], depth: Math.min(count, to) };
   }
 
   /**
-   * PMIDs first published last ({@link firstPublished}), newest first, the first `end` of them final.
-   * No esearch order is that one. `sort=pub_date` orders by issue date: for "semaglutide" it led with
-   * issues of December 2026 published online in August to October, and records published online on
-   * 2026-10-20 weren't in its first 12 (2026-10-22). Without a sort, esearch orders by date added to
-   * PubMed ("The default sort order varies by database (for PubMed, it is most+recent)", NLM Data Guide,
+   * PMIDs first published last ({@link firstPublished}), newest first. No esearch order is that one.
+   * `sort=pub_date` orders by issue date: for "semaglutide" it led with issues of December 2026
+   * published online in August to October, and records published online on 2026-10-20 weren't in its
+   * first 12 (2026-10-22). Without a sort, esearch orders by date added to PubMed ("The default sort
+   * order varies by database (for PubMed, it is most+recent)", NLM Data Guide,
    * https://dataguide.nlm.nih.gov/eutilities/utilities.html, checked 2026-10-22), which misses
-   * records added long before their issue. So the first max(100, 4 × end) of each order are
-   * pooled and sorted by first publication from esummary's dates. Checked against every record with a
+   * records added long before their issue. So 4 × `end` PMIDs (100 at least) of each order are pooled
+   * and sorted by first publication from esummary's dates. Checked against every record with a
    * publication date since 2026-10-01, the first 100 of each order held all 10 newest records for each
    * of five queries (semaglutide, creatine supplementation, vitamin D supplementation, intermittent
    * fasting, long covid), and the first 200 all 50 newest for the two queries with 50 in that range;
-   * the first 10 of pub_date alone held 1 to 3 of the 10 newest (2026-10-22). The summaries of the
-   * PMIDs from `offset` to `end`, the page asked for, are kept for its esummary.
+   * the first 10 of pub_date alone held 1 to 3 of the 10 newest (2026-10-22).
    */
-  private async newest(params: URLSearchParams, end: number, offset: number): Promise<PmidList> {
-    const pool = Math.min(ESEARCH_LIMIT, Math.max(DATE_POOL_MIN, DATE_POOL_FACTOR * end));
+  private async newest(params: URLSearchParams, end: number, offset: number, known?: PmidList): Promise<PmidList> {
+    let pool = DATE_POOL_MIN;
+    while (pool < DATE_POOL_FACTOR * end) pool *= 2;
+    pool = Math.min(ESEARCH_LIMIT, pool);
     const byIssue = new URLSearchParams(params);
     byIssue.set("retmax", String(pool));
     byIssue.set("sort", "pub_date");
     const byAdded = new URLSearchParams(params);
     byAdded.set("retmax", String(pool));
     const [issued, added] = await Promise.all([this.runEsearch(byIssue), this.runEsearch(byAdded)]);
-    const pmids = [...new Set([...issued.pmids, ...added.pmids])];
+    const candidates = [...new Set([...issued.pmids, ...added.pmids])];
+    const published = new Map(known?.published);
     const summaries = new Map<string, Article>();
-    for (let i = 0; i < pmids.length; i += ESUMMARY_BATCH) {
-      for (const [pmid, article] of await this.esummary(pmids.slice(i, i + ESUMMARY_BATCH))) summaries.set(pmid, article);
+    const unknown = candidates.filter((pmid) => !published.has(pmid));
+    for (let i = 0; i < unknown.length; i += ESUMMARY_BATCH) {
+      for (const [pmid, article] of await this.esummary(unknown.slice(i, i + ESUMMARY_BATCH))) {
+        summaries.set(pmid, article);
+        published.set(pmid, firstPublished(article));
+      }
     }
-    const published = new Map([...summaries].map(([pmid, article]) => [pmid, firstPublished(article)]));
     // Stable: equal dates keep the issue order, then the date-added one.
-    pmids.sort((a, b) => (published.get(b) ?? -1) - (published.get(a) ?? -1));
+    candidates.sort((a, b) => (published.get(b) ?? -1) - (published.get(a) ?? -1));
+    // The PMIDs already final stay where earlier pages saw them, so a larger pool can't repeat one on a later page.
+    const kept = known ? known.pmids.slice(0, known.depth) : [];
+    const keptSet = new Set(kept);
+    const pmids = [...kept, ...candidates.filter((pmid) => !keptSet.has(pmid))];
     for (const pmid of pmids.slice(offset, end)) {
       const summary = summaries.get(pmid);
       if (summary) this.pooled.set(pmid, summary);
     }
     // Every record was pooled, or as many as esearch serves: the whole order is as good as it gets.
+    // Otherwise a larger pool could still bring in newer records than all but the first quarter of this one.
     const whole = issued.count <= pool || pool === ESEARCH_LIMIT;
-    return { count: issued.count, pmids, depth: whole ? pmids.length : Math.floor(pool / DATE_POOL_FACTOR) };
+    const depth = whole ? pmids.length : Math.max(kept.length, Math.floor(pool / DATE_POOL_FACTOR));
+    return { count: issued.count, pmids, depth, published };
   }
 
   private async runEsearch(params: URLSearchParams): Promise<{ count: number; pmids: string[] }> {
@@ -505,17 +554,20 @@ export async function searchPubMed(
 ): Promise<SearchOutput> {
   // As in searchLiterature: what the filter leaves out is said whatever PubMed returns.
   const warnings = filterWarnings(input.studyTypes, input.minDesignTier);
+  if (input.page !== undefined && (!Number.isInteger(input.page) || input.page < 1)) {
+    throw errors.invalidInput("page must be a whole number, 1 or more.");
+  }
   const page = input.page ?? 1;
   if (designPublicationTypes(input.studyTypes, input.minDesignTier)?.length === 0) {
     return { articles: [], total: 0, query: input.query, page, warnings };
   }
-  const { count, pmids, warning } = await client.esearch(input);
+  const { count, pmids, more, warning } = await client.esearch(input);
   if (warning) warnings.push(warning);
-  const { offset, size } = pageWindow(input);
-  const nextPage = count > offset + size && offset + size < ESEARCH_LIMIT ? { nextPage: page + 1 } : {};
+  const nextPage = more ? { nextPage: page + 1 } : {};
 
   if (pmids.length === 0) {
-    warnings.push(count === 0 ? "No articles matched this query. Try broader terms or fewer field tags." : "No results returned.");
+    if (count === 0) warnings.push("No articles matched this query. Try broader terms or fewer field tags.");
+    else if (!warning) warnings.push("No results returned.");
     return { articles: [], total: count, query: input.query, page, ...nextPage, warnings };
   }
   if (count > SOFT_BROAD_THRESHOLD) {

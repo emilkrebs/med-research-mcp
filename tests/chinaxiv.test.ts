@@ -381,11 +381,88 @@ describe("ChinaRxiv paging", () => {
     expect(urls).toHaveLength(2);
   });
 
-  it("returns no ids, with the total and no warning, for a page past the end", async () => {
+  it("returns no ids, with the total and no warning, for a page past the end, in one request", async () => {
     const { http, urls } = pagedHttp(25);
-    const out = await new ChinaRXivAdapter(http).search({ query: "vitamin depression", maxResults: 10, page: 5 });
+    const adapter = new ChinaRXivAdapter(http);
+    const out = await adapter.search({ query: "vitamin depression", maxResults: 10, page: 5 });
     expect(out).toEqual({ count: 25, ids: [] });
-    expect(urls).toHaveLength(3);
+    expect(urls).toHaveLength(1);
+    // The total is known now: further pages past the end cost nothing.
+    expect(await adapter.search({ query: "vitamin depression", maxResults: 10, page: 50 })).toEqual({ count: 25, ids: [] });
+    expect(urls).toHaveLength(1);
+  });
+
+  it("stops a walk at the first response that shows the page is past the end", async () => {
+    const { http, urls } = pagedHttp(2000);
+    const out = await new ChinaRXivAdapter(http).search({ query: "depression", maxResults: 50, page: 500 });
+    expect(out).toEqual({ count: 2000, ids: [] });
+    expect(urls).toHaveLength(1);
+  });
+
+  it("keeps the records of walked pages out of the shared record memo", async () => {
+    const { http, urls } = pagedHttp(5000);
+    const adapter = new ChinaRXivAdapter(http);
+    const cache = new LRUBackend();
+    const first = await adapter.search({ query: "depression", maxResults: 50 });
+    // Remembering all 21 walked pages would overflow the memo and wipe the first page's records.
+    await adapter.search({ query: "anxiety", maxResults: 50, page: 22 });
+    urls.length = 0;
+    expect((await adapter.fetch(first.ids, cache)).map((a) => a.pmid)).toEqual(first.ids);
+    expect(urls).toHaveLength(0);
+  });
+
+  it("drops a rejected memoized cursor and walks again from an earlier one", async () => {
+    const { http: inner, urls } = pagedHttp(100);
+    let rejectNext = false;
+    const http: AdapterHttp = {
+      ...inner,
+      json: async <T>(url: string): Promise<T> => {
+        if (rejectNext && new URL(url).searchParams.has("cursor")) {
+          rejectNext = false;
+          urls.push(new URL(url).searchParams);
+          throw new Error("HTTP 422");
+        }
+        return inner.json<T>(url);
+      },
+    };
+    const adapter = new ChinaRXivAdapter(http);
+    await adapter.search({ query: "depression", maxResults: 10 });
+    await adapter.search({ query: "depression", maxResults: 10, page: 2 });
+
+    urls.length = 0;
+    rejectNext = true;
+    const out = await adapter.search({ query: "depression", maxResults: 10, page: 3 });
+    expect(out.ids).toEqual(idRange(20, 30));
+    expect(urls.length).toBeLessThanOrEqual(3);
+
+    // The cursors made on the way back are memoized again.
+    urls.length = 0;
+    expect((await adapter.search({ query: "depression", maxResults: 10, page: 4 })).ids).toEqual(idRange(30, 40));
+    expect(urls).toHaveLength(1);
+  });
+
+  it("retries a rejected memoized cursor once, and never a failure it did not cause", async () => {
+    const { http: inner } = pagedHttp(100);
+    let calls = 0;
+    const failing: AdapterHttp = {
+      ...inner,
+      json: async <T>(url: string): Promise<T> => {
+        calls++;
+        if (calls > 1) throw new Error("HTTP 422");
+        return inner.json<T>(url);
+      },
+    };
+    const adapter = new ChinaRXivAdapter(failing);
+    await adapter.search({ query: "depression", maxResults: 10 });
+    calls = 1;
+    await expect(adapter.search({ query: "depression", maxResults: 10, page: 2 })).rejects.toThrow("HTTP 422");
+    // The memoized cursor failed (call 2), the retry from the start failed too (call 3): no third attempt.
+    expect(calls).toBe(3);
+
+    const down: AdapterHttp = { json: async () => { calls++; throw new Error("HTTP 503"); }, text: async () => "" };
+    calls = 0;
+    await expect(new ChinaRXivAdapter(down).search({ query: "depression", maxResults: 10, page: 3 })).rejects.toThrow("HTTP 503");
+    expect(calls).toBe(1);
   });
 
   it("returns the partial last page and nothing right after it", async () => {

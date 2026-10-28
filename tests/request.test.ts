@@ -197,8 +197,8 @@ describe("requestWithRetries", () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(await first).toEqual({ count: 1, pmids: ["1"] });
-    expect(await second).toEqual({ count: 1, pmids: ["2"] });
+    expect(await first).toEqual({ count: 1, pmids: ["1"], more: false });
+    expect(await second).toEqual({ count: 1, pmids: ["2"], more: false });
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

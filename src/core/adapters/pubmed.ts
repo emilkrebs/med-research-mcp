@@ -8,10 +8,9 @@
  */
 
 import type { Cache } from "../cache.js";
-import { ESEARCH_LIMIT, fetchPubMed, NcbiClient } from "../pubmed.js";
+import { fetchPubMed, NcbiClient } from "../pubmed.js";
 import type { Article, SearchInput } from "../types.js";
 import type { DatabaseAdapter } from "./types.js";
-import { pageWindow } from "./util.js";
 
 export class PubMedAdapter implements DatabaseAdapter {
   readonly id = "pubmed";
@@ -24,10 +23,8 @@ export class PubMedAdapter implements DatabaseAdapter {
   }
 
   async search(input: SearchInput): Promise<{ count: number; ids: string[]; warning?: string; more: boolean }> {
-    const { count, pmids, warning } = await this.client.esearch(input);
-    const { offset, size } = pageWindow(input);
-    const end = offset + size;
-    return { count, ids: pmids, ...(warning ? { warning } : {}), more: count > end && end < ESEARCH_LIMIT };
+    const { count, pmids, more, warning } = await this.client.esearch(input);
+    return { count, ids: pmids, ...(warning ? { warning } : {}), more };
   }
 
   async fetch(ids: string[], cache: Cache, warn?: (warning: string) => void): Promise<Article[]> {
