@@ -47,4 +47,4 @@ Summaries expire after 7 days, because their metadata changes after publication 
 
 ## Errors
 
-Library functions throw a `ResearchApiException` (`isMedResearchError` tells it apart), whose `toJSON()` gives the payload described in the [tool reference](tools.md#errors). `searchLiterature` throws `INVALID_INPUT` for an unknown database, an empty query or a date that doesn't exist, and otherwise only when every database it searched failed; while one answers, each failure becomes an entry in `warnings` instead. `fetchLiterature` throws `INVALID_INPUT` for an unknown database.
+Library functions throw a `ResearchApiException` (`isMedResearchError` tells it apart), whose `toJSON()` gives the payload described in the [tool reference](tools.md#errors). `searchLiterature` throws `INVALID_INPUT` for an unknown database, an empty query, a `page` that isn't a whole number from 1 or a date that doesn't exist, and otherwise only when every database it searched failed; while one answers, each failure becomes an entry in `warnings` instead. `fetchLiterature` throws `INVALID_INPUT` for an unknown database.

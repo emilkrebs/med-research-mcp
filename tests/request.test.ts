@@ -146,8 +146,20 @@ describe("requestWithRetries", () => {
       await vi.advanceTimersByTimeAsync(8_000);
       const [first, second] = await call;
       // 8 s instead of 15, and no retry: it would start with less than 2 s left.
-      expect(first).toMatchObject({ code: "NETWORK_ERROR", message: "Network error: Europe PMC didn't answer within 8 s" });
-      expect(second).toMatchObject({ code: "NETWORK_ERROR", message: "Network error: Europe PMC wasn't asked: the call ran out of time" });
+      expect(first).toMatchObject({ code: "TIMEOUT", message: "Europe PMC didn't answer within 8 s: the call ran out of time" });
+      expect(second).toMatchObject({ code: "TIMEOUT", message: "Europe PMC wasn't asked: the call ran out of time" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("fails with TIMEOUT when the call has no time left for a retry its request would get", async () => {
+      vi.useFakeTimers();
+      const fetchMock = vi.fn(hanging);
+      vi.stubGlobal("fetch", fetchMock);
+      const call = withDeadline(16_000, () => requestWithRetries("https://upstream.example/x", options).catch((e: unknown) => e));
+      await vi.advanceTimersByTimeAsync(15_000);
+      const failure = await call;
+      expect(failure).toMatchObject({ code: "TIMEOUT", message: "Europe PMC didn't answer within 15 s: the call ran out of time" });
+      expect((failure as { userMessage: string }).userMessage).toContain("while waiting for Europe PMC");
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
@@ -163,7 +175,7 @@ describe("requestWithRetries", () => {
       await vi.advanceTimersByTimeAsync(21_000);
       expect(await slow).toMatchObject({ code: "NETWORK_ERROR" });
       // Its turn came after its deadline: it fails without being sent.
-      expect(await bounded).toMatchObject({ message: "Network error: PubMed wasn't asked: the call ran out of time" });
+      expect(await bounded).toMatchObject({ code: "TIMEOUT", message: "PubMed wasn't asked: the call ran out of time" });
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
@@ -172,7 +184,7 @@ describe("requestWithRetries", () => {
       vi.stubGlobal("fetch", vi.fn(hanging));
       const call = withDeadline(4_000, () => withDeadline(60_000, () => requestWithRetries("https://upstream.example/x", options).catch((e: unknown) => e)));
       await vi.advanceTimersByTimeAsync(4_000);
-      expect(await call).toMatchObject({ message: "Network error: Europe PMC didn't answer within 4 s" });
+      expect(await call).toMatchObject({ code: "TIMEOUT", message: "Europe PMC didn't answer within 4 s: the call ran out of time" });
     });
   });
 
@@ -197,8 +209,8 @@ describe("requestWithRetries", () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(await first).toEqual({ count: 1, pmids: ["1"] });
-    expect(await second).toEqual({ count: 1, pmids: ["2"] });
+    expect(await first).toEqual({ count: 1, pmids: ["1"], more: false });
+    expect(await second).toEqual({ count: 1, pmids: ["2"], more: false });
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

@@ -7,18 +7,20 @@
  * found on another copy), filters, and sorts by design tier, or with `sort: "date"`
  * newest first. `fetchLiterature` fetches specific ids from one database.
  *
+ * A page is merged, de-duplicated and sorted on its own, not with the pages before it.
+ *
  * Databases without NLM publication types (ChinaXiv, RussiaRxiv) always come
  * back `unknown`: the calling model reads the design from the abstract. A design
  * filter (studyTypes, minDesignTier) is passed down to the databases that have
  * the metadata, which narrow their queries to the publication types it can keep,
  * and skips the others, which it would empty.
  *
- * Input a caller can correct (an unknown database, an empty query, a date that
+ * Input a caller can correct (an unknown database, an empty query, a bad page, a date that
  * doesn't exist) raises INVALID_INPUT rather than returning an empty result.
  */
 
 import { adaptersFor, getAdapter, unknownDatabase, type DatabaseAdapter } from "./adapters/registry.js";
-import { doiKey, firstPublished, isoDateBound } from "./adapters/util.js";
+import { doiKey, firstPublished, isoDateBound, MAX_PAGED_RECORDS, pageWindow } from "./adapters/util.js";
 import { LRUBackend, type Cache } from "./cache.js";
 import { errors, isMedResearchError } from "./errors.js";
 import { classifyArticle, designPublicationTypes, filterWarnings, mergeDuplicate, noAnimalStudiesWarning, rankKey } from "./grader.js";
@@ -31,11 +33,20 @@ import type {
   SearchOutput,
 } from "./types.js";
 
-const MAX_RESULTS_CAP = 50;
-
-/** Throws INVALID_INPUT for an empty query or a date range PubMed would silently ignore. */
+/** Throws INVALID_INPUT for an empty query, an unreachable page, or a date range PubMed would silently ignore. */
 function validateSearch(input: SearchInput): void {
   if (!input.query?.trim()) throw errors.invalidInput("The query is empty.");
+  if (input.page !== undefined) {
+    if (!Number.isInteger(input.page) || input.page < 1) throw errors.invalidInput("page must be a whole number, 1 or more.");
+    const { offset } = pageWindow(input);
+    if (offset >= MAX_PAGED_RECORDS) {
+      throw errors.invalidInput(
+        `Page ${input.page} starts at record ${(offset + 1).toLocaleString("en-US")}, but paging reaches only the first ` +
+          `${MAX_PAGED_RECORDS.toLocaleString("en-US")} records of a search. Narrow the query instead: more specific terms, ` +
+          `a dateRange or studyTypes.`,
+      );
+    }
+  }
   const { from, to } = input.dateRange ?? {};
   const start = from ? isoDateBound(from, "from") : undefined;
   const end = to ? isoDateBound(to, "to") : undefined;
@@ -67,7 +78,7 @@ function dedupeByDoi(articles: GradedArticle[]): GradedArticle[] {
 /**
  * Search one or more databases and return classified, merged, de-duplicated results,
  * sorted by design tier, or with `sort: "date"` by first publication date, newest first.
- * Throws INVALID_INPUT for an unknown database, an empty query or an invalid date,
+ * Throws INVALID_INPUT for an unknown database, an empty query, a bad page or an invalid date,
  * and the first database's error when every database searched failed.
  *
  * @param cache reused across calls; scoped per-database inside each adapter.
@@ -82,9 +93,12 @@ export async function searchLiterature(
   const selected = adapters ?? adaptersFor(input.database);
   if (selected.length === 0) throw errors.invalidInput("No database to search.");
   const warnings = filterWarnings(input.studyTypes, input.minDesignTier);
+  const page = input.page ?? 1;
+  const { offset, size } = pageWindow(input);
+  const empty = { articles: [], total: 0, query: input.query, page, maxResults: size, warnings };
   // A design filter keeps only records carrying one of these publication types (null: no such filter).
   const designTypes = designPublicationTypes(input.studyTypes, input.minDesignTier);
-  if (designTypes?.length === 0) return { articles: [], total: 0, query: input.query, warnings };
+  if (designTypes?.length === 0) return empty;
   const searched = designTypes ? selected.filter((a) => a.designMetadata !== false) : selected;
   const skipped = selected.filter((a) => !searched.includes(a));
   if (skipped.length > 0) {
@@ -93,18 +107,20 @@ export async function searchLiterature(
         `design metadata, so the studyTypes/minDesignTier filter would keep none. Search without the filter and read the abstracts.`,
     );
   }
-  if (searched.length === 0) return { articles: [], total: 0, query: input.query, warnings };
+  if (searched.length === 0) return empty;
 
-  const maxResults = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
+  const hasNextPage = offset + size < MAX_PAGED_RECORDS;
 
   // Fan out. One adapter failing must not sink the others — it degrades to a warning.
   const failures: unknown[] = [];
+  let more = false;
   const perAdapter = await Promise.all(
     searched.map(async (adapter) => {
       try {
-        const { count, ids, warning } = await adapter.search(input);
+        const { count, ids, warning, more: served } = await adapter.search(input);
         if (warning) warnings.push(warning);
-        const articles = await adapter.fetch(ids.slice(0, maxResults), cache, (w) => warnings.push(`${adapter.name}: ${w}`));
+        if (served ?? count > offset + size) more = true;
+        const articles = await adapter.fetch(ids.slice(0, size), cache, (w) => warnings.push(`${adapter.name}: ${w}`));
         return { count, articles };
       } catch (err) {
         failures.push(err);
@@ -146,6 +162,11 @@ export async function searchLiterature(
         `retry with fewer, more general keywords.`,
     );
   }
+  // Failed databases count 0: the page is past the end of those that answered.
+  if (page > 1 && total > 0 && perAdapter.every(({ count }) => count <= offset)) {
+    const databases = failures.length > 0 ? "databases that answered" : "databases searched";
+    warnings.push(`Page ${page} is past the last result: the ${databases} have no more records for this query.`);
+  }
   // Stable sorts: equal items keep their database's order, databases in the order requested.
   if (input.sort === "date") {
     const published = new Map(merged.map((a) => [a, firstPublished(a)]));
@@ -158,6 +179,9 @@ export async function searchLiterature(
     articles: merged,
     total,
     query: input.query,
+    page,
+    maxResults: size,
+    ...(more && hasNextPage ? { nextPage: page + 1 } : {}),
     ...(warnings.length > 0 ? { warnings } : {}),
   };
 }

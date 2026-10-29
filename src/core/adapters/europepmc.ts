@@ -29,6 +29,11 @@
  * Titles and abstracts carry HTML (`<h4>` section headings, `<sup>`, `<i>`), titles
  * of MEDLINE records sometimes escaped (`&lt;i&gt;`); both are turned into text.
  *
+ * Paging: the API ignores `page`; only `cursorMark` pages, also with a sort (checked 2026-10-28).
+ * A `cursorMark` is Solr's: base64 of sort values (a score and a document key), not server
+ * state, so a remembered one stays valid and a failed request leaves it in place. One the API
+ * can't read gets HTTP 503 "temporarily unavailable", like an outage (2026-10-29).
+ *
  * Ids are only unique within a source: non-PubMed sources such as CBA (Chinese
  * Biological Abstracts) reuse plain numbers that collide with PMIDs, so those
  * records are keyed `SRC:id` ("CBA:521529"). PubMed records keep the bare PMID;
@@ -36,15 +41,34 @@
  * NBK…, patents) are unique across sources, so they stay as-is.
  */
 
+import { LRUCache } from "lru-cache";
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { cleanDoi, first, isoDateBound, splitAuthors, strArray, toIso1, withoutPubMedTags } from "./util.js";
+import { cleanDoi, first, isoDateBound, pageWindow, splitAuthors, strArray, toIso1, withoutPubMedTags } from "./util.js";
 import { designPublicationTypes } from "../grader.js";
 import { htmlToText } from "../text.js";
 import type { Article, Correction, CorrectionType, SearchInput } from "../types.js";
 
 const BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest/search";
-const MAX_RESULTS_CAP = 50;
+const CURSOR_MEMO_MAX = 500;
+const CURSOR_MEMO_TTL_MS = 60 * 60 * 1000;
+/** The most ids an `idlist` request returns. */
+const WALK_PAGE_SIZE = 1000;
+
+/** What earlier requests of one query learned: the `cursorMark` at each position, and the hit count. */
+interface QueryPaging {
+  cursors: Map<number, string>;
+  count?: number;
+}
+
+/** The cursor at the greatest memoized position up to `offset` (position 0 is `*`). */
+function nearestCursor(cursors: Map<number, string>, offset: number): { position: number; cursor: string } {
+  let best = { position: 0, cursor: "*" };
+  for (const [position, cursor] of cursors) {
+    if (position <= offset && position > best.position) best = { position, cursor };
+  }
+  return best;
+}
 
 interface EpmcResult {
   id?: string;
@@ -91,6 +115,7 @@ function toCorrections(list: EpmcResult["commentCorrectionList"]): Correction[] 
 
 interface EpmcResponse {
   hitCount?: number;
+  nextCursorMark?: string;
   resultList?: { result?: EpmcResult[] };
 }
 
@@ -178,20 +203,47 @@ export class EuropePmcAdapter extends RestAdapter {
     return query;
   }
 
+  private readonly paging = new LRUCache<string, QueryPaging>({ max: CURSOR_MEMO_MAX, ttl: CURSOR_MEMO_TTL_MS });
+
   async search(input: SearchInput): Promise<{ count: number; ids: string[] }> {
     const types = designPublicationTypes(input.studyTypes, input.minDesignTier);
     if (types?.length === 0) return { count: 0, ids: [] };
-    const pageSize = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
-    const params = new URLSearchParams({
-      query: this.buildQuery(input, types),
-      format: "json",
-      resultType: "core",
-      pageSize: String(pageSize),
-    });
-    if (input.sort === "date") params.set("sort", "FIRST_PDATE_D desc");
-    const data = await this.http.json<EpmcResponse>(`${BASE}?${params.toString()}`);
+    const { offset, size } = pageWindow(input);
+    const base = new URLSearchParams({ query: this.buildQuery(input, types), format: "json" });
+    if (input.sort === "date") base.set("sort", "FIRST_PDATE_D desc");
+    const key = base.toString();
+    let paging = this.paging.get(key);
+    if (!paging) this.paging.set(key, (paging = { cursors: new Map() }));
+    const known = paging;
+
+    if (offset > 0 && known.count !== undefined && offset >= known.count) return { count: known.count, ids: [] };
+    let { position, cursor } = nearestCursor(known.cursors, offset);
+    const get = async (resultType: string, pageSize: number): Promise<EpmcResponse> => {
+      const params = new URLSearchParams(base);
+      params.set("resultType", resultType);
+      params.set("pageSize", String(pageSize));
+      params.set("cursorMark", cursor);
+      const data = await this.http.json<EpmcResponse>(`${BASE}?${params.toString()}`);
+      if (data?.hitCount != null) known.count = Number(data.hitCount);
+      return data;
+    };
+    while (position < offset) {
+      const step = Math.min(WALK_PAGE_SIZE, offset - position);
+      const data = await get("idlist", step);
+      const got = data?.resultList?.result?.length ?? 0;
+      const next = data?.nextCursorMark;
+      if (got < step || !next || next === cursor || offset >= (known.count ?? Infinity)) {
+        return { count: known.count ?? 0, ids: [] };
+      }
+      position += got;
+      cursor = next;
+      known.cursors.set(position, cursor);
+    }
+    const data = await get("core", size);
     const { count, articles } = parseEuropePmc(data);
     this.remember(articles);
+    const next = data?.nextCursorMark;
+    if (next && next !== cursor) known.cursors.set(offset + (data?.resultList?.result?.length ?? 0), next);
     return { count, ids: articles.map((a) => a.pmid) };
   }
 

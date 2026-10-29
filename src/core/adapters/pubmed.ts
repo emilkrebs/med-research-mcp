@@ -22,9 +22,9 @@ export class PubMedAdapter implements DatabaseAdapter {
     this.client = client;
   }
 
-  async search(input: SearchInput): Promise<{ count: number; ids: string[] }> {
-    const { count, pmids } = await this.client.esearch(input);
-    return { count, ids: pmids };
+  async search(input: SearchInput): Promise<{ count: number; ids: string[]; warning?: string; more: boolean }> {
+    const { count, pmids, more, warning } = await this.client.esearch(input);
+    return { count, ids: pmids, ...(warning ? { warning } : {}), more };
   }
 
   async fetch(ids: string[], cache: Cache, warn?: (warning: string) => void): Promise<Article[]> {

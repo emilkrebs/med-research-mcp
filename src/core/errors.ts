@@ -8,6 +8,7 @@ export type ResearchErrorCode =
   | "QUERY_TOO_BROAD"
   | "PARSE_FAILURE"
   | "NETWORK_ERROR"
+  | "TIMEOUT"
   | "NOT_FOUND"
   | "INVALID_INPUT";
 
@@ -90,6 +91,23 @@ export const errors = {
       code: "NETWORK_ERROR",
       message: `Network error: ${detail}`,
       userMessage: "Couldn't reach the database. Check your connection and try again.",
+      recoverable: true,
+    });
+  },
+
+  /**
+   * A call with a deadline (see withDeadline in ./request.ts) used it up: before it could send a request, or,
+   * with `detail` (what the last attempt got), while waiting for an answer or before a retry.
+   */
+  outOfTime(source: string, detail?: string): ResearchApiException {
+    return new ResearchApiException({
+      code: "TIMEOUT",
+      message: detail ? `${detail}: the call ran out of time` : `${source} wasn't asked: the call ran out of time`,
+      userMessage:
+        `This server gives each search or fetch a fixed time, and it ran out ${detail ? "while waiting for" : "before asking"} ` +
+        `${source}. Retry. A deep page of a search keeps what it fetched, so each retry gets further, and the deepest ` +
+        `sort: "date" pages can take several; if retries stop getting further, ask for an earlier page or narrow the ` +
+        `query (more specific terms, a dateRange).`,
       recoverable: true,
     });
   },

@@ -21,14 +21,83 @@ describe("createServer", () => {
     await server.close();
   });
 
-  it("literature_search schema includes dateRange, sort and language", async () => {
+  it("literature_search schema includes dateRange, sort, language and page", async () => {
     const { client, server } = await connect();
     const { tools } = await client.listTools();
     const search = tools.find((t) => t.name === "literature_search")!;
     const props = Object.keys((search.inputSchema as { properties: object }).properties);
-    expect(props).toEqual(expect.arrayContaining(["dateRange", "sort", "language"]));
+    expect(props).toEqual(expect.arrayContaining(["dateRange", "sort", "language", "page"]));
     await client.close();
     await server.close();
+  });
+
+  it("literature_search takes a whole-number page from 1, and rejects any other", async () => {
+    const { client, server } = await connect();
+    const { tools } = await client.listTools();
+    const search = tools.find((t) => t.name === "literature_search")!;
+    const page = (search.inputSchema as { properties: Record<string, unknown> }).properties.page;
+    expect(page).toMatchObject({ type: "integer", minimum: 1, maximum: 10_000 });
+    expect((search.inputSchema as { required?: string[] }).required ?? []).not.toContain("page");
+
+    for (const bad of [0, -1, 1.5, "2", 10_001]) {
+      const result = await client.callTool({ name: "literature_search", arguments: { query: "x", page: bad } });
+      expect(result.isError, JSON.stringify(bad)).toBe(true);
+      expect((result.content as { text: string }[])[0]!.text, JSON.stringify(bad)).toContain("page");
+    }
+    await client.close();
+    await server.close();
+  });
+
+  it("literature_search refuses a page the core can't reach, with INVALID_INPUT", async () => {
+    const { client, server } = await connect();
+    // Within the schema's bound, but record 99,991 of a search.
+    const result = await client.callTool({ name: "literature_search", arguments: { query: "x", page: 10_000 } });
+    expect(result.isError).toBe(true);
+    const text = (result.content as { text: string }[])[0]!.text;
+    expect(text).toContain("INVALID_INPUT");
+    expect(text).toContain("Narrow the query");
+    await client.close();
+    await server.close();
+  });
+
+  it("literature_search returns the page asked for, with nextPage while records remain", async () => {
+    const pmids = Array.from({ length: 25 }, (_, i) => String(10_000_001 + i));
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("esummary.fcgi")) {
+        const ids = url.searchParams.get("id")!.split(",");
+        return new Response(JSON.stringify({ result: { uids: ids, ...Object.fromEntries(ids.map((id) => [id, { uid: id, title: id, pubdate: "2021" }])) } }));
+      }
+      if (url.pathname.endsWith("efetch.fcgi")) return new Response("<PubmedArticleSet/>");
+      return new Response(JSON.stringify({ esearchresult: { count: "25", idlist: pmids } }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const server = createServer({ cache: new LRUBackend(), ncbi: new NcbiClient({ email: "test@example.com", apiKey: "test-key" }) });
+      const client = new Client({ name: "test", version: "0.0.0" });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      await Promise.all([server.connect(st), client.connect(ct)]);
+      const search = async (args: object) => {
+        const result = await client.callTool({ name: "literature_search", arguments: { query: "x", ...args } });
+        expect(result.isError).toBeFalsy();
+        return JSON.parse((result.content as { text: string }[])[0]!.text) as { articles: { pmid: string }[]; total: number; page: number; nextPage?: number };
+      };
+
+      const first = await search({});
+      expect(first).toMatchObject({ total: 25, page: 1, nextPage: 2 });
+      expect(first.articles.map((a) => a.pmid)).toEqual(pmids.slice(0, 10));
+      const second = await search({ page: 2 });
+      expect(second).toMatchObject({ page: 2, nextPage: 3 });
+      expect(second.articles.map((a) => a.pmid)).toEqual(pmids.slice(10, 20));
+      const third = await search({ page: 3 });
+      expect(third.articles.map((a) => a.pmid)).toEqual(pmids.slice(20));
+      expect(third.page).toBe(3);
+      expect(third).not.toHaveProperty("nextPage");
+      await client.close();
+      await server.close();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("lists the databases a search and a fetch accept, and rejects others before searching", async () => {

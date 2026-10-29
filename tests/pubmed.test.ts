@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { NcbiClient, searchPubMed, fetchPubMed } from "../src/core/pubmed";
+import { PubMedAdapter } from "../src/core/adapters/pubmed";
 import { PROJECT_CONTACT_EMAIL } from "../src/core/version";
 import { LRUBackend } from "../src/core/cache";
-import type { NcbiArticle } from "../src/core/types";
+import type { NcbiArticle, SearchInput } from "../src/core/types";
 
 const EFETCH_XML = `<?xml version="1.0" ?>
 <PubmedArticleSet>
@@ -247,7 +248,7 @@ function fakeClient(): NcbiClient {
     ],
   ]);
   return {
-    esearch: async () => ({ count: 2, pmids: ["11111111", "22222222"] }),
+    esearch: async () => ({ count: 2, pmids: ["11111111", "22222222"], more: false }),
     esummary: async (pmids: string[]) => new Map(pmids.map((p) => [p, summaries.get(p)!])),
     efetch: async () =>
       new Map([
@@ -267,6 +268,52 @@ describe("searchPubMed orchestration", () => {
     expect(out.articles[0]?.meshHeadings).toEqual(["Humans"]);
     // 22222222's efetch record carries a retraction link (see the retraction test below).
     expect(out.articles[1]?.studyType).toBe("review");
+    expect(out.page).toBe(1);
+    expect(out).not.toHaveProperty("nextPage");
+  });
+
+  it("returns the page, and nextPage while esearch says records follow it", async () => {
+    const client = fakeClient();
+    const pmids = ["11111111", "22222222"];
+    const esearch = vi.spyOn(client, "esearch").mockResolvedValue({ count: 25, pmids, more: true });
+    const run = (input: Partial<SearchInput>) => searchPubMed({ query: "x", ...input }, new LRUBackend(), client);
+
+    expect(await run({})).toMatchObject({ page: 1, nextPage: 2, total: 25 });
+    expect(await run({ page: 2 })).toMatchObject({ page: 2, nextPage: 3 });
+    expect(esearch).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 }));
+    esearch.mockResolvedValue({ count: 25, pmids, more: false });
+    expect(await run({ page: 3 })).toMatchObject({ page: 3, total: 25 });
+    expect(await run({ page: 3 })).not.toHaveProperty("nextPage");
+  });
+
+  it("rejects a page that is not a whole number from 1", async () => {
+    const esearch = vi.fn();
+    const client = { esearch } as unknown as NcbiClient;
+    for (const page of [0, -1, 1.5, Number.NaN]) {
+      await expect(searchPubMed({ query: "x", page }, new LRUBackend(), client)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    }
+    expect(esearch).not.toHaveBeenCalled();
+  });
+
+  it("passes on esearch's warning, with the records of a page that reaches the 9,999th or none, and without No results returned", async () => {
+    const client = fakeClient();
+    const warning = "PubMed serves only the first 9,999 records of a search.";
+    const esearch = vi.spyOn(client, "esearch").mockResolvedValue({ count: 50_000, pmids: ["11111111", "22222222"], more: false, warning });
+    const run = (page: number) => searchPubMed({ query: "x", page, maxResults: 50 }, new LRUBackend(), client);
+    const last = await run(200);
+    expect(last.articles).toHaveLength(2);
+    expect(last).not.toHaveProperty("nextPage");
+    expect(last.warnings?.[0]).toBe(warning);
+    expect(last.warnings).not.toContain("No results returned.");
+
+    esearch.mockResolvedValue({ count: 50_000, pmids: [], more: false, warning });
+    const past = await run(201);
+    expect(past).toMatchObject({ articles: [], total: 50_000, page: 201 });
+    expect(past).not.toHaveProperty("nextPage");
+    expect(past.warnings).toEqual([warning]);
+
+    esearch.mockResolvedValue({ count: 3, pmids: [], more: false });
+    expect((await run(1)).warnings).toEqual(["No results returned."]);
   });
 
   it("filters by minDesignTier, and says it leaves out unrated records", async () => {
@@ -278,7 +325,7 @@ describe("searchPubMed orchestration", () => {
 
   it("says what the filter leaves out when PubMed returns nothing", async () => {
     const client = fakeClient();
-    vi.spyOn(client, "esearch").mockResolvedValueOnce({ count: 0, pmids: [] });
+    vi.spyOn(client, "esearch").mockResolvedValueOnce({ count: 0, pmids: [], more: false });
     const out = await searchPubMed({ query: "creatine meta-analysis", minDesignTier: 3 }, new LRUBackend(), client);
     expect(out.warnings).toEqual([
       expect.stringContaining("leaves out every record with an unknown design tier"),
@@ -395,7 +442,7 @@ describe("NcbiClient requests", () => {
     expect(term).toBe('(creatine[tiab]) AND ("Randomized Controlled Trial"[pt] OR "Equivalence Trial"[pt])');
 
     // A filter that can keep nothing sends no request.
-    expect(await client.esearch({ query: "x", studyTypes: ["cohort"] })).toEqual({ count: 0, pmids: [] });
+    expect(await client.esearch({ query: "x", studyTypes: ["cohort"] })).toEqual({ count: 0, pmids: [], more: false });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -455,7 +502,7 @@ describe("NcbiClient requests", () => {
     expect(fetchMock.mock.calls.length).toBe(requests + 1);
   });
 
-  it('with sort "date", takes 4 × maxResults from each order and asks esummary for at most 200 at a time', async () => {
+  it('with sort "date", pools enough for the page by doubling from 100, and asks esummary for at most 200 at a time', async () => {
     const ids = (from: number) => Array.from({ length: 200 }, (_, i) => String(from + i));
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const url = new URL(String(input));
@@ -466,12 +513,335 @@ describe("NcbiClient requests", () => {
       return esearchResponse(url.searchParams.get("sort") === "pub_date" ? ids(1000) : ids(2000));
     });
     vi.stubGlobal("fetch", fetchMock);
-    const out = await new NcbiClient({ email: "test@example.com" }).esearch({ query: "x", sort: "date", maxResults: 50 });
-    expect(out.pmids).toHaveLength(50);
+    // A pool of 100 is taken to hold only its first 25 records, fewer than 30, so it doubles to 200.
+    const out = await new NcbiClient({ email: "test@example.com" }).esearch({ query: "x", sort: "date", maxResults: 30 });
+    expect(out.pmids).toHaveLength(30);
     const summaries = fetchMock.mock.calls.map(([u]) => new URL(String(u))).filter((u) => u.pathname.endsWith("esummary.fcgi"));
     expect(summaries.map((u) => u.searchParams.get("id")!.split(",").length)).toEqual([200, 200]);
     const retmax = fetchMock.mock.calls.map(([u]) => new URL(String(u))).find((u) => u.pathname.endsWith("esearch.fcgi"))!.searchParams.get("retmax");
     expect(retmax).toBe("200");
+  });
+
+  /** An esearch response reporting `count` hits, `ids` of them listed. */
+  const esearchOf = (count: number, ids: string[]): Response =>
+    new Response(JSON.stringify({ esearchresult: { count: String(count), idlist: ids } }), { status: 200 });
+  const esearchRequests = (mock: { mock: { calls: unknown[][] } }): URL[] =>
+    mock.mock.calls.map(([u]) => new URL(String(u))).filter((u) => u.pathname.endsWith("esearch.fcgi"));
+  const range = (from: number, to: number): string[] => Array.from({ length: to - from + 1 }, (_, i) => String(from + i));
+  // An API key lifts the request pacing from 3 to 10 a second.
+  const quick = (config: { searchTtlMs?: number } = {}) => new NcbiClient({ email: "test@example.com", apiKey: "test-key", ...config });
+
+  /**
+   * A PubMed whose relevance search holds `count` hits, "1", "2", … in that order, served by retstart and retmax
+   * (no more than are left). With `drift`, each request sees that order one position later than the one before.
+   */
+  const relevanceFetch = (count: number, drift = false) => {
+    let requests = 0;
+    return vi.fn(async (input: string | URL | Request) => {
+      const params = new URL(String(input)).searchParams;
+      const start = Number(params.get("retstart") ?? 0);
+      const length = Math.max(0, Math.min(Number(params.get("retmax")), count - start));
+      const shift = drift ? requests++ : 0;
+      return esearchOf(count, range(start + 1 + shift, start + length + shift));
+    });
+  };
+  const requestedRanges = (mock: { mock: { calls: unknown[][] } }) =>
+    esearchRequests(mock).map((u) => [u.searchParams.get("retstart"), u.searchParams.get("retmax")]);
+
+  it("cuts the pages of a relevance search from one block of 500 PMIDs, in a single request", async () => {
+    const fetchMock = relevanceFetch(2000);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+
+    expect((await client.esearch({ query: "x" })).pmids).toEqual(range(1, 10));
+    expect(await client.esearch({ query: "x", page: 2 })).toEqual({ count: 2000, pmids: range(11, 20), more: true });
+    // Pages of another size are cut from the same list.
+    expect((await client.esearch({ query: "x", maxResults: 50, page: 10 })).pmids).toEqual(range(451, 500));
+    const requests = esearchRequests(fetchMock);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.searchParams.get("retmax")).toBe("500");
+    expect(requests[0]!.searchParams.has("retstart")).toBe(false);
+
+    // Without a search cache, a page is cut from a request of its own.
+    const uncached = quick({ searchTtlMs: 0 });
+    expect((await uncached.esearch({ query: "x", page: 2 })).pmids).toEqual(range(11, 20));
+  });
+
+  it("extends the list with retstart for a page past the first block, and serves later pages from it", async () => {
+    const fetchMock = relevanceFetch(2000);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const page = async (n: number) => (await client.esearch({ query: "x", maxResults: 50, page: n })).pmids;
+    const requested = () => esearchRequests(fetchMock).map((u) => [u.searchParams.get("retstart"), u.searchParams.get("retmax")]);
+
+    expect(await page(1)).toEqual(range(1, 50));
+    expect(await page(11)).toEqual(range(501, 550));
+    expect(requested()).toEqual([[null, "500"], ["500", "500"]]);
+    expect(await page(12)).toEqual(range(551, 600));
+    expect(await page(1)).toEqual(range(1, 50));
+    expect(requested()).toHaveLength(2);
+    expect(await page(21)).toEqual(range(1001, 1050));
+    expect(requested()[2]).toEqual(["1000", "500"]);
+
+    // A first request for a distant page takes every block up to it.
+    const fresh = relevanceFetch(2000);
+    vi.stubGlobal("fetch", fresh);
+    expect((await quick().esearch({ query: "y", maxResults: 50, page: 11 })).pmids).toEqual(range(501, 550));
+    expect(esearchRequests(fresh).map((u) => [u.searchParams.get("retstart"), u.searchParams.get("retmax")])).toEqual([[null, "1000"]]);
+  });
+
+  /** As {@link relevanceFetch}, but every block after the first leads with "3", a record the first one held. */
+  const repeatingFetch = (count: number) =>
+    vi.fn(async (input: string | URL | Request) => {
+      const params = new URL(String(input)).searchParams;
+      const start = Number(params.get("retstart") ?? 0);
+      const length = Math.max(0, Math.min(Number(params.get("retmax")), count - start));
+      return esearchOf(count, start === 0 ? range(1, length) : ["3", ...range(start + 1, start + length - 1)]);
+    });
+
+  it("drops a PMID an extending block repeats, as PubMed's relevance order drifts, so no page repeats one", async () => {
+    const fetchMock = repeatingFetch(600);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const page = async (n: number) => (await client.esearch({ query: "x", maxResults: 50, page: n })).pmids;
+    const seen: string[] = [];
+    for (let n = 1; n <= 12; n++) seen.push(...(await page(n)));
+    expect(seen).toEqual(range(1, 599));
+    expect(esearchRequests(fetchMock)).toHaveLength(2);
+    // The last page, and the one past it, are served again from the list, however often asked for.
+    for (let i = 0; i < 3; i++) {
+      expect(await page(12)).toEqual(range(551, 599));
+      expect(await page(13)).toEqual([]);
+    }
+    expect(esearchRequests(fetchMock)).toHaveLength(2);
+  });
+
+  it("asks again for nothing at a block boundary after the block repeated a PMID", async () => {
+    const fetchMock = repeatingFetch(2000);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const page = async (n: number) => (await client.esearch({ query: "x", maxResults: 50, page: n })).pmids;
+    await page(10);
+    for (let i = 0; i < 3; i++) expect(await page(20)).toEqual(range(951, 999));
+    expect(requestedRanges(fetchMock)).toEqual([[null, "500"], ["500", "500"]]);
+
+    // The next block starts where PubMed's order was taken to (1,000), not after the 999 PMIDs kept.
+    await page(21);
+    expect(requestedRanges(fetchMock)[2]).toEqual(["1000", "500"]);
+  });
+
+  it("extends a list once for calls made at the same time, so their pages follow one another", async () => {
+    const fetchMock = relevanceFetch(2000, true);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const page = async (n: number) => (await client.esearch({ query: "x", maxResults: 50, page: n })).pmids;
+
+    const first = await Promise.all([page(1), page(2), page(10)]);
+    expect(first).toEqual([range(1, 50), range(51, 100), range(451, 500)]);
+    expect(esearchRequests(fetchMock)).toHaveLength(1);
+
+    // Calls reaching past the list wait for the one extending it, which serves them all.
+    const later = await Promise.all([page(11), page(12), page(13)]);
+    expect(esearchRequests(fetchMock)).toHaveLength(2);
+    const all = [...first.flat(), ...later.flat()];
+    expect(new Set(all).size).toBe(all.length);
+    expect(later.map((p) => p.length)).toEqual([50, 50, 50]);
+  });
+
+  it("lets a call that waited for an extension that failed extend the list itself", async () => {
+    let calls = 0;
+    const fetchMock = vi.fn(async () =>
+      calls++ === 0 ? new Response(JSON.stringify({ esearchresult: { ERROR: "boom" } }), { status: 200 }) : esearchOf(100, range(1, 100)),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const [first, second] = await Promise.allSettled([client.esearch({ query: "x" }), client.esearch({ query: "x", page: 2 })]);
+    expect(first.status).toBe("rejected");
+    expect(second).toMatchObject({ status: "fulfilled", value: { pmids: range(11, 20) } });
+    expect(esearchRequests(fetchMock)).toHaveLength(2);
+  });
+
+  it("says whether a page follows the one it returns", async () => {
+    vi.stubGlobal("fetch", relevanceFetch(25));
+    const client = quick();
+    const more = async (input: Partial<SearchInput>) => (await client.esearch({ query: "x", ...input })).more;
+    expect(await more({})).toBe(true);
+    expect(await more({ page: 2 })).toBe(true);
+    // Records 21 to 25 of 25.
+    expect(await more({ page: 3 })).toBe(false);
+    expect(await more({ maxResults: 25 })).toBe(false);
+    expect(await more({ maxResults: 24 })).toBe(true);
+  });
+
+  it("returns no PMIDs and a warning for a page starting past PubMed's first 9,999 records", async () => {
+    const fetchMock = relevanceFetch(20_000);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+
+    const out = await client.esearch({ query: "x", maxResults: 50, page: 201 });
+    expect(out).toEqual({ count: 20_000, pmids: [], more: false, warning: expect.stringContaining("first 9,999 records") });
+    // Only the count is asked for.
+    expect(esearchRequests(fetchMock).map((u) => u.searchParams.get("retmax"))).toEqual(["0"]);
+
+    // With the search cached, its count is reused.
+    await client.esearch({ query: "y", maxResults: 50 });
+    expect(await client.esearch({ query: "y", maxResults: 50, page: 300 })).toMatchObject({ count: 20_000, pmids: [], warning: expect.any(String) });
+    expect(esearchRequests(fetchMock)).toHaveLength(2);
+  });
+
+  it("serves the records up to the 9,999th, warning from the page that reaches it, and none from the next one", async () => {
+    vi.stubGlobal("fetch", relevanceFetch(20_000));
+    const client = quick();
+    const before = await client.esearch({ query: "x", maxResults: 50, page: 199 });
+    expect(before).toMatchObject({ pmids: range(9901, 9950), more: true });
+    expect(before).not.toHaveProperty("warning");
+    // Page 200 of 50 starts at record 9,951: it holds the 49 records served.
+    const last = await client.esearch({ query: "x", maxResults: 50, page: 200 });
+    expect(last).toMatchObject({ pmids: range(9951, 9999), more: false, warning: expect.stringContaining("first 9,999 records") });
+
+    const edge = quick();
+    expect(await edge.esearch({ query: "y", maxResults: 3, page: 3333 })).toMatchObject({ pmids: range(9997, 9999), warning: expect.any(String) });
+    expect(await edge.esearch({ query: "y", maxResults: 3, page: 3334 })).toMatchObject({ pmids: [], warning: expect.any(String) });
+  });
+
+  it("has no warning for a search of 9,999 records or fewer, up to its last page", async () => {
+    vi.stubGlobal("fetch", relevanceFetch(9999));
+    const last = await quick().esearch({ query: "x", maxResults: 50, page: 200 });
+    expect(last.pmids).toEqual(range(9951, 9999));
+    expect(last).toMatchObject({ more: false });
+    expect(last).not.toHaveProperty("warning");
+  });
+
+  it("doesn't warn about the 9,999 limit for a page past the end of a smaller search", async () => {
+    const fetchMock = relevanceFetch(5_981);
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await quick().esearch({ query: "x", maxResults: 1, page: 10_000 });
+    expect(out).toEqual({ count: 5_981, pmids: [], more: false });
+    // Only the count is asked for, as for a search that is capped.
+    expect(esearchRequests(fetchMock).map((u) => u.searchParams.get("retmax"))).toEqual(["0"]);
+  });
+
+  /**
+   * A PubMed whose `count` hits "1" … `count` were published in that order: the issue-date order lists the oldest first,
+   * the date-added order the newest first, except that the newest, if `newestAt` is not 0, comes at that position.
+   */
+  const dateFetch = (count: number, newestAt = 0) =>
+    vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("esummary.fcgi")) {
+        const ids = url.searchParams.get("id")!.split(",");
+        const docs = ids.map((id) => [id, { uid: id, title: id, pubdate: String(1000 + Number(id)) }]);
+        return new Response(JSON.stringify({ result: { uids: ids, ...Object.fromEntries(docs) } }));
+      }
+      const added = range(1, count).reverse();
+      if (newestAt > 0) added.splice(newestAt, 0, added.shift()!);
+      const order = url.searchParams.get("sort") === "pub_date" ? range(1, count) : added;
+      return esearchOf(count, order.slice(0, Number(url.searchParams.get("retmax"))));
+    });
+  const summaryRequests = (mock: { mock: { calls: unknown[][] } }): URL[] =>
+    mock.mock.calls.map(([u]) => new URL(String(u))).filter((u) => u.pathname.endsWith("esummary.fcgi"));
+
+  it('with sort "date", cuts the pages of a result the pool holds whole from one order', async () => {
+    const fetchMock = dateFetch(25);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const page = async (n: number) => (await client.esearch({ query: "x", sort: "date", page: n })).pmids;
+
+    expect(await page(1)).toEqual(range(16, 25).reverse());
+    expect(await page(2)).toEqual(range(6, 15).reverse());
+    expect(await page(3)).toEqual(range(1, 5).reverse());
+    expect(esearchRequests(fetchMock)).toHaveLength(2);
+  });
+
+  it('with sort "date", pools more of each order for a page past the part of the pool that is final', async () => {
+    const fetchMock = dateFetch(5000);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const page = async (n: number) => (await client.esearch({ query: "x", sort: "date", page: n })).pmids;
+    const retmaxes = () => esearchRequests(fetchMock).map((u) => u.searchParams.get("retmax"));
+
+    expect(await page(1)).toEqual(range(4991, 5000).reverse());
+    // The first 100 of each order are final to 25 records, so page 2 (to record 20) needs no new request.
+    expect(await page(2)).toEqual(range(4981, 4990).reverse());
+    expect(retmaxes()).toEqual(["100", "100"]);
+    // Page 3 reaches record 30, so 4 × 30 of each order are pooled, from 100 doubling to 200.
+    expect(await page(3)).toEqual(range(4971, 4980).reverse());
+    expect(retmaxes()).toEqual(["100", "100", "200", "200"]);
+  });
+
+  it('with sort "date", takes a pool of 800 or more PMIDs of each order as final to half of it', async () => {
+    const fetchMock = dateFetch(5000);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const page = async (n: number) => (await client.esearch({ query: "x", sort: "date", maxResults: 50, page: n })).pmids;
+    const retmaxes = () => esearchRequests(fetchMock).map((u) => u.searchParams.get("retmax"));
+
+    // Record 400 is within the first half of 800; record 500 needs 1,600, where a quarter would have needed 3,200.
+    expect(await page(8)).toEqual(range(4601, 4650).reverse());
+    expect(retmaxes()).toEqual(["800", "800"]);
+    expect(await page(10)).toEqual(range(4501, 4550).reverse());
+    expect(retmaxes()).toEqual(["800", "800", "1600", "1600"]);
+  });
+
+  it('with sort "date", keeps the records served when a larger pool brings in a newer one, and summarizes none twice', async () => {
+    // The newest record, 5000, is the 151st of the date-added order: outside the first pool of 100.
+    const fetchMock = dateFetch(5000, 150);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const seen: string[] = [];
+    for (let n = 1; n <= 6; n++) seen.push(...(await client.esearch({ query: "x", sort: "date", page: n })).pmids);
+
+    expect(seen).toHaveLength(60);
+    expect(new Set(seen).size).toBe(60);
+    // The records of the first pool's final quarter stay where they were; the newer one follows them.
+    expect(seen.slice(0, 26)).toEqual([...range(4975, 4999).reverse(), "5000"]);
+    // Pools of 100, 200 and 400 of each order, grown by doubling, not once per page.
+    expect(esearchRequests(fetchMock).length).toBeLessThanOrEqual(6);
+    // Only the PMIDs a pool adds are summarized: 200 + 200 + 400 of the 800 in the last pool.
+    const summarized = summaryRequests(fetchMock).flatMap((u) => u.searchParams.get("id")!.split(","));
+    expect(summarized).toHaveLength(800);
+    expect(new Set(summarized).size).toBe(800);
+  });
+
+  it('with sort "date", pools once for pages requested at the same time', async () => {
+    const fetchMock = dateFetch(5000);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const pages = await Promise.all([1, 2].map(async (n) => (await client.esearch({ query: "x", sort: "date", page: n })).pmids));
+    expect(pages).toEqual([range(4991, 5000).reverse(), range(4981, 4990).reverse()]);
+    expect(esearchRequests(fetchMock)).toHaveLength(2);
+  });
+
+  it('with sort "date", answers a page past the last record from the counts, without summarizing the pool', async () => {
+    const fetchMock = dateFetch(676);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    expect(await client.esearch({ query: "x", sort: "date", maxResults: 50, page: 70 })).toEqual({ count: 676, pmids: [], more: false });
+    expect(esearchRequests(fetchMock)).toHaveLength(2);
+    expect(summaryRequests(fetchMock)).toHaveLength(0);
+
+    // Once the search is known, a page past its end sends nothing.
+    await client.esearch({ query: "y", sort: "date" });
+    const requests = fetchMock.mock.calls.length;
+    expect((await client.esearch({ query: "y", sort: "date", maxResults: 50, page: 70 })).pmids).toEqual([]);
+    expect(fetchMock.mock.calls.length).toBe(requests);
+  });
+
+  it('with sort "date", keeps the dates a failed call summarized, so the next one summarizes only the rest', async () => {
+    const dates = dateFetch(5000);
+    let summaries = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request) =>
+      new URL(String(input)).pathname.endsWith("esummary.fcgi") && ++summaries === 2 ? new Response("", { status: 400 }) : dates(input),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const search = () => client.esearch({ query: "x", sort: "date", maxResults: 50 });
+
+    await expect(search()).rejects.toMatchObject({ code: "NETWORK_ERROR" });
+    expect((await search()).pmids).toEqual(range(4951, 5000).reverse());
+    const batches = summaryRequests(fetchMock).map((u) => u.searchParams.get("id"));
+    expect(batches).toHaveLength(3);
+    expect(batches[2]).toBe(batches[1]);
   });
 
   it("waits out a 429 and retries, holding back the queue, instead of failing the call", async () => {
@@ -486,8 +856,8 @@ describe("NcbiClient requests", () => {
     // The second search waits behind the first one's retry.
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(5000);
-    expect(await first).toEqual({ count: 1, pmids: ["1"] });
-    expect(await second).toEqual({ count: 1, pmids: ["2"] });
+    expect(await first).toEqual({ count: 1, pmids: ["1"], more: false });
+    expect(await second).toEqual({ count: 1, pmids: ["2"], more: false });
   });
 
   it("gives up with RATE_LIMIT after its retries, or at once when NCBI asks for a long wait", async () => {
@@ -522,6 +892,23 @@ describe("NcbiClient requests", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ result: { uids: ["37968687"], "37968687": doc } }), { status: 200 })));
     const out = await new NcbiClient({ email: "test@example.com" }).esummary(["37968687"]);
     expect(out.get("37968687")).toMatchObject({ pmcid: "PMC10647179", doi: "10.1186/s12916-023-03146-5" });
+  });
+});
+
+describe("PubMedAdapter.search", () => {
+  it("passes on the page's PMIDs, esearch's warning and whether a page follows", async () => {
+    const esearch = vi.fn(
+      async (_input: SearchInput): Promise<{ count: number; pmids: string[]; more: boolean; warning?: string }> => ({ count: 30_000, pmids: [], more: false, warning: "Past 9,999." }),
+    );
+    const adapter = new PubMedAdapter({ esearch } as unknown as NcbiClient);
+    expect(await adapter.search({ query: "x", page: 201, maxResults: 50 })).toEqual({ count: 30_000, ids: [], warning: "Past 9,999.", more: false });
+    expect(esearch).toHaveBeenCalledWith({ query: "x", page: 201, maxResults: 50 });
+
+    esearch.mockResolvedValue({ count: 30_000, pmids: ["1"], more: true });
+    expect((await adapter.search({ query: "x", page: 199, maxResults: 50 })).more).toBe(true);
+
+    esearch.mockResolvedValue({ count: 2, pmids: ["1", "2"], more: false });
+    expect(await adapter.search({ query: "x" })).toEqual({ count: 2, ids: ["1", "2"], more: false });
   });
 });
 

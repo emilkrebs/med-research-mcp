@@ -31,19 +31,40 @@
  * "gut OR microbiota" each match 55 ChinaXiv records, "vitamin" 87 and
  * "depression" 229, but "vitamin depression" none (2026-10-20). An empty result
  * for a query of several words says so.
+ *
+ * Paging: the page size baked into a `next_cursor` overrides the request's `limit` (checked 2026-10-28).
+ * A cursor is base64 of the page and its size (`{"page": 2, "per_page": 2}`), not server state,
+ * so a remembered one stays valid and a failed request leaves it in place (2026-10-29).
  */
 
+import { LRUCache } from "lru-cache";
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { cleanDoi, first, isoDateBound, strArray, withoutPubMedTags } from "./util.js";
+import { cleanDoi, first, isoDateBound, pageWindow, strArray, withoutPubMedTags } from "./util.js";
 import type { Cache } from "../cache.js";
 import type { Article, SearchInput } from "../types.js";
 import { envSetting } from "../version.js";
 
 const BASE = "https://chinarxiv.org/api/v1/papers";
-const MAX_RESULTS_CAP = 50;
+const CURSOR_MEMO_MAX = 500;
+const CURSOR_MEMO_TTL_MS = 60 * 60 * 1000;
 /** Bound on the complete-record memo, like the base class's search memo. */
 const FULL_CAP = 1000;
+
+/** What earlier requests of one query learned: the cursor of each page by index, and the total. */
+interface QueryPaging {
+  cursors: Map<number, string>;
+  total?: number;
+}
+
+/** The greatest page index up to `pageIndex` with a memoized cursor (page 0 needs none). */
+function nearestPage(cursors: Map<number, string>, pageIndex: number): { index: number; cursor?: string } {
+  let best: { index: number; cursor?: string } = { index: 0 };
+  for (const [index, cursor] of cursors) {
+    if (index <= pageIndex && index > best.index) best = { index, cursor };
+  }
+  return best;
+}
 
 /** The corpora this adapter reads, by adapter id (also the API's `source` value). */
 export type ChinaRxivCorpus = "chinaxiv" | "russiarxiv";
@@ -137,30 +158,55 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
     return this.corpus;
   }
 
+  /** Per query and page size: a cursor encodes its page size, so those never share cursors. */
+  private readonly paging = new LRUCache<string, QueryPaging>({ max: CURSOR_MEMO_MAX, ttl: CURSOR_MEMO_TTL_MS });
+
   async search(input: SearchInput): Promise<{ count: number; ids: string[]; warning?: string }> {
-    const limit = Math.min(Math.max(input.maxResults ?? 10, 1), MAX_RESULTS_CAP);
+    const { offset, size } = pageWindow(input);
+    const pageIndex = offset / size;
     // PubMed field tags mean nothing here and would be searched as words.
     const q = withoutPubMedTags(input.query);
-    const params = new URLSearchParams({ q, limit: String(limit), source: this.sourceFor(input) });
+    const params = new URLSearchParams({ q, limit: String(size), source: this.sourceFor(input) });
     const from = isoDateBound(input.dateRange?.from, "from");
     const to = isoDateBound(input.dateRange?.to, "to");
     if (from) params.set("from_date", from);
     if (to) params.set("to_date", to);
+    const key = params.toString();
+    let paging = this.paging.get(key);
+    if (!paging) this.paging.set(key, (paging = { cursors: new Map() }));
+    const known = paging;
 
-    const data = await this.http.json<PaperResponse>(`${BASE}?${params.toString()}`);
+    const result = (count: number, ids: string[]) =>
+      count === 0 && /\S\s+\S/.test(q)
+        ? {
+            count,
+            ids,
+            warning:
+              `${this.name} matched nothing: it returns only records containing every word of the query and treats ` +
+              `AND/OR as words. Try one or two key words.`,
+          }
+        : { count, ids };
+    if (pageIndex > 0 && known.total !== undefined && offset >= known.total) return result(known.total, []);
+    let { index, cursor } = nearestPage(known.cursors, pageIndex);
+    const get = async (): Promise<PaperResponse> => {
+      const withCursor = new URLSearchParams(params);
+      if (cursor) withCursor.set("cursor", cursor);
+      const data = await this.http.json<PaperResponse>(`${BASE}?${withCursor.toString()}`);
+      if (data?.total != null) known.total = Number(data.total);
+      return data;
+    };
+    while (index < pageIndex) {
+      const walked = await get();
+      if (!walked?.next_cursor || offset >= (known.total ?? Infinity)) return result(parsePapers(walked).count, []);
+      cursor = walked.next_cursor;
+      index += 1;
+      known.cursors.set(index, cursor);
+    }
+    const data = await get();
     const parsed = parsePapers(data);
     this.remember(parsed.articles);
-    const ids = parsed.articles.map((a) => a.pmid);
-    if (parsed.count === 0 && /\S\s+\S/.test(q)) {
-      return {
-        count: 0,
-        ids,
-        warning:
-          `${this.name} matched nothing: it returns only records containing every word of the query and treats ` +
-          `AND/OR as words. Try one or two key words.`,
-      };
-    }
-    return { count: parsed.count, ids };
+    if (data?.next_cursor) known.cursors.set(pageIndex + 1, data.next_cursor);
+    return result(parsed.count, parsed.articles.map((a) => a.pmid));
   }
 
   /**

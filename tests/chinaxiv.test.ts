@@ -3,6 +3,7 @@ import { ChinaRXivAdapter, chinaxivHeaders, parsePapers } from "../src/core/adap
 import { SovietRxivAdapter } from "../src/core/adapters/russiarxiv";
 import { defaultHttp, type AdapterHttp } from "../src/core/adapters/http";
 import { LRUBackend } from "../src/core/cache";
+import { errors } from "../src/core/errors";
 import { classifyArticle } from "../src/core/grader";
 
 /** A ChinaXiv search result as the v1 API returns it (PaperSummary, abstract cut at 500 characters). */
@@ -298,6 +299,159 @@ describe("SovietRxivAdapter", () => {
     // A record under a different id is another paper, not this one.
     const other = fakeHttp({ ...RUSSIARXIV_RECORD, id: "ru-196101.52277" });
     expect(await new SovietRxivAdapter(other.http).fetch(["ru-196201.58177"], new LRUBackend())).toEqual([]);
+  });
+});
+
+/** A fake ChinaRxiv that pages by opaque base64 cursors whose per_page overrides `limit`, over `total` records. */
+function pagedHttp(total: number): { http: AdapterHttp; urls: URLSearchParams[] } {
+  const urls: URLSearchParams[] = [];
+  const http: AdapterHttp = {
+    json: async <T>(url: string): Promise<T> => {
+      const p = new URL(url).searchParams;
+      urls.push(p);
+      const cursor = p.get("cursor");
+      const { page, per_page } = cursor
+        ? (JSON.parse(Buffer.from(cursor, "base64").toString()) as { page: number; per_page: number })
+        : { page: 1, per_page: Number(p.get("limit")) };
+      const start = (page - 1) * per_page;
+      const data = Array.from({ length: Math.max(0, Math.min(per_page, total - start)) }, (_, i) => ({
+        ...CHINAXIV_RECORD,
+        id: `chinaxiv-${start + i}`,
+      }));
+      const next = start + per_page < total ? Buffer.from(JSON.stringify({ page: page + 1, per_page })).toString("base64") : null;
+      return { total, limit: per_page, next_cursor: next, data } as T;
+    },
+    text: async () => "",
+  };
+  return { http, urls };
+}
+
+const idRange = (from: number, to: number): string[] => Array.from({ length: to - from }, (_, i) => `chinaxiv-${from + i}`);
+
+describe("ChinaRxiv paging", () => {
+  it("page 1 sends no cursor and keeps the page size as limit", async () => {
+    const { http, urls } = pagedHttp(100);
+    const out = await new ChinaRXivAdapter(http).search({ query: "depression", maxResults: 10 });
+    expect(out).toEqual({ count: 100, ids: idRange(0, 10) });
+    expect(urls).toHaveLength(1);
+    expect(urls[0]!.get("limit")).toBe("10");
+    expect(urls[0]!.has("cursor")).toBe(false);
+  });
+
+  it("page 2 after page 1 uses the remembered cursor in one request", async () => {
+    const { http, urls } = pagedHttp(100);
+    const adapter = new ChinaRXivAdapter(http);
+    await adapter.search({ query: "depression", maxResults: 10 });
+    const out = await adapter.search({ query: "depression", maxResults: 10, page: 2 });
+    expect(out.ids).toEqual(idRange(10, 20));
+    expect(urls).toHaveLength(2);
+    expect(urls[1]!.get("cursor")).toBeTruthy();
+    expect(urls[1]!.get("limit")).toBe("10");
+  });
+
+  it("walks cold to a later page one request per page, then remembers every cursor", async () => {
+    const { http, urls } = pagedHttp(100);
+    const adapter = new ChinaRXivAdapter(http);
+    const out = await adapter.search({ query: "depression", maxResults: 10, page: 3 });
+    expect(out.ids).toEqual(idRange(20, 30));
+    expect(urls.map((u) => [u.get("limit"), u.has("cursor")])).toEqual([
+      ["10", false],
+      ["10", true],
+      ["10", true],
+    ]);
+
+    urls.length = 0;
+    expect((await adapter.search({ query: "depression", maxResults: 10, page: 2 })).ids).toEqual(idRange(10, 20));
+    expect((await adapter.search({ query: "depression", maxResults: 10, page: 4 })).ids).toEqual(idRange(30, 40));
+    expect(urls).toHaveLength(2);
+  });
+
+  it("does not reuse cursors made for another page size or query", async () => {
+    const { http, urls } = pagedHttp(100);
+    const adapter = new ChinaRXivAdapter(http);
+    await adapter.search({ query: "depression", maxResults: 10 });
+    urls.length = 0;
+    // A page-size-10 cursor would override limit=5 and return the wrong records.
+    expect((await adapter.search({ query: "depression", maxResults: 5, page: 2 })).ids).toEqual(idRange(5, 10));
+    expect(urls.map((u) => [u.get("limit"), u.has("cursor")])).toEqual([
+      ["5", false],
+      ["5", true],
+    ]);
+    urls.length = 0;
+    await adapter.search({ query: "anxiety", maxResults: 10, page: 2 });
+    expect(urls).toHaveLength(2);
+  });
+
+  it("returns no ids, with the total and no warning, for a page past the end, in one request", async () => {
+    const { http, urls } = pagedHttp(25);
+    const adapter = new ChinaRXivAdapter(http);
+    const out = await adapter.search({ query: "vitamin depression", maxResults: 10, page: 5 });
+    expect(out).toEqual({ count: 25, ids: [] });
+    expect(urls).toHaveLength(1);
+    // The total is known now: further pages past the end cost nothing.
+    expect(await adapter.search({ query: "vitamin depression", maxResults: 10, page: 50 })).toEqual({ count: 25, ids: [] });
+    expect(urls).toHaveLength(1);
+  });
+
+  it("stops a walk at the first response that shows the page is past the end", async () => {
+    const { http, urls } = pagedHttp(2000);
+    const out = await new ChinaRXivAdapter(http).search({ query: "depression", maxResults: 50, page: 500 });
+    expect(out).toEqual({ count: 2000, ids: [] });
+    expect(urls).toHaveLength(1);
+  });
+
+  it("keeps the records of walked pages out of the shared record memo", async () => {
+    const { http, urls } = pagedHttp(5000);
+    const adapter = new ChinaRXivAdapter(http);
+    const cache = new LRUBackend();
+    const first = await adapter.search({ query: "depression", maxResults: 50 });
+    // Remembering all 21 walked pages would overflow the memo and wipe the first page's records.
+    await adapter.search({ query: "anxiety", maxResults: 50, page: 22 });
+    urls.length = 0;
+    expect((await adapter.fetch(first.ids, cache)).map((a) => a.pmid)).toEqual(first.ids);
+    expect(urls).toHaveLength(0);
+  });
+
+  it("keeps a remembered cursor when its request fails, and doesn't retry it", async () => {
+    const { http: inner, urls } = pagedHttp(100);
+    let failNext = false;
+    const http: AdapterHttp = {
+      ...inner,
+      json: async <T>(url: string): Promise<T> => {
+        if (failNext) {
+          failNext = false;
+          urls.push(new URL(url).searchParams);
+          throw errors.rateLimit(60, "ChinaRxiv");
+        }
+        return inner.json<T>(url);
+      },
+    };
+    const adapter = new ChinaRXivAdapter(http);
+    await adapter.search({ query: "depression", maxResults: 10, page: 2 });
+
+    urls.length = 0;
+    failNext = true;
+    await expect(adapter.search({ query: "depression", maxResults: 10, page: 3 })).rejects.toMatchObject({ code: "RATE_LIMIT" });
+    expect(urls).toHaveLength(1);
+    const cursor = urls[0]!.get("cursor");
+    expect(cursor).toBeTruthy();
+
+    // The cursor survived the failure: the retry needs one request.
+    urls.length = 0;
+    expect((await adapter.search({ query: "depression", maxResults: 10, page: 3 })).ids).toEqual(idRange(20, 30));
+    expect(urls.map((u) => u.get("cursor"))).toEqual([cursor]);
+  });
+
+  it("returns the partial last page and nothing right after it", async () => {
+    const adapter = new ChinaRXivAdapter(pagedHttp(25).http);
+    expect((await adapter.search({ query: "depression", maxResults: 10, page: 3 })).ids).toEqual(idRange(20, 25));
+    expect(await adapter.search({ query: "depression", maxResults: 10, page: 4 })).toEqual({ count: 25, ids: [] });
+  });
+
+  it("pages the RussiaRxiv corpus the same way", async () => {
+    const { http, urls } = pagedHttp(100);
+    await new SovietRxivAdapter(http).search({ query: "acids", maxResults: 10, page: 2 });
+    expect(urls.map((u) => u.get("source"))).toEqual(["russiarxiv", "russiarxiv"]);
   });
 });
 

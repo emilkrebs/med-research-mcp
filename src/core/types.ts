@@ -149,8 +149,10 @@ export interface SearchInput {
    * out to every adapter. Defaults to "pubmed" when omitted.
    */
   database?: string | string[];
-  /** Results to return. Default 10, hard cap 50. */
+  /** Results per database and page. Default 10, hard cap 50. */
   maxResults?: number;
+  /** Page of results, from 1: page n holds each database's records (n−1)·maxResults+1 to n·maxResults. Default 1. A page starting past the 10,000th record is refused. */
+  page?: number;
   /** Drop results below this design tier (0–5). Results with an unknown tier are dropped too. Default: keep all. Narrows the query like `studyTypes`. */
   minDesignTier?: number;
   /**
@@ -173,9 +175,14 @@ export interface SearchInput {
 
 export interface SearchOutput {
   articles: GradedArticle[];
-  /** Hits reported by the databases searched, summed, before maxResults truncation (of the narrowed query, with a design filter). */
+  /** Hits reported by the databases searched, summed, before paging (of the narrowed query, with a design filter). */
   total: number;
   query: string;
+  page: number;
+  /** The records per database the page holds: ask for nextPage with it, as pages of another size start elsewhere. */
+  maxResults: number;
+  /** The page to ask for next; absent when no database searched has records past this page, or paging can't reach them. */
+  nextPage?: number;
   warnings?: string[];
 }
 

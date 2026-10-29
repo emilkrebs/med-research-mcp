@@ -1,11 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 import { searchLiterature, fetchLiterature } from "../src/core/literature";
 import { adaptersFor } from "../src/core/adapters/registry";
-import { cleanDoi, dateKey, doiKey, isoDateBound, withoutPubMedTags } from "../src/core/adapters/util";
+import { cleanDoi, dateKey, doiKey, isoDateBound, pageWindow, withoutPubMedTags } from "../src/core/adapters/util";
 import { errors } from "../src/core/errors";
 import { LRUBackend } from "../src/core/cache";
 import type { DatabaseAdapter } from "../src/core/adapters/types";
-import type { NcbiArticle } from "../src/core/types";
+import type { NcbiArticle, SearchInput } from "../src/core/types";
 
 /** A fake adapter that serves a fixed set of articles from memory. */
 function fakeAdapter(id: string, articles: NcbiArticle[], count = articles.length): DatabaseAdapter {
@@ -482,6 +482,180 @@ describe("searchLiterature input and design filters", () => {
     };
     const out = await searchLiterature({ query: "a b", database: "all" }, new LRUBackend(), [fakeAdapter("pubmed", [pubmedMeta]), quiet]);
     expect(out.warnings).toContain("ChinaXiv matched nothing: try fewer words.");
+  });
+});
+
+describe("searchLiterature paging", () => {
+  const run = (input: Partial<SearchInput>, ...counts: number[]) =>
+    searchLiterature({ query: "x", ...input }, new LRUBackend(), counts.map((count, i) => fakeAdapter(`db${i}`, [], count)));
+
+  it("returns the page asked for, 1 by default, and hands it to each database", async () => {
+    const search = vi.fn(async (_input: SearchInput) => ({ count: 100, ids: ["1"] }));
+    const adapter: DatabaseAdapter = { ...fakeAdapter("pubmed", [pubmedMeta]), search };
+    expect(await searchLiterature({ query: "x" }, new LRUBackend(), [adapter])).toMatchObject({ page: 1, nextPage: 2 });
+    expect(await searchLiterature({ query: "x", page: 3 }, new LRUBackend(), [adapter])).toMatchObject({ page: 3, nextPage: 4 });
+    expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ page: 3 }));
+  });
+
+  it("returns the page even when nothing is searched", async () => {
+    const chinaxiv: DatabaseAdapter = { ...fakeAdapter("chinaxiv", [chinaxivRct]), designMetadata: false };
+    const none = await searchLiterature({ query: "x", studyTypes: ["cohort"], page: 2 }, new LRUBackend(), [fakeAdapter("pubmed", [pubmedMeta])]);
+    expect(none).toMatchObject({ articles: [], page: 2, maxResults: 10 });
+    const skipped = await searchLiterature({ query: "x", database: "chinaxiv", studyTypes: ["randomized-controlled-trial"], page: 2 }, new LRUBackend(), [chinaxiv]);
+    expect(skipped).toMatchObject({ articles: [], page: 2, maxResults: 10 });
+  });
+
+  it("returns the page size, so that nextPage is asked for with it", async () => {
+    expect(await run({}, 11)).toMatchObject({ maxResults: 10, nextPage: 2 });
+    expect(await run({ maxResults: 20 }, 50)).toMatchObject({ maxResults: 20, nextPage: 2 });
+    expect(await run({ maxResults: 100 }, 51)).toMatchObject({ maxResults: 50 });
+  });
+
+  it("sets nextPage while a database has records past the page, and not once every count is within it", async () => {
+    expect(await run({}, 11)).toMatchObject({ page: 1, nextPage: 2 });
+    expect(await run({}, 10)).not.toHaveProperty("nextPage");
+    expect(await run({}, 0)).not.toHaveProperty("nextPage");
+    expect(await run({ page: 2 }, 21)).toMatchObject({ page: 2, nextPage: 3 });
+    expect(await run({ page: 2 }, 20)).not.toHaveProperty("nextPage");
+    // The page size is maxResults, at most 50.
+    expect(await run({ maxResults: 50 }, 50)).not.toHaveProperty("nextPage");
+    expect(await run({ maxResults: 50 }, 51)).toMatchObject({ nextPage: 2 });
+    expect(await run({ maxResults: 100 }, 51)).toMatchObject({ nextPage: 2 });
+    expect(await run({ maxResults: 100 }, 50)).not.toHaveProperty("nextPage");
+  });
+
+  it("sets nextPage when only one of several databases has records past the page", async () => {
+    expect(await run({ page: 2 }, 15, 25)).toMatchObject({ nextPage: 3 });
+    expect(await run({ page: 2 }, 25, 15)).toMatchObject({ nextPage: 3 });
+    expect(await run({ page: 2 }, 15, 20)).not.toHaveProperty("nextPage");
+  });
+
+  it("sets no nextPage when the next page would start at the 10,000th record", async () => {
+    expect(await run({ page: 999 }, 50_000)).toMatchObject({ nextPage: 1000 });
+    expect(await run({ page: 1000 }, 50_000)).not.toHaveProperty("nextPage");
+    expect(await run({ page: 199, maxResults: 50 }, 50_000)).toMatchObject({ nextPage: 200 });
+    expect(await run({ page: 200, maxResults: 50 }, 50_000)).not.toHaveProperty("nextPage");
+  });
+
+  it("follows a database's own word on whether a later page can be served", async () => {
+    const capped: DatabaseAdapter = { ...fakeAdapter("pubmed", [pubmedMeta]), search: async () => ({ count: 30_000, ids: ["1"], more: false }) };
+    expect(await searchLiterature({ query: "x" }, new LRUBackend(), [capped])).not.toHaveProperty("nextPage");
+  });
+
+  it("raises INVALID_INPUT for a page that isn't a whole number from 1, before searching", async () => {
+    const search = vi.fn(async (_input: SearchInput) => ({ count: 1, ids: ["1"] }));
+    const adapters: DatabaseAdapter[] = [{ ...fakeAdapter("pubmed", [pubmedMeta]), search }];
+    for (const page of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(searchLiterature({ query: "x", page }, new LRUBackend(), adapters), String(page)).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+        userMessage: expect.stringContaining("page"),
+      });
+    }
+    expect(search).not.toHaveBeenCalled();
+    await expect(searchLiterature({ query: "x", page: 1 }, new LRUBackend(), adapters)).resolves.toMatchObject({ page: 1 });
+  });
+
+  it("raises INVALID_INPUT for a page starting at or past the 10,000th record, before searching", async () => {
+    const search = vi.fn(async (_input: SearchInput) => ({ count: 50_000, ids: ["1"] }));
+    const adapters: DatabaseAdapter[] = [{ ...fakeAdapter("pubmed", [pubmedMeta]), search }];
+    for (const input of [
+      { page: 1001 },
+      { page: 201, maxResults: 50 },
+      { page: 5001, maxResults: 2.5 },
+      { page: 10_001, maxResults: 1 },
+      { page: 1_000_000 },
+    ]) {
+      await expect(searchLiterature({ query: "x", ...input }, new LRUBackend(), adapters), JSON.stringify(input)).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+        userMessage: expect.stringContaining("Narrow the query"),
+      });
+    }
+    expect(search).not.toHaveBeenCalled();
+    for (const input of [{ page: 1000 }, { page: 200, maxResults: 50 }, { page: 5000, maxResults: 2.5 }, { page: 10_000, maxResults: 1 }]) {
+      await expect(searchLiterature({ query: "x", ...input }, new LRUBackend(), adapters), JSON.stringify(input)).resolves.toMatchObject({
+        page: input.page,
+      });
+    }
+  });
+
+  it("warns that a page is past the last result, when nothing is fetched for it", async () => {
+    const past = await run({ page: 4 }, 25);
+    expect(past).toMatchObject({ articles: [], total: 25, page: 4 });
+    expect(past).not.toHaveProperty("nextPage");
+    expect(past.warnings).toEqual([expect.stringContaining("Page 4 is past the last result")]);
+
+    // The last reachable page of a one-record page size is record 10,000, not a cap.
+    const boundary = await run({ page: 10_000, maxResults: 1 }, 5);
+    expect(boundary).toMatchObject({ articles: [], total: 5, page: 10_000, maxResults: 1 });
+    expect(boundary).not.toHaveProperty("nextPage");
+    expect(boundary.warnings).toEqual([expect.stringContaining("Page 10000 is past the last result")]);
+  });
+
+  it("doesn't call a page past the last result when it holds records, is the first or found nothing, and names the databases that answered when one failed", async () => {
+    const adapter = (articles: NcbiArticle[], count: number) => fakeAdapter("pubmed", articles, count);
+    const filled = await searchLiterature({ query: "x", page: 2 }, new LRUBackend(), [adapter([pubmedMeta], 11)]);
+    expect(filled.warnings).toBeUndefined();
+    // Records that the filter then drops were still found on the page.
+    const filtered = await searchLiterature({ query: "x", page: 2, minDesignTier: 4 }, new LRUBackend(), [adapter([pubmedMeta], 11)]);
+    expect(filtered.warnings ?? []).not.toContainEqual(expect.stringContaining("past the last result"));
+    const first = await searchLiterature({ query: "x" }, new LRUBackend(), [adapter([], 25)]);
+    expect(first.warnings).toBeUndefined();
+    const empty = await searchLiterature({ query: "x", page: 2 }, new LRUBackend(), [adapter([], 0)]);
+    expect(empty.warnings).toEqual([expect.stringContaining("not evidence of absence")]);
+
+    const failing: DatabaseAdapter = {
+      id: "boom",
+      name: "Boom DB",
+      search: async () => {
+        throw new Error("upstream 503");
+      },
+      fetch: async () => [],
+    };
+    const partial = await searchLiterature({ query: "x", database: "all", page: 4 }, new LRUBackend(), [adapter([], 25), failing]);
+    expect(partial.warnings).toEqual([
+      expect.stringContaining("Boom DB search failed"),
+      "Page 4 is past the last result: the databases that answered have no more records for this query.",
+    ]);
+  });
+
+  it("doesn't call a page past the last result while a database still counts records beyond it", async () => {
+    // One database is exhausted, the other isn't: the page is empty only because the other served no ids.
+    expect((await run({ page: 2 }, 5, 25)).warnings).toBeUndefined();
+    // ids came back but fetch returned nothing: not the end of the results.
+    const unfetched: DatabaseAdapter = { ...fakeAdapter("pubmed", [], 100), search: async () => ({ count: 100, ids: ["1"] }), fetch: async () => [] };
+    expect((await searchLiterature({ query: "x", page: 2 }, new LRUBackend(), [unfetched])).warnings).toBeUndefined();
+  });
+
+  it("passes on a database's warning about a page it can't serve, without calling the page past the end", async () => {
+    const warning = "PubMed serves only the first 9,999 records of a search.";
+    const capped: DatabaseAdapter = { ...fakeAdapter("pubmed", [], 50_000), search: async () => ({ count: 50_000, ids: [], warning }) };
+    const out = await searchLiterature({ query: "x", page: 200, maxResults: 50 }, new LRUBackend(), [capped]);
+    expect(out).toMatchObject({ articles: [], total: 50_000, page: 200 });
+    expect(out.warnings).toEqual([warning]);
+  });
+
+  it("doesn't call a page past the last result when a database counts 50,000 records but serves none", async () => {
+    const silent: DatabaseAdapter = { ...fakeAdapter("pubmed", [], 50_000), search: async () => ({ count: 50_000, ids: [] }) };
+    const out = await searchLiterature({ query: "x", page: 2 }, new LRUBackend(), [silent]);
+    expect(out).toMatchObject({ articles: [], total: 50_000, page: 2, nextPage: 3 });
+    expect(out.warnings).toBeUndefined();
+  });
+});
+
+describe("pageWindow", () => {
+  it("is the first 10 records by default, with the size clamped to 1 to 50 and the page to 1 or more", () => {
+    expect(pageWindow({})).toEqual({ offset: 0, size: 10 });
+    expect(pageWindow({ page: 3, maxResults: 20 })).toEqual({ offset: 40, size: 20 });
+    expect(pageWindow({ page: 2, maxResults: 500 })).toEqual({ offset: 50, size: 50 });
+    expect(pageWindow({ page: 2, maxResults: 0 })).toEqual({ offset: 1, size: 1 });
+    expect(pageWindow({ page: 0 })).toEqual({ offset: 0, size: 10 });
+  });
+
+  it("floors a fractional maxResults", () => {
+    expect(pageWindow({ maxResults: 2.5 })).toEqual({ offset: 0, size: 2 });
+    expect(pageWindow({ page: 3, maxResults: 2.5 })).toEqual({ offset: 4, size: 2 });
+    expect(pageWindow({ maxResults: 0.5 })).toEqual({ offset: 0, size: 1 });
+    expect(pageWindow({ maxResults: 50.9 })).toEqual({ offset: 0, size: 50 });
   });
 });
 

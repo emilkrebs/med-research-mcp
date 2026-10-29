@@ -42,7 +42,7 @@ const callDeadline = new AsyncLocalStorage<number>();
 
 /**
  * Run a call whose requests must be done within `ms`: each attempt's timeout is cut to what is
- * left, and once too little is left, requests fail with NETWORK_ERROR instead of being sent. A
+ * left, and once too little is left, requests fail with TIMEOUT instead of being sent. A
  * deadline inside another keeps the earlier of the two.
  */
 export function withDeadline<T>(ms: number, call: () => Promise<T>): Promise<T> {
@@ -63,7 +63,8 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 /**
  * GET a URL and return the body of the successful response. Throws RATE_LIMIT for a 429 its
- * retries don't clear, and NETWORK_ERROR for any other failure, after retrying the transient ones.
+ * retries don't clear, TIMEOUT when the call's deadline cuts an attempt short or leaves no time to send
+ * one, and NETWORK_ERROR for any other failure, after retrying the transient ones.
  */
 export async function requestWithRetries(url: string, options: RequestOptions): Promise<string> {
   const started = Date.now();
@@ -72,12 +73,19 @@ export async function requestWithRetries(url: string, options: RequestOptions): 
   const deadline = callDeadline.getStore() ?? Infinity;
   let rateLimited = 0;
   let transient = 0;
-  /** What the last attempt got. */
+  /** What the last attempt got, and its message without the error code's prefix. */
   let failure: ResearchApiException | undefined;
+  let detail: string | undefined;
+  const fail = (message: string): ResearchApiException => {
+    detail = message;
+    return (failure = errors.network(message));
+  };
   for (let attempt = 1; ; attempt += 1) {
     await options.beforeAttempt?.();
-    const left = Math.min(attempt === 1 ? Infinity : retryDeadline, deadline) - Date.now();
-    if (left < MIN_ATTEMPT_MS) throw failure ?? errors.network(`${options.source} wasn't asked: the call ran out of time`);
+    const now = Date.now();
+    const callLeft = deadline - now;
+    const left = Math.min(attempt === 1 ? Infinity : retryDeadline - now, callLeft);
+    if (left < MIN_ATTEMPT_MS) throw callLeft < MIN_ATTEMPT_MS ? errors.outOfTime(options.source, detail) : failure!;
     const timeoutMs = Math.min(options.timeoutMs, left);
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), timeoutMs);
@@ -98,22 +106,24 @@ export async function requestWithRetries(url: string, options: RequestOptions): 
       await res.body?.cancel();
       const message = `${options.source} returned HTTP ${res.status}${attempt > 1 ? ` (attempt ${attempt})` : ""}`;
       if (!TRANSIENT_STATUSES.has(res.status)) throw errors.network(message);
-      failure = errors.network(message);
+      fail(message);
     } catch (err) {
       if (isMedResearchError(err)) throw err;
-      failure = errors.network(
-        ac.signal.aborted
-          ? `${options.source} didn't answer within ${Math.round(timeoutMs / 100) / 10} s`
-          : err instanceof Error
-            ? err.message
-            : String(err),
-      );
+      if (ac.signal.aborted) {
+        const message = `${options.source} didn't answer within ${Math.round(timeoutMs / 100) / 10} s`;
+        // The call's deadline, not the request's timeout, cut the attempt short.
+        if (callLeft <= timeoutMs) throw errors.outOfTime(options.source, message);
+        fail(message);
+      } else {
+        fail(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       clearTimeout(timer);
     }
-    const wait = BACKOFF_MS * 2 ** transient;
-    if (transient >= TRANSIENT_RETRIES || Date.now() + wait + MIN_ATTEMPT_MS > Math.min(retryDeadline, deadline)) throw failure;
+    const retryAt = Date.now() + BACKOFF_MS * 2 ** transient + MIN_ATTEMPT_MS;
+    if (transient >= TRANSIENT_RETRIES || retryAt > retryDeadline) throw failure;
+    if (retryAt > deadline) throw errors.outOfTime(options.source, detail);
+    await sleep(BACKOFF_MS * 2 ** transient);
     transient += 1;
-    await sleep(wait);
   }
 }
