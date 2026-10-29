@@ -33,6 +33,8 @@
  * for a query of several words says so.
  *
  * Paging: the page size baked into a `next_cursor` overrides the request's `limit` (checked 2026-10-28).
+ * A cursor is base64 of the page and its size (`{"page": 2, "per_page": 2}`), not server state,
+ * so a remembered one stays valid and a failed request leaves it in place (2026-10-29).
  */
 
 import { LRUCache } from "lru-cache";
@@ -184,37 +186,27 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
               `AND/OR as words. Try one or two key words.`,
           }
         : { count, ids };
-    for (let retry = true; ; retry = false) {
-      if (pageIndex > 0 && known.total !== undefined && offset >= known.total) return result(known.total, []);
-      let { index, cursor } = nearestPage(known.cursors, pageIndex);
-      // Only a cursor from an earlier request can have gone stale.
-      let stale = index > 0 ? index : undefined;
-      const get = async (): Promise<PaperResponse> => {
-        const withCursor = new URLSearchParams(params);
-        if (cursor) withCursor.set("cursor", cursor);
-        const data = await this.http.json<PaperResponse>(`${BASE}?${withCursor.toString()}`);
-        stale = undefined;
-        if (data?.total != null) known.total = Number(data.total);
-        return data;
-      };
-      try {
-        while (index < pageIndex) {
-          const walked = await get();
-          if (!walked?.next_cursor || offset >= (known.total ?? Infinity)) return result(parsePapers(walked).count, []);
-          cursor = walked.next_cursor;
-          index += 1;
-          known.cursors.set(index, cursor);
-        }
-        const data = await get();
-        const parsed = parsePapers(data);
-        this.remember(parsed.articles);
-        if (data?.next_cursor) known.cursors.set(pageIndex + 1, data.next_cursor);
-        return result(parsed.count, parsed.articles.map((a) => a.pmid));
-      } catch (error) {
-        if (stale === undefined || !retry) throw error;
-        known.cursors.delete(stale);
-      }
+    if (pageIndex > 0 && known.total !== undefined && offset >= known.total) return result(known.total, []);
+    let { index, cursor } = nearestPage(known.cursors, pageIndex);
+    const get = async (): Promise<PaperResponse> => {
+      const withCursor = new URLSearchParams(params);
+      if (cursor) withCursor.set("cursor", cursor);
+      const data = await this.http.json<PaperResponse>(`${BASE}?${withCursor.toString()}`);
+      if (data?.total != null) known.total = Number(data.total);
+      return data;
+    };
+    while (index < pageIndex) {
+      const walked = await get();
+      if (!walked?.next_cursor || offset >= (known.total ?? Infinity)) return result(parsePapers(walked).count, []);
+      cursor = walked.next_cursor;
+      index += 1;
+      known.cursors.set(index, cursor);
     }
+    const data = await get();
+    const parsed = parsePapers(data);
+    this.remember(parsed.articles);
+    if (data?.next_cursor) known.cursors.set(pageIndex + 1, data.next_cursor);
+    return result(parsed.count, parsed.articles.map((a) => a.pmid));
   }
 
   /**

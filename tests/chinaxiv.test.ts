@@ -3,6 +3,7 @@ import { ChinaRXivAdapter, chinaxivHeaders, parsePapers } from "../src/core/adap
 import { SovietRxivAdapter } from "../src/core/adapters/russiarxiv";
 import { defaultHttp, type AdapterHttp } from "../src/core/adapters/http";
 import { LRUBackend } from "../src/core/cache";
+import { errors } from "../src/core/errors";
 import { classifyArticle } from "../src/core/grader";
 
 /** A ChinaXiv search result as the v1 API returns it (PaperSummary, abstract cut at 500 characters). */
@@ -411,58 +412,34 @@ describe("ChinaRxiv paging", () => {
     expect(urls).toHaveLength(0);
   });
 
-  it("drops a rejected memoized cursor and walks again from an earlier one", async () => {
+  it("keeps a remembered cursor when its request fails, and doesn't retry it", async () => {
     const { http: inner, urls } = pagedHttp(100);
-    let rejectNext = false;
+    let failNext = false;
     const http: AdapterHttp = {
       ...inner,
       json: async <T>(url: string): Promise<T> => {
-        if (rejectNext && new URL(url).searchParams.has("cursor")) {
-          rejectNext = false;
+        if (failNext) {
+          failNext = false;
           urls.push(new URL(url).searchParams);
-          throw new Error("HTTP 422");
+          throw errors.rateLimit(60, "ChinaRxiv");
         }
         return inner.json<T>(url);
       },
     };
     const adapter = new ChinaRXivAdapter(http);
-    await adapter.search({ query: "depression", maxResults: 10 });
     await adapter.search({ query: "depression", maxResults: 10, page: 2 });
 
     urls.length = 0;
-    rejectNext = true;
-    const out = await adapter.search({ query: "depression", maxResults: 10, page: 3 });
-    expect(out.ids).toEqual(idRange(20, 30));
-    expect(urls.length).toBeLessThanOrEqual(3);
-
-    // The cursors made on the way back are memoized again.
-    urls.length = 0;
-    expect((await adapter.search({ query: "depression", maxResults: 10, page: 4 })).ids).toEqual(idRange(30, 40));
+    failNext = true;
+    await expect(adapter.search({ query: "depression", maxResults: 10, page: 3 })).rejects.toMatchObject({ code: "RATE_LIMIT" });
     expect(urls).toHaveLength(1);
-  });
+    const cursor = urls[0]!.get("cursor");
+    expect(cursor).toBeTruthy();
 
-  it("retries a rejected memoized cursor once, and never a failure it did not cause", async () => {
-    const { http: inner } = pagedHttp(100);
-    let calls = 0;
-    const failing: AdapterHttp = {
-      ...inner,
-      json: async <T>(url: string): Promise<T> => {
-        calls++;
-        if (calls > 1) throw new Error("HTTP 422");
-        return inner.json<T>(url);
-      },
-    };
-    const adapter = new ChinaRXivAdapter(failing);
-    await adapter.search({ query: "depression", maxResults: 10 });
-    calls = 1;
-    await expect(adapter.search({ query: "depression", maxResults: 10, page: 2 })).rejects.toThrow("HTTP 422");
-    // The memoized cursor failed (call 2), the retry from the start failed too (call 3): no third attempt.
-    expect(calls).toBe(3);
-
-    const down: AdapterHttp = { json: async () => { calls++; throw new Error("HTTP 503"); }, text: async () => "" };
-    calls = 0;
-    await expect(new ChinaRXivAdapter(down).search({ query: "depression", maxResults: 10, page: 3 })).rejects.toThrow("HTTP 503");
-    expect(calls).toBe(1);
+    // The cursor survived the failure: the retry needs one request.
+    urls.length = 0;
+    expect((await adapter.search({ query: "depression", maxResults: 10, page: 3 })).ids).toEqual(idRange(20, 30));
+    expect(urls.map((u) => u.get("cursor"))).toEqual([cursor]);
   });
 
   it("returns the partial last page and nothing right after it", async () => {

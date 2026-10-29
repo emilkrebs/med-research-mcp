@@ -30,6 +30,9 @@
  * of MEDLINE records sometimes escaped (`&lt;i&gt;`); both are turned into text.
  *
  * Paging: the API ignores `page`; only `cursorMark` pages, also with a sort (checked 2026-10-28).
+ * A `cursorMark` is Solr's: base64 of sort values (a score and a document key), not server
+ * state, so a remembered one stays valid and a failed request leaves it in place. One the API
+ * can't read gets HTTP 503 "temporarily unavailable", like an outage (2026-10-29).
  *
  * Ids are only unique within a source: non-PubMed sources such as CBA (Chinese
  * Biological Abstracts) reuse plain numbers that collide with PMIDs, so those
@@ -213,45 +216,35 @@ export class EuropePmcAdapter extends RestAdapter {
     if (!paging) this.paging.set(key, (paging = { cursors: new Map() }));
     const known = paging;
 
-    for (let retry = true; ; retry = false) {
-      if (offset > 0 && known.count !== undefined && offset >= known.count) return { count: known.count, ids: [] };
-      let { position, cursor } = nearestCursor(known.cursors, offset);
-      // Only a cursor from an earlier request can have gone stale.
-      let stale = position > 0 ? position : undefined;
-      const get = async (resultType: string, pageSize: number): Promise<EpmcResponse> => {
-        const params = new URLSearchParams(base);
-        params.set("resultType", resultType);
-        params.set("pageSize", String(pageSize));
-        params.set("cursorMark", cursor);
-        const data = await this.http.json<EpmcResponse>(`${BASE}?${params.toString()}`);
-        stale = undefined;
-        if (data?.hitCount != null) known.count = Number(data.hitCount);
-        return data;
-      };
-      try {
-        while (position < offset) {
-          const step = Math.min(WALK_PAGE_SIZE, offset - position);
-          const data = await get("idlist", step);
-          const got = data?.resultList?.result?.length ?? 0;
-          const next = data?.nextCursorMark;
-          if (got < step || !next || next === cursor || offset >= (known.count ?? Infinity)) {
-            return { count: known.count ?? 0, ids: [] };
-          }
-          position += got;
-          cursor = next;
-          known.cursors.set(position, cursor);
-        }
-        const data = await get("core", size);
-        const { count, articles } = parseEuropePmc(data);
-        this.remember(articles);
-        const next = data?.nextCursorMark;
-        if (next && next !== cursor) known.cursors.set(offset + (data?.resultList?.result?.length ?? 0), next);
-        return { count, ids: articles.map((a) => a.pmid) };
-      } catch (error) {
-        if (stale === undefined || !retry) throw error;
-        known.cursors.delete(stale);
+    if (offset > 0 && known.count !== undefined && offset >= known.count) return { count: known.count, ids: [] };
+    let { position, cursor } = nearestCursor(known.cursors, offset);
+    const get = async (resultType: string, pageSize: number): Promise<EpmcResponse> => {
+      const params = new URLSearchParams(base);
+      params.set("resultType", resultType);
+      params.set("pageSize", String(pageSize));
+      params.set("cursorMark", cursor);
+      const data = await this.http.json<EpmcResponse>(`${BASE}?${params.toString()}`);
+      if (data?.hitCount != null) known.count = Number(data.hitCount);
+      return data;
+    };
+    while (position < offset) {
+      const step = Math.min(WALK_PAGE_SIZE, offset - position);
+      const data = await get("idlist", step);
+      const got = data?.resultList?.result?.length ?? 0;
+      const next = data?.nextCursorMark;
+      if (got < step || !next || next === cursor || offset >= (known.count ?? Infinity)) {
+        return { count: known.count ?? 0, ids: [] };
       }
+      position += got;
+      cursor = next;
+      known.cursors.set(position, cursor);
     }
+    const data = await get("core", size);
+    const { count, articles } = parseEuropePmc(data);
+    this.remember(articles);
+    const next = data?.nextCursorMark;
+    if (next && next !== cursor) known.cursors.set(offset + (data?.resultList?.result?.length ?? 0), next);
+    return { count, ids: articles.map((a) => a.pmid) };
   }
 
   protected async fetchOne(id: string): Promise<Article | null> {

@@ -105,9 +105,9 @@ export const errors = {
       message: detail ? `${detail}: the call ran out of time` : `${source} wasn't asked: the call ran out of time`,
       userMessage:
         `This server gives each search or fetch a fixed time, and it ran out ${detail ? "while waiting for" : "before asking"} ` +
-        `${source}. Retry: what the call fetched is kept, so each retry gets further, and a deep page of a sort: "date" ` +
-        `search can take two or three. If retries stop getting further, ask for an earlier page or narrow the query ` +
-        `(more specific terms, a dateRange).`,
+        `${source}. Retry. A deep page of a search keeps what it fetched, so each retry gets further, and the deepest ` +
+        `sort: "date" pages can take several; if retries stop getting further, ask for an earlier page or narrow the ` +
+        `query (more specific terms, a dateRange).`,
       recoverable: true,
     });
   },
