@@ -36,7 +36,7 @@ describe("failed and missing runs", () => {
     row({ query_id: "a", run: 1, accuracy: 10 }),
     row({ query_id: "a", run: 2, accuracy: 0, status: "no-answer", accuracy_source: "failed" }),
     row({ query_id: "b", run: 1, accuracy: 10 }),
-    row({ query_id: "b", run: 2, accuracy: 0, status: "timeout", accuracy_source: "failed", speed_s: 300 }),
+    row({ query_id: "b", run: 2, accuracy: 0, status: "timeout", accuracy_source: "failed", speed_s: 300, input_tokens: 0, output_tokens: 0, total_tokens: 0 }),
     row({ query_id: "c", run: 1, accuracy: Number.NaN, status: "provider-error" }),
     row({ query_id: "c", run: 2, accuracy: Number.NaN, status: "scoring-error" }),
     row({ query_id: "d", run: 1, accuracy: Number.NaN, status: "invalid" }),
@@ -80,6 +80,18 @@ describe("failed and missing runs", () => {
 
   it("timed-out runs count in the median time, at the timeout", () => {
     expect(c.speed_s_median).toBe(10); // 10, 10, 10, 300, 10
+  });
+
+  it("but not in the median tokens: a run that timed out never reported what it used", () => {
+    // Scored runs: 150, 150, 150, 0 (timeout), 150. With one more timeout the median over all scored runs would
+    // still be 150, so take a condition where half the runs timed out: 150, 0, 0 must read 150, not 0.
+    const half = [
+      row({ query_id: "a", total_tokens: 150 }),
+      row({ query_id: "b", status: "timeout", accuracy: 0, accuracy_source: "failed", total_tokens: 0 }),
+      row({ query_id: "c", status: "timeout", accuracy: 0, accuracy_source: "failed", total_tokens: 0 }),
+    ];
+    expect(cond(buildSummary(half, meta(["mcp"])), "mcp").tokens_median).toBe(150);
+    expect(c.tokens_median).toBe(150);
   });
 });
 

@@ -96,9 +96,14 @@ const tokenValue = (expected: string[], field: string): string | undefined => {
   return undefined;
 };
 
-/** Collapse whitespace and typographic variants so a quote matches the text it was copied from. */
+/**
+ * Collapse whitespace and typographic variants so a quote matches the text it was copied from.
+ * Private-use code points are dropped: Europe PMC's record CBA:521529 carries a font glyph
+ * for a hyphen as U+E011 ("Forty\uE011four"), which a reader never sees.
+ */
 function normalizeText(s: string): string {
   return s
+    .replace(/[\uE000-\uF8FF]/g, "")
     .replace(/[‐-―−]/g, "-")
     .replace(/[‘’]/g, "'")
     .replace(/[“”]/g, '"')

@@ -13,15 +13,20 @@ import { scoreAccuracy } from "../lib/scoring/accuracy.js";
 import { hasRejectionLanguage } from "../lib/scoring/bullshit.js";
 import {
   CANDIDATES_PER_STRATUM,
+  MIN_QUERIES,
   QUOTA,
   SAMPLE_PATH,
   SEED,
   SKIP_REASONS,
   SPECIALTIES,
   drawOrder,
+  extensionCandidates,
+  extensionRefusal,
+  storedPrefix,
   strata,
   stratumName,
   stratumSeed,
+  type DrawnStratum,
   type SampleFile,
 } from "../scripts/sample-heldout.js";
 import { quoteParts } from "../scripts/verify-keys.js";
@@ -54,13 +59,58 @@ describe("the draw", () => {
     expect(stratumSeed("a")).not.toBe(stratumSeed("b"));
   });
 
+  it("extends a stratum down the same order, and only when its candidates have run out", () => {
+    const pmids = Array.from({ length: 60 }, (_, i) => String(42000000 + i * 3));
+    const name = "obstetrics/recent";
+    const order = drawOrder(pmids, name);
+    const stored = order.slice(0, CANDIDATES_PER_STRATUM);
+    // The next eight of the same order, with every stored record (of any stratum) removed.
+    expect(extensionCandidates(pmids, name, stored)).toEqual(order.slice(CANDIDATES_PER_STRATUM, 2 * CANDIDATES_PER_STRATUM));
+    expect(extensionCandidates(pmids, name, [...stored, order[8]!])).toEqual(order.slice(CANDIDATES_PER_STRATUM + 1, 2 * CANDIDATES_PER_STRATUM + 1));
+    // A short stratum yields what is left, however few.
+    const short = pmids.slice(0, 10);
+    expect(extensionCandidates(short, name, drawOrder(short, name).slice(0, CANDIDATES_PER_STRATUM))).toHaveLength(2);
+    expect(storedPrefix(pmids, name, stored, []).prefix).toBe(true);
+    // Membership drift reshuffles the whole stratum, so the stored records are rarely a prefix any more; the first difference is reported.
+    const drifted = drawOrder([...pmids, "42999999"], name);
+    const check = storedPrefix([...pmids, "42999999"], name, stored, []);
+    const firstDifference = stored.findIndex((p, i) => drifted[i] !== p) + 1;
+    expect(check).toEqual(firstDifference === 0 ? { prefix: true } : { prefix: false, firstDifference });
+    // Records drawn for earlier strata are passed over, as at the draw.
+    expect(storedPrefix(pmids, name, order.slice(1, CANDIDATES_PER_STRATUM + 1), [order[0]!]).prefix).toBe(true);
+
+    const decided = (n: number, lookups: number): DrawnStratum => ({
+      specialty: "obstetrics",
+      period: "recent",
+      query: "q",
+      matched: 20,
+      candidates: Array.from({ length: n }, (_, i) => (i < lookups ? { pmid: String(i), used: `t-lookup-${i}` } : { pmid: String(i), skipped: "not-primary" as const, note: "protocol only" })),
+    });
+    // The first extension is allowed while the stratum has fewer than QUOTA lookups ...
+    expect(extensionRefusal(decided(CANDIDATES_PER_STRATUM, 1))).toBeUndefined();
+    expect(extensionRefusal(decided(CANDIDATES_PER_STRATUM, MIN_QUERIES))).toBeUndefined();
+    expect(extensionRefusal(decided(CANDIDATES_PER_STRATUM, QUOTA))).toMatch(/already has/);
+    // ... a further one only while it has fewer than MIN_QUERIES.
+    expect(MIN_QUERIES).toBe(2);
+    const extendedOnce = (lookups: number): DrawnStratum => ({
+      ...decided(2 * CANDIDATES_PER_STRATUM, lookups),
+      extended: { at: "2026-11-10", matched: 29, added: CANDIDATES_PER_STRATUM },
+    });
+    expect(extensionRefusal(extendedOnce(MIN_QUERIES - 1))).toBeUndefined();
+    expect(extensionRefusal(extendedOnce(MIN_QUERIES))).toMatch(/already extended/);
+    expect(extensionRefusal(extendedOnce(QUOTA))).toMatch(/already has/);
+    const open = decided(CANDIDATES_PER_STRATUM, 1);
+    open.candidates.push({ pmid: "99" });
+    expect(extensionRefusal(open)).toMatch(/no disposition/);
+  });
+
   it("covers every specialty in both periods with the searches the script builds today", () => {
     expect(sample.seed).toBe(SEED);
     expect(sample.strata.map(stratumName)).toEqual(strata().map(stratumName));
     expect(sample.strata.map((s) => s.query)).toEqual(strata().map((s) => s.query));
     expect(sample.strata).toHaveLength(SPECIALTIES.length * 2);
     for (const s of sample.strata) {
-      expect(s.candidates.length, stratumName(s)).toBeLessThanOrEqual(CANDIDATES_PER_STRATUM);
+      expect(s.candidates.length, stratumName(s)).toBeLessThanOrEqual(CANDIDATES_PER_STRATUM + (s.extended?.added ?? 0));
       expect(s.matched, stratumName(s)).toBeGreaterThanOrEqual(s.candidates.length);
     }
     const all = sample.strata.flatMap((s) => s.candidates.map((c) => c.pmid));
@@ -82,6 +132,21 @@ describe("queries were written from the draw, in order", () => {
         expect((c.note ?? "").length, c.pmid).toBeGreaterThan(5);
       }
     }
+    // Only a stratum whose original candidates ran out short of the quota may have been extended.
+    if (s.extended) {
+      const original = s.candidates.slice(0, CANDIDATES_PER_STRATUM);
+      expect(original.every((c) => c.used !== undefined || c.skipped !== undefined), "the original candidates were all decided").toBe(true);
+      expect(original.filter((c) => c.used?.startsWith("t-lookup-")).length, "and gave fewer lookups than the quota").toBeLessThan(QUOTA);
+      expect(s.candidates.length, "extended.added is what was appended").toBe(CANDIDATES_PER_STRATUM + s.extended.added);
+      expect(s.extended.added).toBeGreaterThan(0);
+      expect(s.extended.at).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(s.extended.matched).toBeGreaterThanOrEqual(s.candidates.length);
+      // Extended more than once: before the latest extension (at most CANDIDATES_PER_STRATUM candidates) it had fewer than MIN_QUERIES.
+      if (s.extended.added > CANDIDATES_PER_STRATUM) {
+        const before = s.candidates.slice(0, s.candidates.length - CANDIDATES_PER_STRATUM);
+        expect(before.filter((c) => c.used?.startsWith("t-lookup-")).length, "a further extension only below MIN_QUERIES").toBeLessThan(MIN_QUERIES);
+      }
+    }
     const used = s.candidates.filter((c) => c.used?.startsWith("t-lookup-"));
     // The quota, unless the stratum's candidates ran out first.
     if (firstUnconsidered >= 0) expect(used).toHaveLength(QUOTA);
@@ -89,7 +154,10 @@ describe("queries were written from the draw, in order", () => {
     // The control (established strata) comes after the lookups in the draw.
     const control = s.candidates.findIndex((c) => c.used?.startsWith("t-control-"));
     if (s.period === "recent") expect(control).toBe(-1);
-    else if (control >= 0) expect(control).toBeGreaterThan(s.candidates.findLastIndex((c) => c.used?.startsWith("t-lookup-")));
+    else if (control >= 0) {
+      const lastLookup = s.candidates.map((c) => c.used?.startsWith("t-lookup-") === true).lastIndexOf(true);
+      expect(control).toBeGreaterThan(lastLookup);
+    }
 
     for (const c of s.candidates.filter((x) => x.used)) {
       const q = heldOut.find((x) => x.id === c.used);

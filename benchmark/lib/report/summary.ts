@@ -193,7 +193,9 @@ function summarizeCondition(rows: ScoreRow[]): ConditionSummary {
   const checked = ok.reduce((s, r) => s + (r.citations_checked ?? 0), 0);
   const misattributed = ok.reduce((s, r) => s + (r.citations_misattributed ?? 0), 0);
   const tiers = ok.map((r) => r.evidence_quality).filter(Number.isFinite);
-  const tokens = scored.map((r) => r.total_tokens).filter(Number.isFinite);
+  // A run that threw (a timeout) never reported its usage, so its record holds 0 tokens: the median is
+  // over the runs that returned. Its time is known (the timeout), so it stays in the median time.
+  const tokens = scored.filter((r) => r.status !== "timeout").map((r) => r.total_tokens).filter(Number.isFinite);
   const speeds = scored.map((r) => r.speed_s).filter(Number.isFinite);
 
   return {

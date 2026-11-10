@@ -74,7 +74,7 @@ export const MODELS: ModelSpec[] = [
     // WARNING: Ollama's default context window is 4096 tokens and its OpenAI-compatible API cannot
     // raise it per request. Long tool results then silently push the start of the conversation out
     // of the window and the model answers a question it never saw (the run is flagged
-    // `contextTruncated` and scored `truncated`). Start the server with
+    // `contextTruncated`, gets the status `invalid` and is left out of the scores). Start the server with
     // `OLLAMA_CONTEXT_LENGTH=32768 ollama serve` (or larger) or results are invalid.
     label: "gemma4-4b",
     provider: "ollama",

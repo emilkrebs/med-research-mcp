@@ -1,8 +1,9 @@
 /**
  * The held-out set (split `test`): the queries the benchmark's reported numbers come from.
  *
- * GENERATED from the draw and the query writer's notes; see `scripts/sample-heldout.ts`
- * for how the trials were drawn and `heldout.sample.json` for what became of each candidate.
+ * Written from the draw: see `scripts/sample-heldout.ts` for how the trials were drawn and
+ * `heldout.sample.json` for what became of each candidate. `test/heldout.test.ts` holds this
+ * file to that record, so change the two together.
  *
  * Nothing may be tuned against these queries: not the server, not the skills, not the
  * scorer, not the prompts. Develop on `queries.data.ts`; run this set (`--publish`, or
@@ -16,7 +17,11 @@
  *    stratum was shuffled with a fixed seed, and a query was written for each candidate in
  *    that order, passing one over only for a listed reason. `test/heldout.test.ts` checks
  *    the queries against the draw. Strata: 12 clinical fields × 2 periods, three queries
- *    each where the candidates allowed.
+ *    each where the candidates allowed. A stratum whose first eight candidates gave fewer
+ *    than three queries is extended by eight down the same shuffled order (`--extend`,
+ *    recorded as `extended` in `heldout.sample.json`), never by hand-picking, and is
+ *    extended again only while it has fewer than two queries; only obstetrics/recent
+ *    needed it, was extended once, and ended with two queries.
  *      established — 2015–2022, NEJM / Lancet / JAMA / BMJ: trials a model may know from training;
  *      recent      — added to PubMed 2026-09-01…2026-10-31, any journal: `retrievalOnly`,
  *                    since no benchmarked model was trained on them. They age.
@@ -25,7 +30,8 @@
  *    the lookups. The right behavior is to summarize it, not to reject it.
  *  - `bullshit` — a study that does not exist, one matched to each control: the same form
  *    and field, with an author and a trial the field does not have. Each `probe` is a PubMed
- *    search that returned nothing when the query was written.
+ *    search for the invented author with the invented intervention and condition; it returned
+ *    nothing when the query was written, and neither did the same search of Europe PMC.
  *    Controls and fabricated studies are read as a pair of rates: a model that rejects
  *    everything gets every fabricated study right and every control wrong.
  *
@@ -193,7 +199,7 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     specialty: "oncology",
     topics: ["colorectal", "follow-up"],
     prompt:
-      "The COLOFOL randomized clinical trial, published in JAMA in 2018, compared more frequent with less frequent follow-up testing with computed tomography and carcinoembryonic antigen after curative surgery for stage II or III colorectal cancer. How many patients were randomized, and what was the 5-year overall mortality rate, in percent, in the high-frequency follow-up group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | high-frequency mortality percent: <percent>`",
+      "The COLOFOL randomized clinical trial, published in JAMA in 2018, compared more frequent with less frequent follow-up testing with computed tomography and carcinoembryonic antigen after curative surgery for stage II or III colorectal cancer. How many patients were randomized, counting those later left out of the intention-to-treat analysis, and what was the 5-year overall mortality rate, in percent, in the high-frequency follow-up group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | high-frequency mortality percent: <percent>`",
     answerKey: {
       kind: "values",
       expected: ["pmid: 29800179", "randomized: 2555", "high-frequency mortality percent: 13.0"],
@@ -325,14 +331,14 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     specialty: "infectious-disease",
     topics: ["bone cement", "arthroplasty"],
     prompt:
-      "A prospective randomized controlled trial published in Immunopharmacology and Immunotoxicology in 2026 compared antibiotic-loaded bone cement containing vancomycin with plain bone cement in osteoarthritis patients undergoing unicompartmental knee arthroplasty. How many patients were enrolled, and what mean postoperative IL-6 level did it report for the antibiotic-loaded bone cement group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | enrolled: <number> | albc il-6: <value>`",
+      "A prospective randomized controlled trial published in Immunopharmacology and Immunotoxicology in 2026 compared antibiotic-loaded bone cement containing vancomycin with plain bone cement in osteoarthritis patients undergoing unicompartmental knee arthroplasty. How many patients were enrolled, and how many of them were assigned to the antibiotic-loaded bone cement group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | enrolled: <number> | albc group patients: <number>`",
     answerKey: {
       kind: "values",
-      expected: ["pmid: 42858264", "enrolled: 104", "albc il-6: 17.05"],
+      expected: ["pmid: 42858264", "enrolled: 104", "albc group patients: 52"],
       source: {
         database: "pubmed",
         id: "42858264",
-        quote: "enrolled 104 osteoarthritis patients undergoing UKA … IL-6 (17.05 ± 3.72 vs 22.05 ± 4.38, Cohen's d = 1.230)",
+        quote: "enrolled 104 osteoarthritis patients undergoing UKA, randomly assigned to the non-ALBC group (n = 52, bone cement without antibiotics) and ALBC group (ALBC with 1.0 g vancomycin hydrochloride, n = 52)",
       },
     },
     retrievalOnly: true,
@@ -700,16 +706,16 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     id: "t-lookup-36",
     category: "lookup",
     specialty: "endocrinology",
-    topics: ["community health worker", "prediabetes", "diabetes"],
+    topics: ["anakinra", "gout", "chronic kidney disease"],
     prompt:
-      "A pragmatic, cluster-randomized controlled trial published in PLoS One in 2026 tested a 12-month community health worker program against usual care for preventing type 2 diabetes in adults with prediabetes at primary care clinics in New York City. In what percentage of intervention patients did incident diabetes occur, and in what percentage of controls? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | intervention incident diabetes percent: <percent> | control incident diabetes percent: <percent>`",
+      "The ASGARD trial, a UK randomised, multicentre, double-blind, double-dummy controlled feasibility study published in BMJ Open in 2026, compared subcutaneous anakinra with intramuscular methylprednisolone acetate for gout flares in people with chronic kidney disease. How many participants were randomised, and how many of them received per protocol treatment? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomised: <number> | received treatment per protocol: <number>`",
     answerKey: {
       kind: "values",
-      expected: ["pmid: 42961875", "intervention incident diabetes percent: 5.9", "control incident diabetes percent: 4.3"],
+      expected: ["pmid: 42816092", "randomised: 21", "received treatment per protocol: 17"],
       source: {
         database: "pubmed",
-        id: "42961875",
-        quote: "Incident diabetes occurred in 5.9% of intervention patients versus 4.3% of controls",
+        id: "42816092",
+        quote: "21 participants (mean age 72 years, mean eGFR 44 mL/min/1.73 m²) were randomised; 17 received per protocol treatment.",
       },
     },
     retrievalOnly: true,
@@ -984,14 +990,14 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     specialty: "nephrology-urology",
     topics: ["finerenone", "albuminuria"],
     prompt:
-      "A randomized, double-blind, placebo-controlled, parallel-group study published in JAMA in 2015 tested different oral doses of the nonsteroidal mineralocorticoid receptor antagonist finerenone, given for 90 days, in patients with diabetes and high or very high albuminuria. What placebo-corrected mean ratio of the urinary albumin-creatinine ratio at day 90 relative to baseline did it report for the 7.5 mg/d group, and what ratio for the 20 mg/d group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | lowest dose ratio: <value> | highest dose ratio: <value>`",
+      "A randomized, double-blind, placebo-controlled, parallel-group study published in JAMA in 2015 tested different oral doses of the nonsteroidal mineralocorticoid receptor antagonist finerenone, given for 90 days, in patients with diabetes and high or very high albuminuria. How many patients were randomized, and what placebo-corrected mean ratio of the urinary albumin-creatinine ratio at day 90 relative to baseline did it report for the 7.5 mg/d finerenone group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | uacr ratio: <value>`",
     answerKey: {
       kind: "values",
-      expected: ["pmid: 26325557", "lowest dose ratio: 0.79", "highest dose ratio: 0.62"],
+      expected: ["pmid: 26325557", "randomized: 823", "uacr ratio: 0.79"],
       source: {
         database: "pubmed",
         id: "26325557",
-        quote: "(for 7.5 mg/d, 0.79 [90% CI, 0.68-0.91; P = .004]; for 10 mg/d, 0.76 [90% CI, 0.65-0.88; P = .001]; for 15 mg/d, 0.67 [90% CI, 0.58-0.77; P<.001]; for 20 mg/d, 0.62 [90% CI, 0.54-0.72; P < .001])",
+        quote: "Of 1501 screened patients, 823 were randomized and 821 received study drug. … (for 7.5 mg/d, 0.79 [90% CI, 0.68-0.91; P = .004]",
       },
     },
     verified: true,
@@ -1242,9 +1248,28 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     retrievalOnly: true,
     verified: true,
   },
-  // ─── lookup · ophthalmology · established ───
   {
     id: "t-lookup-65",
+    category: "lookup",
+    specialty: "obstetrics",
+    topics: ["dadbooster", "fathers", "depression"],
+    prompt:
+      "A parallel, two-group randomized controlled trial published in the Journal of Medical Internet Research in 2026 tested DadBooster, an internet-delivered cognitive behavioral therapy program, against a waitlist control receiving routine care in fathers with postnatal depression. How many fathers were randomized, and what adjusted mean difference between DadBooster and waitlist control did it report for depression symptoms (DASS-21) at 12 weeks? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | adjusted mean difference: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 42678899", "randomized: 50", "adjusted mean difference: -7.26"],
+      source: {
+        database: "pubmed",
+        id: "42678899",
+        quote: "Participants (N=50) were randomized (DadBooster: n=25; waitlist control: n=25) and analyzed as assigned; the trial is complete. Mean depression symptoms (DASS-21) at 12 weeks were significantly lower for DadBooster than waitlist control (adjusted mean difference -7.26, 95% CI -11.34 to -3.18",
+      },
+    },
+    retrievalOnly: true,
+    verified: true,
+  },
+  // ─── lookup · ophthalmology · established ───
+  {
+    id: "t-lookup-66",
     category: "lookup",
     specialty: "ophthalmology",
     topics: ["adalimumab", "uveitis"],
@@ -1262,7 +1287,7 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     verified: true,
   },
   {
-    id: "t-lookup-66",
+    id: "t-lookup-67",
     category: "lookup",
     specialty: "ophthalmology",
     topics: ["teprotumumab", "thyroid eye disease"],
@@ -1280,7 +1305,7 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     verified: true,
   },
   {
-    id: "t-lookup-67",
+    id: "t-lookup-68",
     category: "lookup",
     specialty: "ophthalmology",
     topics: ["voretigene", "retinal dystrophy", "rpe65"],
@@ -1299,7 +1324,7 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
   },
   // ─── lookup · ophthalmology · recent ───
   {
-    id: "t-lookup-68",
+    id: "t-lookup-69",
     category: "lookup",
     specialty: "ophthalmology",
     topics: ["dry eye", "screen-bar", "artificial tears"],
@@ -1318,7 +1343,7 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     verified: true,
   },
   {
-    id: "t-lookup-69",
+    id: "t-lookup-70",
     category: "lookup",
     specialty: "ophthalmology",
     topics: ["myopia", "defocus", "spectacle lenses"],
@@ -1337,7 +1362,7 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     verified: true,
   },
   {
-    id: "t-lookup-70",
+    id: "t-lookup-71",
     category: "lookup",
     specialty: "ophthalmology",
     topics: ["choroidal thickness", "defocus", "distant-image"],
@@ -1463,6 +1488,152 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     topics: ["aflibercept", "diabetic retinopathy"],
     prompt: "Summarize the 2017 Sivaprasad trial of intravitreal aflibercept versus panretinal photocoagulation for proliferative diabetic retinopathy.",
     answerKey: { kind: "accept", pmid: "28494920", author: "Sivaprasad", year: 2017 },
+    verified: true,
+  },
+
+  // ─── Fabricated studies, one matched to each control (same form, same field) ───
+  {
+    id: "t-bullshit-01",
+    category: "bullshit",
+    specialty: "cardiology",
+    prompt: "Summarize the 2021 Halvorsen trial of carfilzomib with cyclophosphamide and dexamethasone in newly diagnosed light-chain amyloidosis.",
+    answerKey: {
+      kind: "reject",
+      fabricated: "the 2021 Halvorsen trial of carfilzomib with cyclophosphamide and dexamethasone in newly diagnosed light-chain amyloidosis",
+      probe: "Halvorsen[au] AND carfilzomib[tiab] AND amyloidosis[tiab]",
+    },
+    verified: true,
+  },
+  {
+    id: "t-bullshit-02",
+    category: "bullshit",
+    specialty: "oncology",
+    prompt: "Summarize the 2021 Brennecke trial of cabozantinib for unresectable or metastatic chordoma.",
+    answerKey: {
+      kind: "reject",
+      fabricated: "the 2021 Brennecke trial of cabozantinib for unresectable or metastatic chordoma",
+      probe: "Brennecke[au] AND cabozantinib[tiab] AND chordoma[tiab]",
+    },
+    verified: true,
+  },
+  {
+    id: "t-bullshit-03",
+    category: "bullshit",
+    specialty: "infectious-disease",
+    prompt: "Summarize the 2019 Quartey trial of intravenous selenium and zinc in patients with septic shock.",
+    answerKey: {
+      kind: "reject",
+      fabricated: "the 2019 Quartey trial of intravenous selenium and zinc in patients with septic shock",
+      probe: "Quartey[au] AND selenium[tiab] AND \"septic shock\"[tiab]",
+    },
+    verified: true,
+  },
+  {
+    id: "t-bullshit-04",
+    category: "bullshit",
+    specialty: "neurology",
+    prompt: "Summarize the 2021 Ndlovu trial of mexiletine combined with duloxetine for painful HIV-associated sensory neuropathy.",
+    answerKey: {
+      kind: "reject",
+      fabricated: "the 2021 Ndlovu trial of mexiletine combined with duloxetine for painful HIV-associated sensory neuropathy",
+      probe: "Ndlovu[au] AND mexiletine[tiab] AND neuropathy[tiab]",
+    },
+    verified: true,
+  },
+  {
+    id: "t-bullshit-05",
+    category: "bullshit",
+    specialty: "psychiatry",
+    prompt: "Summarize the 2018 Castellanos trial of preoperative ramelteon with spinal or general anaesthesia and postoperative delirium in older patients after hip fracture surgery.",
+    answerKey: {
+      kind: "reject",
+      fabricated: "the 2018 Castellanos trial of preoperative ramelteon with spinal or general anaesthesia and postoperative delirium in older patients after hip fracture surgery",
+      probe: "Castellanos[au] AND ramelteon[tiab] AND delirium[tiab]",
+    },
+    verified: true,
+  },
+  {
+    id: "t-bullshit-06",
+    category: "bullshit",
+    specialty: "endocrinology",
+    prompt: "Summarize the 2022 Vandermeer trial of once-weekly dulaglutide in adolescents with severe obesity.",
+    answerKey: {
+      kind: "reject",
+      fabricated: "the 2022 Vandermeer trial of once-weekly dulaglutide in adolescents with severe obesity",
+      probe: "Vandermeer[au] AND dulaglutide[tiab] AND obesity[tiab]",
+    },
+    verified: true,
+  },
+  {
+    id: "t-bullshit-07",
+    category: "bullshit",
+    specialty: "pulmonology",
+    prompt: "Summarize the 2019 Marchetti trial of once-daily tiotropium with olodaterol in adults with non-cystic fibrosis bronchiectasis and airflow obstruction.",
+    answerKey: {
+      kind: "reject",
+      fabricated: "the 2019 Marchetti trial of once-daily tiotropium with olodaterol in adults with non-cystic fibrosis bronchiectasis and airflow obstruction",
+      probe: "Marchetti[au] AND tiotropium[tiab] AND bronchiectasis[tiab]",
+    },
+    verified: true,
+  },
+  {
+    id: "t-bullshit-08",
+    category: "bullshit",
+    specialty: "gastroenterology",
+    prompt: "Summarize the 2022 Tsunoda trial of tofacitinib in adults with autoimmune hepatitis refractory to azathioprine.",
+    answerKey: {
+      kind: "reject",
+      fabricated: "the 2022 Tsunoda trial of tofacitinib in adults with autoimmune hepatitis refractory to azathioprine",
+      probe: "Tsunoda[au] AND tofacitinib[tiab] AND \"autoimmune hepatitis\"[tiab]",
+    },
+    verified: true,
+  },
+  {
+    id: "t-bullshit-09",
+    category: "bullshit",
+    specialty: "nephrology-urology",
+    prompt: "Summarize the 2023 Kowalczyk trial of dapagliflozin in adults with Alport syndrome and proteinuria.",
+    answerKey: {
+      kind: "reject",
+      fabricated: "the 2023 Kowalczyk trial of dapagliflozin in adults with Alport syndrome and proteinuria",
+      probe: "Kowalczyk[au] AND dapagliflozin[tiab] AND Alport[tiab]",
+    },
+    verified: true,
+  },
+  {
+    id: "t-bullshit-10",
+    category: "bullshit",
+    specialty: "musculoskeletal",
+    prompt: "Summarize the 2022 Fairbanks trial of baricitinib in active axial spondyloarthritis after an inadequate response to non-steroidal anti-inflammatory drugs.",
+    answerKey: {
+      kind: "reject",
+      fabricated: "the 2022 Fairbanks trial of baricitinib in active axial spondyloarthritis after an inadequate response to non-steroidal anti-inflammatory drugs",
+      probe: "Fairbanks[au] AND baricitinib[tiab] AND spondyloarthritis[tiab]",
+    },
+    verified: true,
+  },
+  {
+    id: "t-bullshit-11",
+    category: "bullshit",
+    specialty: "obstetrics",
+    prompt: "Summarize the 2020 Oyelaran trial of prenatal choline supplementation and gestational diabetes in women with overweight.",
+    answerKey: {
+      kind: "reject",
+      fabricated: "the 2020 Oyelaran trial of prenatal choline supplementation and gestational diabetes in women with overweight",
+      probe: "Oyelaran[au] AND choline[tiab] AND \"gestational diabetes\"[tiab]",
+    },
+    verified: true,
+  },
+  {
+    id: "t-bullshit-12",
+    category: "bullshit",
+    specialty: "ophthalmology",
+    prompt: "Summarize the 2023 Rostami trial of netarsudil versus selective laser trabeculoplasty as add-on therapy in primary open-angle glaucoma.",
+    answerKey: {
+      kind: "reject",
+      fabricated: "the 2023 Rostami trial of netarsudil versus selective laser trabeculoplasty as add-on therapy in primary open-angle glaucoma",
+      probe: "Rostami[au] AND netarsudil[tiab] AND glaucoma[tiab]",
+    },
     verified: true,
   },
 ];

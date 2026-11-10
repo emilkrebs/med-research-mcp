@@ -4,6 +4,7 @@
  *
  *   npx tsx benchmark/scripts/sample-heldout.ts --abstracts <file.json>   # draw, and write the candidates' abstracts for the query writer
  *   npx tsx benchmark/scripts/sample-heldout.ts --check                   # re-run the searches and report how each stratum has changed
+ *   npx tsx benchmark/scripts/sample-heldout.ts --extend <specialty/period> --abstracts <file.json>   # continue a stratum whose candidates ran out
  *
  * A benchmark whose author chooses the papers ends up testing what the author's
  * tool is good at. So the papers of the held-out set are drawn, not chosen:
@@ -25,6 +26,20 @@
  * one of SKIP_REASONS, and the reason is recorded next to it in
  * `heldout.sample.json`; `test/heldout.test.ts` checks that the queries were
  * written from the draw, in order. Nobody decides which trial is "interesting".
+ *
+ * Extension rule. A stratum whose first CANDIDATES_PER_STRATUM candidates give fewer
+ * than QUOTA queries (every one has a disposition, fewer than QUOTA became lookups) is
+ * extended by CANDIDATES_PER_STRATUM down the same shuffled order, and it is extended
+ * again only while it has fewer than MIN_QUERIES (two) queries. `--extend` re-runs the
+ * stratum's search, computes `drawOrder` of the records it matches today, removes every
+ * candidate already stored (in any stratum), and appends the next
+ * CANDIDATES_PER_STRATUM. Nothing is chosen by hand. The stored candidates need not be a
+ * prefix of today's order, because the stratum's membership can drift (recent records are
+ * still being indexed with MeSH); the command reports whether they still are. The stratum
+ * then carries `extended: { at, matched, added }` (`added` counts all candidates appended
+ * so far, `at` and `matched` describe the latest extension). The script refuses to extend
+ * a stratum that has an undecided candidate, that already has QUOTA lookups, or that was
+ * already extended and has MIN_QUERIES lookups.
  *
  * The draw is reproducible for as long as PubMed returns the same set for a
  * stratum's search. PubMed changes (records are added, re-indexed, retracted), so
@@ -55,6 +70,11 @@ export const ESTABLISHED_JOURNALS = ["N Engl J Med", "Lancet", "JAMA", "BMJ"] as
 export const CANDIDATES_PER_STRATUM = 8;
 /** Queries written per stratum. */
 export const QUOTA = 3;
+/**
+ * A stratum that has already been extended once is extended again only while it has fewer
+ * than this many queries (the first extension needs only fewer than QUOTA).
+ */
+export const MIN_QUERIES = 2;
 
 /** Clinical fields, as MeSH major topics (the disease trees of MeSH category C). */
 export const SPECIALTIES: { id: string; mesh: string }[] = [
@@ -78,7 +98,8 @@ export const PERIODS: Period[] = ["established", "recent"];
 /** The only grounds on which a query writer may pass over a drawn candidate. */
 export const SKIP_REASONS = {
   "not-primary": "not the report of a randomized comparison: a protocol, a secondary, post-hoc or pooled analysis, a long-term follow-up, a cost analysis",
-  "no-numbers": "the abstract does not state two unambiguous numbers to ask for (how many were randomized, and one result)",
+  "no-numbers":
+    "the abstract does not state two unambiguous numbers to ask for: how many took part, and either a result or a second count (a group's size, the number analysed or screened)",
   "not-identifiable": "the trial cannot be described without its PMID in a way that tells it from a sibling report of the same trial",
   "predates-window": "recent stratum only: the record was published online before 2026-08-01, so a model may have seen it",
   "in-development-set": "the record is the subject of a development query",
@@ -145,6 +166,13 @@ export interface Candidate {
 export interface DrawnStratum extends Stratum {
   /** Records the search matched when the draw was made. */
   matched: number;
+  /**
+   * Present only on a stratum whose first CANDIDATES_PER_STRATUM candidates gave fewer than QUOTA
+   * queries, so that the draw was continued down the same order (`--extend`; a further extension
+   * only while the stratum has fewer than MIN_QUERIES): when the latest extension was made, how
+   * many records the search matched then, and how many candidates all extensions together appended.
+   */
+  extended?: { at: string; matched: number; added: number };
   candidates: Candidate[];
 }
 
@@ -158,6 +186,40 @@ export interface SampleFile {
 }
 
 export const SAMPLE_PATH = fileURLToPath(new URL("../heldout.sample.json", import.meta.url));
+
+const isLookup = (c: Candidate): boolean => c.used?.startsWith("t-lookup-") === true;
+
+/** Why a stratum may not be extended, or undefined when it may. */
+export function extensionRefusal(s: DrawnStratum): string | undefined {
+  const undecided = s.candidates.filter((c) => c.used === undefined && c.skipped === undefined);
+  if (undecided.length > 0) return `${undecided.length} stored candidate(s) have no disposition yet: ${undecided.map((c) => c.pmid).join(", ")}`;
+  const lookups = s.candidates.filter(isLookup).length;
+  if (lookups >= QUOTA) return `it already has ${lookups} lookups (quota ${QUOTA})`;
+  if (s.extended && lookups >= MIN_QUERIES) return `it was already extended and has ${lookups} lookups (a further extension only while it has fewer than ${MIN_QUERIES})`;
+  return undefined;
+}
+
+/**
+ * The candidates an extension appends: the next CANDIDATES_PER_STRATUM of today's draw
+ * order for the stratum, once every PMID already stored in the file (in any stratum) is removed.
+ */
+export function extensionCandidates(todayPmids: string[], name: string, stored: Iterable<string>): string[] {
+  const have = new Set(stored);
+  return drawOrder(todayPmids, name)
+    .filter((p) => !have.has(p))
+    .slice(0, CANDIDATES_PER_STRATUM);
+}
+
+/**
+ * Are the stratum's stored candidates still the first of today's draw order? Records
+ * drawn for earlier strata are passed over, as they were when the stratum was drawn.
+ */
+export function storedPrefix(todayPmids: string[], name: string, stored: string[], earlier: Iterable<string>): { prefix: boolean; firstDifference?: number } {
+  const skip = new Set(earlier);
+  const order = drawOrder(todayPmids, name).filter((p) => !skip.has(p));
+  const at = stored.findIndex((p, i) => order[i] !== p);
+  return at < 0 ? { prefix: true } : { prefix: false, firstDifference: at + 1 };
+}
 
 /** Every PMID a search matches (up to PubMed's 9,999), paging through the core client. */
 async function allPmids(ncbi: NcbiClient, query: string): Promise<{ pmids: string[]; matched: number }> {
@@ -194,34 +256,74 @@ async function draw(): Promise<SampleFile> {
   };
 }
 
-/** Title, journal, dates and abstract of every candidate, for the query writer. Never committed. */
+/** Title, journal, dates and abstract of the given candidates of one stratum, for the query writer. Never committed. */
+async function abstractRows(ncbi: NcbiClient, name: string, pmids: string[], firstOrder = 1): Promise<unknown[]> {
+  const { articles } = await fetchPubMed({ ids: pmids }, new NullCache(), ncbi);
+  const byId = new Map(articles.map((a) => [a.pmid, a] as const));
+  return pmids.map((pmid, i) => {
+    const a = byId.get(pmid);
+    return {
+      stratum: name,
+      order: firstOrder + i,
+      pmid,
+      title: a?.title ?? "(not found)",
+      journal: a?.journal,
+      pubDate: a?.pubDate,
+      epubDate: a?.epubDate,
+      authors: a?.authors?.slice(0, 3),
+      publicationTypes: a?.publicationTypes,
+      abstract: a?.abstract ?? "",
+    };
+  });
+}
+
 async function abstracts(sample: SampleFile): Promise<unknown[]> {
   const ncbi = new NcbiClient();
   const rows: unknown[] = [];
-  for (const s of sample.strata) {
-    const { articles } = await fetchPubMed({ ids: s.candidates.map((c) => c.pmid) }, new NullCache(), ncbi);
-    const byId = new Map(articles.map((a) => [a.pmid, a] as const));
-    s.candidates.forEach((c, i) => {
-      const a = byId.get(c.pmid);
-      rows.push({
-        stratum: stratumName(s),
-        order: i + 1,
-        pmid: c.pmid,
-        title: a?.title ?? "(not found)",
-        journal: a?.journal,
-        pubDate: a?.pubDate,
-        epubDate: a?.epubDate,
-        authors: a?.authors?.slice(0, 3),
-        publicationTypes: a?.publicationTypes,
-        abstract: a?.abstract ?? "",
-      });
-    });
-  }
+  for (const s of sample.strata) rows.push(...(await abstractRows(ncbi, stratumName(s), s.candidates.map((c) => c.pmid))));
   return rows;
+}
+
+/** Continue one stratum down its draw order (see "Extension rule" above). */
+async function extend(name: string, abstractsPath: string): Promise<void> {
+  const sample = JSON.parse(readFileSync(SAMPLE_PATH, "utf-8")) as SampleFile;
+  const index = sample.strata.findIndex((s) => stratumName(s) === name);
+  const stratum = sample.strata[index];
+  if (!stratum) throw new Error(`No stratum "${name}". Strata: ${sample.strata.map(stratumName).join(", ")}`);
+  const refusal = extensionRefusal(stratum);
+  if (refusal) throw new Error(`Refusing to extend ${name}: ${refusal}.`);
+  const today = strata().find((s) => stratumName(s) === name);
+  if (!today || today.query !== stratum.query) throw new Error(`${name}: the stored search differs from the one this script builds today; refusing to extend.`);
+
+  const ncbi = new NcbiClient();
+  const { pmids, matched } = await allPmids(ncbi, stratum.query);
+  const stored = sample.strata.flatMap((s) => s.candidates.map((c) => c.pmid));
+  const earlier = sample.strata.slice(0, index).flatMap((s) => s.candidates.map((c) => c.pmid));
+  const fresh = extensionCandidates(pmids, name, stored);
+  if (fresh.length === 0) throw new Error(`${name}: the search matches ${matched} records and none is left to draw.`);
+
+  const now = new Set(pmids);
+  const gone = stratum.candidates.filter((c) => !now.has(c.pmid)).map((c) => c.pmid);
+  const { prefix, firstDifference } = storedPrefix(pmids, name, stratum.candidates.map((c) => c.pmid), earlier);
+  console.log(`${name}: matched ${stratum.matched} when drawn, ${matched} now${gone.length ? `; no longer in the stratum: ${gone.join(", ")}` : ""}`);
+  console.log(`  stored ${stratum.candidates.length} candidates ${prefix ? "are still the first of today's draw order" : `are NOT a prefix of today's draw order (first difference at #${firstDifference})`}`);
+  console.log(`  appending ${fresh.length}: ${fresh.join(", ")}`);
+
+  // Fetch first, so a failed request leaves the sample file as it was.
+  const rows = await abstractRows(ncbi, name, fresh, stratum.candidates.length + 1);
+  stratum.candidates.push(...fresh.map((pmid) => ({ pmid })));
+  stratum.extended = { at: new Date().toISOString().slice(0, 10), matched, added: (stratum.extended?.added ?? 0) + fresh.length };
+  writeFileSync(SAMPLE_PATH, `${JSON.stringify(sample, null, 2)}\n`);
+  writeFileSync(resolve(abstractsPath), `${JSON.stringify(rows, null, 2)}\n`);
+  console.log(`\nAppended to ${SAMPLE_PATH}; abstracts of the new candidates in ${resolve(abstractsPath)}`);
 }
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+  const flag = (name: string): string | undefined => {
+    const i = args.indexOf(name);
+    return i >= 0 ? args[i + 1] : undefined;
+  };
   if (args.includes("--check")) {
     const stored = JSON.parse(readFileSync(SAMPLE_PATH, "utf-8")) as SampleFile;
     const ncbi = new NcbiClient();
@@ -229,14 +331,24 @@ async function main(): Promise<void> {
       const { pmids, matched } = await allPmids(ncbi, s.query);
       const now = new Set(pmids);
       const gone = s.candidates.filter((c) => !now.has(c.pmid)).map((c) => c.pmid);
-      console.log(`${stratumName(s).padEnd(34)} matched ${s.matched} → ${matched}${gone.length ? `; no longer in the stratum: ${gone.join(", ")}` : ""}`);
+      const ext = s.extended ? `; extended ${s.extended.at} (+${s.extended.added})` : "";
+      console.log(`${stratumName(s).padEnd(34)} matched ${s.matched} → ${matched}${gone.length ? `; no longer in the stratum: ${gone.join(", ")}` : ""}${ext}`);
     }
     return;
   }
-  const at = args.indexOf("--abstracts");
-  const abstractsPath = at >= 0 ? args[at + 1] : undefined;
+  const abstractsPath = flag("--abstracts");
+  const extendName = flag("--extend");
+  if (args.includes("--extend") && (!extendName || !abstractsPath)) {
+    console.error("Usage: npx tsx benchmark/scripts/sample-heldout.ts --extend <specialty/period> --abstracts <file.json>");
+    process.exitCode = 2;
+    return;
+  }
+  if (extendName && abstractsPath) {
+    await extend(extendName, abstractsPath);
+    return;
+  }
   if (!abstractsPath) {
-    console.error("Usage: npx tsx benchmark/scripts/sample-heldout.ts --abstracts <file.json> | --check");
+    console.error("Usage: npx tsx benchmark/scripts/sample-heldout.ts --abstracts <file.json> | --check | --extend <specialty/period> --abstracts <file.json>");
     process.exitCode = 2;
     return;
   }

@@ -120,6 +120,12 @@ describe("values keys with a source", () => {
     expect(r.status).toBe("OK");
   });
 
+  it("ignores private-use font glyphs in the record, which a reader never sees", async () => {
+    const glyphs: PmidInfo = { ...paper, abstract: "Forty\uE011four cases of RA were randomized into two groups (n=44 in all); the control group received diclofenac sodium." };
+    const r = await checkQuery(key(["patients: 44", "control drug: diclofenac"], "Fortyfour cases of RA were randomized into two groups (n=44 in all); the control group received diclofenac sodium."), stub({ "27633186": glyphs }));
+    expect(r.status).toBe("OK");
+  });
+
   it("MISMATCH when an expected number is not in the quoted passage, even if it is elsewhere in the abstract", async () => {
     const r = await checkQuery(key(["randomized: 3297", "events: 108"], "We randomly assigned 3297 patients to semaglutide or placebo."), lookups);
     expect(r.status).toBe("MISMATCH");

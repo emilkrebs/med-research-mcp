@@ -469,13 +469,17 @@
         },
         {
           "pmid": "42961875",
+          "skipped": "no-numbers",
+          "note": "gives two results but not how many took part"
+        },
+        {
+          "pmid": "42847405",
+          "skipped": "predates-window",
+          "note": "issue dated 2026 Jan 7 with no online date"
+        },
+        {
+          "pmid": "42816092",
           "used": "t-lookup-36"
-        },
-        {
-          "pmid": "42847405"
-        },
-        {
-          "pmid": "42816092"
         },
         {
           "pmid": "42919190"
@@ -870,8 +874,52 @@
           "pmid": "42919408",
           "skipped": "not-primary",
           "note": "trial protocol; no results"
+        },
+        {
+          "pmid": "42875917",
+          "skipped": "not-primary",
+          "note": "cross-sectional sub-study of a randomized trial, three to four years after the intervention"
+        },
+        {
+          "pmid": "42685847",
+          "skipped": "not-primary",
+          "note": "design and methods of a trial that has not reported"
+        },
+        {
+          "pmid": "42720400",
+          "skipped": "not-primary",
+          "note": "nested case-control study within a trial"
+        },
+        {
+          "pmid": "42726505",
+          "skipped": "not-primary",
+          "note": "pharmacokinetic modelling of a phase 2 trial to choose a phase 3 dose"
+        },
+        {
+          "pmid": "42765886",
+          "skipped": "not-primary",
+          "note": "secondary analysis of a randomised trial"
+        },
+        {
+          "pmid": "42678899",
+          "used": "t-lookup-65"
+        },
+        {
+          "pmid": "42848825",
+          "skipped": "not-primary",
+          "note": "post hoc secondary analysis of a randomized trial"
+        },
+        {
+          "pmid": "42888210",
+          "skipped": "not-primary",
+          "note": "observational follow-up of infants born to women in a randomized trial"
         }
-      ]
+      ],
+      "extended": {
+        "at": "2026-11-10",
+        "matched": 29,
+        "added": 8
+      }
     },
     {
       "specialty": "ophthalmology",
@@ -881,15 +929,15 @@
       "candidates": [
         {
           "pmid": "27602665",
-          "used": "t-lookup-65"
-        },
-        {
-          "pmid": "31971679",
           "used": "t-lookup-66"
         },
         {
-          "pmid": "28712537",
+          "pmid": "31971679",
           "used": "t-lookup-67"
+        },
+        {
+          "pmid": "28712537",
+          "used": "t-lookup-68"
         },
         {
           "pmid": "28494920",
@@ -922,7 +970,7 @@
         },
         {
           "pmid": "42893472",
-          "used": "t-lookup-68"
+          "used": "t-lookup-69"
         },
         {
           "pmid": "42681266",
@@ -931,11 +979,11 @@
         },
         {
           "pmid": "42867309",
-          "used": "t-lookup-69"
+          "used": "t-lookup-70"
         },
         {
           "pmid": "42761589",
-          "used": "t-lookup-70"
+          "used": "t-lookup-71"
         },
         {
           "pmid": "42717267"
