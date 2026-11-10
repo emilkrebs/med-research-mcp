@@ -1,0 +1,788 @@
+{
+  "seed": 20261110,
+  "drawn_at": "2026-11-10",
+  "recent_window": {
+    "from": "2026/09/01",
+    "to": "2026/10/31"
+  },
+  "established_years": {
+    "from": 2015,
+    "to": 2022
+  },
+  "established_journals": [
+    "N Engl J Med",
+    "Lancet",
+    "JAMA",
+    "BMJ"
+  ],
+  "strata": [
+    {
+      "specialty": "cardiology",
+      "period": "established",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Cardiovascular Diseases\"[majr] AND 2015:2022[dp]",
+      "matched": 654,
+      "candidates": [
+        {
+          "pmid": "26321103"
+        },
+        {
+          "pmid": "33197395"
+        },
+        {
+          "pmid": "32966714"
+        },
+        {
+          "pmid": "27040451"
+        },
+        {
+          "pmid": "33189178"
+        },
+        {
+          "pmid": "36027559"
+        },
+        {
+          "pmid": "31067369"
+        },
+        {
+          "pmid": "29900874"
+        }
+      ]
+    },
+    {
+      "specialty": "cardiology",
+      "period": "recent",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Cardiovascular Diseases\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 218,
+      "candidates": [
+        {
+          "pmid": "42827913"
+        },
+        {
+          "pmid": "42743421"
+        },
+        {
+          "pmid": "42678121"
+        },
+        {
+          "pmid": "42847369"
+        },
+        {
+          "pmid": "42743423"
+        },
+        {
+          "pmid": "42677894"
+        },
+        {
+          "pmid": "42717033"
+        },
+        {
+          "pmid": "42806496"
+        }
+      ]
+    },
+    {
+      "specialty": "oncology",
+      "period": "established",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Neoplasms\"[majr] AND 2015:2022[dp]",
+      "matched": 438,
+      "candidates": [
+        {
+          "pmid": "28146658"
+        },
+        {
+          "pmid": "35660812"
+        },
+        {
+          "pmid": "27626365"
+        },
+        {
+          "pmid": "29800179"
+        },
+        {
+          "pmid": "31229240"
+        },
+        {
+          "pmid": "30782343"
+        },
+        {
+          "pmid": "36214590"
+        },
+        {
+          "pmid": "27509100"
+        }
+      ]
+    },
+    {
+      "specialty": "oncology",
+      "period": "recent",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Neoplasms\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 253,
+      "candidates": [
+        {
+          "pmid": "42923857"
+        },
+        {
+          "pmid": "42801141"
+        },
+        {
+          "pmid": "42847397"
+        },
+        {
+          "pmid": "42727513"
+        },
+        {
+          "pmid": "42871149"
+        },
+        {
+          "pmid": "42801438"
+        },
+        {
+          "pmid": "42720799"
+        },
+        {
+          "pmid": "42747116"
+        }
+      ]
+    },
+    {
+      "specialty": "infectious-disease",
+      "period": "established",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Infections\"[majr] AND 2015:2022[dp]",
+      "matched": 462,
+      "candidates": [
+        {
+          "pmid": "30032978"
+        },
+        {
+          "pmid": "29113968"
+        },
+        {
+          "pmid": "33308429"
+        },
+        {
+          "pmid": "33620405"
+        },
+        {
+          "pmid": "36269852"
+        },
+        {
+          "pmid": "30786187"
+        },
+        {
+          "pmid": "34407339"
+        },
+        {
+          "pmid": "36546625"
+        }
+      ]
+    },
+    {
+      "specialty": "infectious-disease",
+      "period": "recent",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Infections\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 140,
+      "candidates": [
+        {
+          "pmid": "42753710"
+        },
+        {
+          "pmid": "42959175"
+        },
+        {
+          "pmid": "42858264"
+        },
+        {
+          "pmid": "42843284"
+        },
+        {
+          "pmid": "42690008"
+        },
+        {
+          "pmid": "42731309"
+        },
+        {
+          "pmid": "42958676"
+        },
+        {
+          "pmid": "42721898"
+        }
+      ]
+    },
+    {
+      "specialty": "neurology",
+      "period": "established",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Nervous System Diseases\"[majr] AND 2015:2022[dp]",
+      "matched": 298,
+      "candidates": [
+        {
+          "pmid": "31291515"
+        },
+        {
+          "pmid": "25883095"
+        },
+        {
+          "pmid": "36063821"
+        },
+        {
+          "pmid": "36007534"
+        },
+        {
+          "pmid": "28636854"
+        },
+        {
+          "pmid": "36341753"
+        },
+        {
+          "pmid": "30874766"
+        },
+        {
+          "pmid": "29029896"
+        }
+      ]
+    },
+    {
+      "specialty": "neurology",
+      "period": "recent",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Nervous System Diseases\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 283,
+      "candidates": [
+        {
+          "pmid": "42685256"
+        },
+        {
+          "pmid": "42958224"
+        },
+        {
+          "pmid": "42714024"
+        },
+        {
+          "pmid": "42841486"
+        },
+        {
+          "pmid": "42775498"
+        },
+        {
+          "pmid": "42781890"
+        },
+        {
+          "pmid": "42751984"
+        },
+        {
+          "pmid": "42920874"
+        }
+      ]
+    },
+    {
+      "specialty": "psychiatry",
+      "period": "established",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Mental Disorders\"[majr] AND 2015:2022[dp]",
+      "matched": 118,
+      "candidates": [
+        {
+          "pmid": "28657871"
+        },
+        {
+          "pmid": "33170240"
+        },
+        {
+          "pmid": "26837684"
+        },
+        {
+          "pmid": "30778597"
+        },
+        {
+          "pmid": "34932079"
+        },
+        {
+          "pmid": "36244383"
+        },
+        {
+          "pmid": "33620407"
+        },
+        {
+          "pmid": "33974020"
+        }
+      ]
+    },
+    {
+      "specialty": "psychiatry",
+      "period": "recent",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Mental Disorders\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 228,
+      "candidates": [
+        {
+          "pmid": "42686878"
+        },
+        {
+          "pmid": "42896141"
+        },
+        {
+          "pmid": "42810153"
+        },
+        {
+          "pmid": "42679601"
+        },
+        {
+          "pmid": "42830293"
+        },
+        {
+          "pmid": "42714936"
+        },
+        {
+          "pmid": "42803945"
+        },
+        {
+          "pmid": "42747202"
+        }
+      ]
+    },
+    {
+      "specialty": "endocrinology",
+      "period": "established",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND (\"Endocrine System Diseases\"[majr] OR \"Nutritional and Metabolic Diseases\"[majr]) AND 2015:2022[dp]",
+      "matched": 305,
+      "candidates": [
+        {
+          "pmid": "30808512"
+        },
+        {
+          "pmid": "26144908"
+        },
+        {
+          "pmid": "30857647"
+        },
+        {
+          "pmid": "35368052"
+        },
+        {
+          "pmid": "33567185"
+        },
+        {
+          "pmid": "30575490"
+        },
+        {
+          "pmid": "26352813"
+        },
+        {
+          "pmid": "33196153"
+        }
+      ]
+    },
+    {
+      "specialty": "endocrinology",
+      "period": "recent",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"Endocrine System Diseases\"[majr] OR \"Nutritional and Metabolic Diseases\"[majr]) AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 209,
+      "candidates": [
+        {
+          "pmid": "42679726"
+        },
+        {
+          "pmid": "42893989"
+        },
+        {
+          "pmid": "42755121"
+        },
+        {
+          "pmid": "42745596"
+        },
+        {
+          "pmid": "42961875"
+        },
+        {
+          "pmid": "42847405"
+        },
+        {
+          "pmid": "42816092"
+        },
+        {
+          "pmid": "42919190"
+        }
+      ]
+    },
+    {
+      "specialty": "pulmonology",
+      "period": "established",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Respiratory Tract Diseases\"[majr] AND 2015:2022[dp]",
+      "matched": 360,
+      "candidates": [
+        {
+          "pmid": "34996756"
+        },
+        {
+          "pmid": "25230595"
+        },
+        {
+          "pmid": "33275134"
+        },
+        {
+          "pmid": "27598678"
+        },
+        {
+          "pmid": "28029926"
+        },
+        {
+          "pmid": "32023372"
+        },
+        {
+          "pmid": "34097856"
+        },
+        {
+          "pmid": "35544369"
+        }
+      ]
+    },
+    {
+      "specialty": "pulmonology",
+      "period": "recent",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Respiratory Tract Diseases\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 120,
+      "candidates": [
+        {
+          "pmid": "42683528"
+        },
+        {
+          "pmid": "42822118"
+        },
+        {
+          "pmid": "42803181"
+        },
+        {
+          "pmid": "42961876"
+        },
+        {
+          "pmid": "42717034"
+        },
+        {
+          "pmid": "42734213"
+        },
+        {
+          "pmid": "42932386"
+        },
+        {
+          "pmid": "42847356"
+        }
+      ]
+    },
+    {
+      "specialty": "gastroenterology",
+      "period": "established",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Digestive System Diseases\"[majr] AND 2015:2022[dp]",
+      "matched": 184,
+      "candidates": [
+        {
+          "pmid": "29800214"
+        },
+        {
+          "pmid": "27131100"
+        },
+        {
+          "pmid": "31727409"
+        },
+        {
+          "pmid": "31135850"
+        },
+        {
+          "pmid": "33185364"
+        },
+        {
+          "pmid": "32521132"
+        },
+        {
+          "pmid": "33657294"
+        },
+        {
+          "pmid": "36346079"
+        }
+      ]
+    },
+    {
+      "specialty": "gastroenterology",
+      "period": "recent",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Digestive System Diseases\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 115,
+      "candidates": [
+        {
+          "pmid": "42782492"
+        },
+        {
+          "pmid": "42685302"
+        },
+        {
+          "pmid": "42927765"
+        },
+        {
+          "pmid": "42839852"
+        },
+        {
+          "pmid": "42716074"
+        },
+        {
+          "pmid": "42929021"
+        },
+        {
+          "pmid": "42830449"
+        },
+        {
+          "pmid": "42691897"
+        }
+      ]
+    },
+    {
+      "specialty": "nephrology-urology",
+      "period": "established",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Urologic Diseases\"[majr] AND 2015:2022[dp]",
+      "matched": 121,
+      "candidates": [
+        {
+          "pmid": "32668114"
+        },
+        {
+          "pmid": "26969090"
+        },
+        {
+          "pmid": "26325557"
+        },
+        {
+          "pmid": "29105594"
+        },
+        {
+          "pmid": "36331190"
+        },
+        {
+          "pmid": "28763548"
+        },
+        {
+          "pmid": "31340094"
+        },
+        {
+          "pmid": "35579642"
+        }
+      ]
+    },
+    {
+      "specialty": "nephrology-urology",
+      "period": "recent",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Urologic Diseases\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 44,
+      "candidates": [
+        {
+          "pmid": "42873070"
+        },
+        {
+          "pmid": "42847350"
+        },
+        {
+          "pmid": "42845083"
+        },
+        {
+          "pmid": "42932910"
+        },
+        {
+          "pmid": "42683856"
+        },
+        {
+          "pmid": "42894134"
+        },
+        {
+          "pmid": "42716009"
+        },
+        {
+          "pmid": "42697907"
+        }
+      ]
+    },
+    {
+      "specialty": "musculoskeletal",
+      "period": "established",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Musculoskeletal Diseases\"[majr] AND 2015:2022[dp]",
+      "matched": 126,
+      "candidates": [
+        {
+          "pmid": "26488691"
+        },
+        {
+          "pmid": "25308290"
+        },
+        {
+          "pmid": "28215362"
+        },
+        {
+          "pmid": "36495881"
+        },
+        {
+          "pmid": "27287832"
+        },
+        {
+          "pmid": "32386593"
+        },
+        {
+          "pmid": "27959716"
+        },
+        {
+          "pmid": "28892457"
+        }
+      ]
+    },
+    {
+      "specialty": "musculoskeletal",
+      "period": "recent",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Musculoskeletal Diseases\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 100,
+      "candidates": [
+        {
+          "pmid": "42877103"
+        },
+        {
+          "pmid": "42759032"
+        },
+        {
+          "pmid": "42832303"
+        },
+        {
+          "pmid": "42942962"
+        },
+        {
+          "pmid": "42825853"
+        },
+        {
+          "pmid": "42750164"
+        },
+        {
+          "pmid": "42804313"
+        },
+        {
+          "pmid": "42715467"
+        }
+      ]
+    },
+    {
+      "specialty": "obstetrics",
+      "period": "established",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Pregnancy Complications\"[majr] AND 2015:2022[dp]",
+      "matched": 72,
+      "candidates": [
+        {
+          "pmid": "30177236"
+        },
+        {
+          "pmid": "31378394"
+        },
+        {
+          "pmid": "33952438"
+        },
+        {
+          "pmid": "31509674"
+        },
+        {
+          "pmid": "29234808"
+        },
+        {
+          "pmid": "28619476"
+        },
+        {
+          "pmid": "31097213"
+        },
+        {
+          "pmid": "30120476"
+        }
+      ]
+    },
+    {
+      "specialty": "obstetrics",
+      "period": "recent",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Pregnancy Complications\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 29,
+      "candidates": [
+        {
+          "pmid": "42904460"
+        },
+        {
+          "pmid": "42946978"
+        },
+        {
+          "pmid": "42937386"
+        },
+        {
+          "pmid": "42964126"
+        },
+        {
+          "pmid": "42870746"
+        },
+        {
+          "pmid": "42862085"
+        },
+        {
+          "pmid": "42695336"
+        },
+        {
+          "pmid": "42919408"
+        }
+      ]
+    },
+    {
+      "specialty": "ophthalmology",
+      "period": "established",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Eye Diseases\"[majr] AND 2015:2022[dp]",
+      "matched": 40,
+      "candidates": [
+        {
+          "pmid": "27602665"
+        },
+        {
+          "pmid": "31971679"
+        },
+        {
+          "pmid": "28712537"
+        },
+        {
+          "pmid": "28494920"
+        },
+        {
+          "pmid": "31495497"
+        },
+        {
+          "pmid": "28423305"
+        },
+        {
+          "pmid": "30357297"
+        },
+        {
+          "pmid": "34551229"
+        }
+      ]
+    },
+    {
+      "specialty": "ophthalmology",
+      "period": "recent",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Eye Diseases\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 33,
+      "candidates": [
+        {
+          "pmid": "42717542"
+        },
+        {
+          "pmid": "42893472"
+        },
+        {
+          "pmid": "42681266"
+        },
+        {
+          "pmid": "42867309"
+        },
+        {
+          "pmid": "42761589"
+        },
+        {
+          "pmid": "42717267"
+        },
+        {
+          "pmid": "42864450"
+        },
+        {
+          "pmid": "42742213"
+        }
+      ]
+    }
+  ]
+}

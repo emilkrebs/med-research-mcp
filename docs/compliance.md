@@ -115,7 +115,7 @@ Every scientific claim in the code, docs and skills must trace to a primary sour
 
 - **The design labels** come only from NLM metadata. [`grader.ts`](../src/core/grader.ts) cites a source for every mapping (MeSH records, OCEBM, GRADE, NLM bulletins) and measures each heuristic on real PubMed records; when in doubt it chooses the lower tier, or `null`. [How it works](how-it-works.md#the-grader-study-design-labels) has the reasoning and the rules for changing it.
 - **The skills** cite every claim, numbered against a reference list with PMIDs.
-- **The benchmark** verifies every citation in an answer against live PubMed and is explicit about its limits ([benchmark/README.md](../benchmark/README.md#validity-and-limitations)).
+- **The benchmark** checks every citation in an answer against live PubMed (that the record exists and is about the question), re-checks each of its own answer keys against the record it was read from before a publication run, and is explicit about its limits ([benchmark/README.md](../benchmark/README.md#validity-and-limitations)).
 
 ### Verification of 2026-10-19
 
@@ -124,6 +124,17 @@ Before the first release, every reference in the skills, the grader and the docs
 - **Citations.** All 32 PMIDs match their PubMed records (authors, journal, year, volume, pages), as do the GRIM test's DOI and the Cochrane Handbook's current version (6.5, 2024).
 - **Claims.** These were confirmed in the abstract, full text or source document: LeLorier 1997 (κ = 0.35); Prasad 2013 (146 of 363 established practices reversed, 40.2%); Ciani 2013 (odds ratios 0.51 vs 0.76); Askin 2025 (human RCTs excluded seven times as often under automated indexing; full text); Lundh 2017; COMPare (87% of trials needed corrections); the Cochrane Handbook's I² ranges, prediction-interval caveats (normality, "five or more" studies), the ten-study rule for funnel-plot tests and the RoB 2 domains (chapters 8, 10, 13); the GRADE wording for certainty levels (chapter 15); ROBINS-I V2 (November 2025 draft: deviations domain dropped, immortal-time questions added); every row of the OCEBM 2011 table and its footnote; the OCEBM and GRADE quotes in `grader.ts`; CONSORT 2025 item 1a, STROBE item 1(a) and PRISMA 2020 item 1; Cohen's d conventions (Cohen 1992, Table 1); the MeSH definitions behind the tiers (Network Meta-Analysis, Controlled Clinical Trial, Pragmatic Clinical Trial, Retraction Notice); and the skill's worked examples (PMID 36615805 is a meta-analysis of 21 RCTs; no 2023 Jensen trial of melatonin and REM sleep exists).
 - **Corrected.** Hill (1965) wrote that none of his considerations "can be required as a sine qua non", so the skills no longer attribute "temporality is required" to him. The Cochrane placebo review says placebo interventions "can influence" patient-reported outcomes, not that the effects are real. OCEBM's level 1 for treatment benefit is now quoted with its intended reading. Cohen's conventions gained a citable journal source.
+
+### Verification of 2026-11-10
+
+The `med-research` skill's three worked examples and its query-syntax examples were replaced: the old ones were queries of the benchmark's development set, which made the benchmark's skill condition a test on its own examples. The new ones were checked the same way:
+
+- **The lookup example** (PMID 22570464, Hempel et al., *JAMA* 2012): authors, journal and year match the PubMed record; it carries the NLM tags Meta-Analysis and Systematic Review; and its abstract states that 82 randomized trials met the inclusion criteria and 63 were pooled, as the example says.
+- **The fabricated-study example** (a 2020 Nilsen trial on taurine and slow-wave sleep) has no match: PubMed returns no record by an author Nilsen with taurine and sleep in its title or abstract, and no 2020 record with taurine and slow-wave sleep.
+- **The query-syntax examples** (zinc and the common cold) were run: `"Zinc"[mesh] AND "Common Cold"[mesh]` with `Hemilä H[au]` returns records.
+- **The example id in the `literature_fetch` description** (`CBA:644599`) resolves in Europe PMC. It replaces `CBA:521529`, the answer record of a benchmark query.
+
+The benchmark's held-out answer keys were written on the same day from the PubMed abstracts; each key quotes the passage it rests on, and `npm --prefix benchmark run verify-keys` checks every quote and number against the live record.
 
 ## Open items
 

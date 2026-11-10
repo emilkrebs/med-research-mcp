@@ -254,7 +254,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .min(1)
       .max(50)
       .describe(
-        "Database-specific ids to fetch: PMIDs for pubmed; PMIDs or prefixed ids (e.g. CBA:521529, PPR… preprints) " +
+        "Database-specific ids to fetch: PMIDs for pubmed; PMIDs or prefixed ids (e.g. CBA:644599, PPR… preprints) " +
           "for europepmc; the ids literature_search returned for chinaxiv and russiarxiv.",
       ),
     database: z.enum(DATABASES).describe(`Which database the ids belong to: ${DATABASES.join(", ")}.`),

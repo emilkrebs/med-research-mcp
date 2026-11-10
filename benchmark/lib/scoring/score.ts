@@ -1,17 +1,19 @@
 /**
  * Turn one raw `RunRecord` into a fully-scored `ScoreRow`.
  *
- * Order: classify the run's status → verify citations (existence + evidence
- * grade) → attribution audit (do the claims next to each citation match it?) →
- * bullshit sub-score → accuracy (deterministic answer-key, or a
- * provisional citation-quality proxy for rubric queries until a human grade is
- * applied via overrides) → composite. For bullshit queries, accuracy is the
- * rejection outcome on the 0–10 scale so the category still contributes to the
- * accuracy column, while the composite rule lives in `compositeForCategory`.
+ * Order: classify how the run ended → verify citations (existence and topic) →
+ * attribution audit (do the claims next to each valid citation match it?) →
+ * premise score (fabricated-study and real-study-control queries) → accuracy.
+ * There is no composite: each of these is reported on its own.
  *
- * `scoreRun` never throws: a provider error or empty answer short-circuits
- * (PubMed is not touched) and a verification failure becomes a `scoring-error`
- * row. Only `ok` rows enter downstream aggregation.
+ * Accuracy is ground truth or nothing: a `values` key is matched field by
+ * field, a `reject`/`accept` key mirrors the premise score, and a `rubric`
+ * answer stays unscored (NaN) until a human grades it. A run that produced no
+ * answer (`no-answer`, `timeout`) scores 0; a run that is missing data
+ * (`provider-error`, `invalid`, `scoring-error`) has no scores at all.
+ *
+ * `scoreRun` never throws: a failed or missing run short-circuits (PubMed is
+ * not touched) and a verification failure becomes a `scoring-error` row.
  *
  * Also returns a `ScoreBreakdown` suitable for embedding in the raw JSON so the
  * rescorer can re-derive the row without re-fetching PubMed (`rowFromBreakdown`).
@@ -28,9 +30,10 @@ import type {
 } from "../types.js";
 import { auditCitations, type CitationAudit, type Verifier } from "./verify.js";
 import { checkAttribution } from "./attribution.js";
-import { bullshitScore, hasRejectionLanguage } from "./bullshit.js";
+import { hasRejectionLanguage, premiseScore } from "./bullshit.js";
 import { scoreAccuracy } from "./accuracy.js";
-import { compositeForCategory } from "./composite.js";
+import { isFailure, isScored, normalizeStatus, runOutcome } from "../status.js";
+import { queryById } from "../queries.js";
 
 /**
  * Bump when scoring logic changes in a way that alters scores (v1 = substring
@@ -39,10 +42,16 @@ import { compositeForCategory } from "./composite.js";
  * passive-voice rejections, markdown-tolerant PMID anchors, `contextTruncated` runs score as `truncated`;
  * v5 = attribution audit, Europe PMC / ChinaXiv citations looked up and graded;
  * v6 = a DOI, decimal or year after a PMID anchor is no longer read as a short PMID;
- * v7 = evidence quality is the mean design tier from NLM metadata; unrated citations (no design metadata,
- * syntheses of unindexed designs) are left out, citing only those leaves it NaN and the composite drops that term).
+ * v7 = evidence quality is the mean design tier from NLM metadata; unrated citations are left out;
+ * v8 = no composite and no rubric proxy (ungraded rubric answers are unscored); a cited record that is
+ * off the query's topic is fabricated and leaves the attribution audit; runs without an answer score 0
+ * (`no-answer`, `timeout`) instead of dropping out, missing runs are `provider-error`/`invalid`;
+ * `accept` keys; the premise score is set on reject/accept queries only).
  */
-export const SCORER_VERSION = 7;
+export const SCORER_VERSION = 8;
+
+/** First scorer version without the rubric citation proxy. */
+const FIRST_VERSION_WITHOUT_PROXY = 8;
 
 export interface ScoreResult {
   row: ScoreRow;
@@ -54,37 +63,38 @@ const round2 = (x: number): number => Math.round(x * 100) / 100;
 /** A stored score: JSON turns NaN ("unscored") into null, so null reads back as NaN; a missing field (older breakdowns) as 0. */
 const scored = (x: number | null | undefined): number => (x === null ? Number.NaN : (x ?? 0));
 
-/** Map an answer-key kind to where its accuracy number comes from (overrides flip `proxy` → `human` later). */
-function sourceForKind(kind: string): AccuracySource {
+type KeyKind = AnswerKey["kind"];
+
+const isPremiseKind = (kind: KeyKind): kind is "reject" | "accept" => kind === "reject" || kind === "accept";
+
+/** The answer-key kind a breakdown was scored with ("evidence-score" is scorer v1's name for a values key). */
+function kindOf(raw: unknown): KeyKind {
+  return raw === "rubric" || raw === "reject" || raw === "accept" ? raw : "values";
+}
+
+/** Map an answer-key kind to where its accuracy number comes from (overrides flip `ungraded` → `human` later). */
+function sourceForKind(kind: KeyKind): AccuracySource {
   switch (kind) {
     case "reject":
       return "reject";
+    case "accept":
+      return "accept";
     case "rubric":
-      return "proxy";
-    default:
-      // "values" and the legacy "evidence-score" are both automated ground truth.
+      return "ungraded";
+    case "values":
       return "deterministic";
   }
 }
 
-/** Status decided before any scoring: errors, empty answers and provider-truncated contexts skip PubMed entirely. */
-function preStatus(run: RunRecord): RunStatus | undefined {
-  if (run.error) return "provider-error";
-  if (run.contextTruncated || String(run.text ?? "").trim() === "") return "truncated";
-  // The loop ended mid-work (still calling tools, or cut off by a length limit): whatever text
-  // exists is a progress note ("let me search more"), not an answer.
-  if (run.finishReason === "tool-calls" || run.finishReason === "length") return "truncated";
-  return undefined;
-}
-
-/** A breakdown with every numeric field zeroed, for runs that are not (or could not be) scored. */
-function emptyBreakdown(status: RunStatus, kind: AnswerKey["kind"], query: BenchmarkQuery, scoringError?: string): ScoreBreakdown {
+/** The breakdown of a run that was not scored from its text: a failure (zeros) or missing data (unscored). */
+function emptyBreakdown(status: RunStatus, query: BenchmarkQuery, scoringError?: string): ScoreBreakdown {
+  const kind = query.answerKey.kind;
+  const failed = isFailure(status);
   return {
     status,
-    accuracy: { score: 0, kind },
-    evidenceQuality: { score: 0, pmids: [] },
-    bullshit: { score: 0, rejected: false, fabricatedPmids: [] },
-    composite: 0,
+    accuracy: { score: failed ? 0 : Number.NaN, kind },
+    evidenceQuality: { score: Number.NaN, pmids: [] },
+    bullshit: { score: failed && isPremiseKind(kind) ? 0 : Number.NaN, rejected: false, fabricatedPmids: [] },
     answerKeyVersion: query.answerKeyVersion,
     scorerVersion: SCORER_VERSION,
     ...(scoringError !== undefined ? { scoringError } : {}),
@@ -96,45 +106,37 @@ export async function scoreRun(run: RunRecord, query: BenchmarkQuery, verifier: 
     return await scoreRunUnsafe(run, query, verifier);
   } catch (err) {
     // Last line of defense: scoring must never take down the whole benchmark run.
-    const breakdown = emptyBreakdown("scoring-error", query.answerKey.kind, query, err instanceof Error ? err.message : String(err));
+    const breakdown = emptyBreakdown("scoring-error", query, err instanceof Error ? err.message : String(err));
     return { row: rowFromBreakdown(run, breakdown), breakdown };
   }
 }
 
 async function scoreRunUnsafe(run: RunRecord, query: BenchmarkQuery, verifier: Verifier): Promise<ScoreResult> {
-  const pre = preStatus(run);
-  if (pre) {
-    const breakdown = emptyBreakdown(pre, query.answerKey.kind, query);
+  // Failed and missing runs skip PubMed entirely.
+  const outcome = runOutcome(run);
+  if (outcome) {
+    const breakdown = emptyBreakdown(outcome, query);
     return { row: rowFromBreakdown(run, breakdown), breakdown };
   }
 
   const text = String(run.text);
   let audit: CitationAudit;
   try {
-    audit = await auditCitations(text, run.prompt || query.prompt, verifier);
+    audit = await auditCitations(text, run.prompt || query.prompt, verifier, query.topics);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const breakdown = emptyBreakdown("scoring-error", query.answerKey.kind, query, message);
+    const breakdown = emptyBreakdown("scoring-error", query, message);
     return { row: rowFromBreakdown(run, breakdown), breakdown };
   }
 
-  const isBullshit = query.category === "bullshit";
-  const rejected = isBullshit && hasRejectionLanguage(text);
-  const bs = bullshitScore(text, audit, isBullshit);
-  const acc = isBullshit
-    ? { score: bs * 10, detail: { score: round2(bs * 10), kind: query.answerKey.kind } }
-    : scoreAccuracy(query, text, audit);
+  const key = query.answerKey;
+  const kind = key.kind;
+  const premise = key.kind === "reject" || key.kind === "accept" ? premiseScore(key, text, audit) : Number.NaN;
+  const acc = isPremiseKind(kind) ? { score: premise * 10, detail: { score: premise * 10, kind } } : scoreAccuracy(query, text);
 
-  // Reported next to the composite, not inside it (see lib/scoring/attribution.ts).
-  const attribution = checkAttribution(text, audit.valid, [...audit.cited, ...audit.echoedFromPrompt], query.topics);
-
-  const composite = compositeForCategory(run.category, {
-    accuracy: acc.score,
-    evidenceQuality: audit.evidenceQuality,
-    bullshitScore: bs,
-    speedS: run.speedS,
-    totalTokens: run.usage.totalTokens,
-  });
+  // Claims next to the valid citations; off-topic ones are already counted as fabricated.
+  const attribution = checkAttribution(text, audit.valid, [...audit.cited, ...audit.echoedFromPrompt]);
+  const offTopic = new Map(audit.offTopic.map((f) => [f.pmid, f] as const));
 
   const breakdown: ScoreBreakdown = {
     status: "ok",
@@ -142,44 +144,73 @@ async function scoreRunUnsafe(run: RunRecord, query: BenchmarkQuery, verifier: V
     evidenceQuality: {
       score: round2(audit.evidenceQuality),
       pmids: audit.cited.map((pmid) => {
-        const v = audit.valid.find((f) => f.pmid === pmid);
-        return v
-          ? { pmid, valid: true, designTier: v.designTier, studyType: v.studyType, title: v.title, ...(v.database ? { database: v.database } : {}) }
-          : { pmid, valid: false };
+        const v = audit.valid.find((f) => f.pmid === pmid) ?? offTopic.get(pmid);
+        if (!v) return { pmid, valid: false };
+        const facts = { designTier: v.designTier, studyType: v.studyType, title: v.title, ...(v.database ? { database: v.database } : {}) };
+        return offTopic.has(pmid) ? { pmid, valid: false, offTopic: true as const, ...facts } : { pmid, valid: true, ...facts };
       }),
       other: audit.other,
       echoedFromPrompt: audit.echoedFromPrompt,
     },
-    bullshit: { score: round2(bs), rejected, fabricatedPmids: audit.fabricated },
+    bullshit: {
+      score: premise,
+      rejected: isPremiseKind(kind) && hasRejectionLanguage(text),
+      fabricatedPmids: audit.fabricated,
+      offTopicPmids: audit.offTopic.map((f) => f.pmid),
+    },
     attribution,
-    composite,
     answerKeyVersion: query.answerKeyVersion,
     scorerVersion: SCORER_VERSION,
   };
   return { row: rowFromBreakdown(run, breakdown), breakdown };
 }
 
+/** The status of a stored breakdown; ones from before scorer v8 (no status, or `truncated`) are read off the record. */
+function statusOf(record: RunRecord, breakdown: ScoreBreakdown): RunStatus {
+  const stored = breakdown.status as string | undefined;
+  if (stored === undefined || stored === "truncated") return runOutcome(record) ?? (stored === "truncated" ? "no-answer" : "ok");
+  return normalizeStatus(stored);
+}
+
 /**
  * Rebuild a `ScoreRow` from an embedded `_scoring` breakdown with no network.
- * Tolerates scorer-v1 breakdowns: no `status` (derived from `record.error`), no
- * `scorerVersion`/`other`/`echoedFromPrompt`, and `accuracy.kind` possibly
- * `"evidence-score"` (treated as deterministic).
+ * Tolerates older breakdowns: no `status` (read off the record), no
+ * `scorerVersion`/`other`/`echoedFromPrompt`, `accuracy.kind` possibly
+ * `"evidence-score"` (a values key), and a rubric accuracy that is the old
+ * citation proxy (read as unscored).
  */
 export function rowFromBreakdown(record: RunRecord, breakdown: ScoreBreakdown): ScoreRow {
-  const status: RunStatus = breakdown.status ?? (record.error ? "provider-error" : "ok");
+  const status = statusOf(record, breakdown);
+  const failed = isFailure(status);
+  const kind = kindOf(breakdown.accuracy?.kind);
+  const query = queryById(record.queryId);
   const pmids = breakdown.evidenceQuality?.pmids ?? [];
-  const fabricated = breakdown.bullshit?.fabricatedPmids?.length ?? pmids.filter((p) => !p.valid).length;
+  const isProxy = kind === "rubric" && (breakdown.scorerVersion ?? 1) < FIRST_VERSION_WITHOUT_PROXY;
+
+  let accuracy = Number.NaN;
+  if (failed) accuracy = 0;
+  else if (status === "ok" && !isProxy) accuracy = round2(scored(breakdown.accuracy?.score));
+
+  let premise = Number.NaN;
+  if (isPremiseKind(kind)) {
+    if (failed) premise = 0;
+    else if (status === "ok") premise = round2(scored(breakdown.bullshit?.score));
+  }
+
   return {
     query_id: record.queryId,
     category: record.category,
+    split: record.split ?? query?.split ?? "dev",
+    key_kind: kind,
+    retrieval_only: record.retrievalOnly ?? query?.retrievalOnly ?? false,
     condition: record.condition,
     model: record.model,
     run: record.run,
     status,
-    accuracy: round2(scored(breakdown.accuracy?.score)),
-    accuracy_source: sourceForKind(String(breakdown.accuracy?.kind)),
-    evidence_quality: round2(scored(breakdown.evidenceQuality?.score)),
-    bullshit_score: round2(breakdown.bullshit?.score ?? 0),
+    accuracy,
+    accuracy_source: failed ? "failed" : sourceForKind(kind),
+    bullshit_score: premise,
+    evidence_quality: status === "ok" ? round2(scored(breakdown.evidenceQuality?.score)) : Number.NaN,
     speed_s: round2(record.speedS),
     input_tokens: record.usage?.inputTokens ?? 0,
     output_tokens: record.usage?.outputTokens ?? 0,
@@ -188,11 +219,11 @@ export function rowFromBreakdown(record: RunRecord, breakdown: ScoreBreakdown): 
     tools_used: (record.toolsUsed ?? []).join(","),
     pmids_cited: pmids.length,
     pmids_valid: pmids.filter((p) => p.valid).length,
-    pmids_fabricated: fabricated,
+    pmids_fabricated: pmids.filter((p) => !p.valid).length,
+    pmids_off_topic: pmids.filter((p) => p.offTopic).length,
     other_citations: breakdown.evidenceQuality?.other?.length ?? 0,
-    ...(breakdown.attribution
+    ...(breakdown.attribution && isScored(status)
       ? { citations_checked: breakdown.attribution.checked, citations_misattributed: breakdown.attribution.misattributed }
       : {}),
-    composite: round2(scored(breakdown.composite)),
   };
 }

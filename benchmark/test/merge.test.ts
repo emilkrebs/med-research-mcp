@@ -6,93 +6,96 @@ import { defaultDirs, loadSource, mergeSources, parseCsv, provenanceWarnings, to
 import { toCsv } from "../lib/report/csv.js";
 import { QUERIES } from "../lib/queries.js";
 import type { ScoreRow } from "../lib/types.js";
+import { scoreRow } from "./helpers.js";
 
 const rubric = QUERIES.find((q) => q.answerKey.kind === "rubric")!;
 const values = QUERIES.find((q) => q.answerKey.kind === "values")!;
+const reject = QUERIES.find((q) => q.answerKey.kind === "reject")!;
 
+/** The scores.csv header written before scorer v8. */
 const LEGACY_HEADER =
-  "query_id,category,condition,model,run,accuracy,evidence_quality,bullshit_score,speed_s,input_tokens,output_tokens,tool_calls,tools_used,pmids_cited,pmids_valid,pmids_fabricated,composite";
+  "query_id,category,condition,model,run,status,accuracy,accuracy_source,evidence_quality,bullshit_score,speed_s,input_tokens,output_tokens,tool_calls,tools_used,pmids_cited,pmids_valid,pmids_fabricated,composite";
 
 describe("legacy CSV parsing", () => {
-  it("fills status, accuracy_source, total_tokens and other_citations", () => {
-    const csv = `${LEGACY_HEADER}\n${rubric.id},${rubric.category},mcp,m1,1,5,3,0,2.5,100,50,2,"a,b",3,3,0,6.1\n${values.id},${values.category},mcp,m1,1,1,3,0,2.5,10,5,2,,3,3,0,6.1\n`;
-    const [r, v] = parseCsv(csv).map(toScoreRow);
-    expect(r!.status).toBe("ok");
-    expect(r!.accuracy_source).toBe("proxy");
+  const line = (id: string, category: string, status: string, accuracy: string, source: string, bs: string) =>
+    `${id},${category},mcp,m1,1,${status},${accuracy},${source},3,${bs},2.5,100,50,2,"a,b",3,3,0,6.1`;
+  const csv = [
+    LEGACY_HEADER,
+    line(rubric.id, rubric.category, "ok", "5", "proxy", "1"),
+    line(values.id, values.category, "ok", "10", "deterministic", "1"),
+    line(reject.id, reject.category, "ok", "10", "reject", "1"),
+    line(values.id, values.category, "truncated", "0", "deterministic", "0"),
+    line(values.id, values.category, "provider-error", "0", "deterministic", "0"),
+  ].join("\n");
+  const [r, v, b, failed, missing] = parseCsv(`${csv}\n`).map(toScoreRow);
+
+  it("reads the citation proxy as unscored: a legacy rubric accuracy is not an accuracy", () => {
+    expect(r!.accuracy_source).toBe("ungraded");
+    expect(r!.accuracy).toBeNaN();
+    expect(r!.key_kind).toBe("rubric");
+  });
+
+  it("keeps ground-truth accuracy, and the premise score only where it is one", () => {
+    expect(v!.accuracy).toBe(10);
     expect(v!.accuracy_source).toBe("deterministic");
+    expect(v!.bullshit_score).toBeNaN(); // was citation integrity on ordinary queries
+    expect(b!.key_kind).toBe("reject");
+    expect(b!.bullshit_score).toBe(1);
+  });
+
+  it("maps old statuses: `truncated` is a failure scored 0, a provider error is missing", () => {
+    expect(failed!.status).toBe("no-answer");
+    expect(failed!.accuracy).toBe(0);
+    expect(failed!.accuracy_source).toBe("failed");
+    expect(missing!.status).toBe("provider-error");
+    expect(missing!.accuracy).toBeNaN();
+  });
+
+  it("fills the columns the old file lacks and ignores its composite", () => {
+    expect(r!.status).toBe("ok");
+    expect(r!.split).toBe("dev");
     expect(r!.total_tokens).toBe(150);
     expect(r!.other_citations).toBe(0);
+    expect(r!.pmids_off_topic).toBe(0);
     expect(r!.tools_used).toBe("a,b");
-  });
-
-  it("round-trips the current CSV format, keeping blanks as NaN", () => {
-    const row: ScoreRow = {
-      query_id: "q",
-      category: "factual",
-      condition: "mcp",
-      model: "m",
-      run: 2,
-      status: "truncated",
-      accuracy: Number.NaN,
-      accuracy_source: "human",
-      evidence_quality: 1,
-      bullshit_score: 0,
-      speed_s: 1,
-      input_tokens: 1,
-      output_tokens: 2,
-      total_tokens: 7,
-      tool_calls: 0,
-      tools_used: "",
-      pmids_cited: 0,
-      pmids_valid: 0,
-      pmids_fabricated: 0,
-      other_citations: 4,
-      composite: 3,
-    };
-    const back = toScoreRow(parseCsv(toCsv([row]))[0]!);
-    expect(back.status).toBe("truncated");
-    expect(back.accuracy).toBeNaN();
-    expect(back.accuracy_source).toBe("human");
-    expect(back.total_tokens).toBe(7);
-    expect(back.other_citations).toBe(4);
+    expect("composite" in r!).toBe(false);
   });
 });
 
-const mk = (id: string, over: Partial<ScoreRow> = {}): ScoreRow => ({
-  query_id: id,
-  category: "factual",
-  condition: "mcp",
-  model: "m",
-  run: 1,
-  status: "ok",
-  accuracy: 1,
-  accuracy_source: "deterministic",
-  evidence_quality: 1,
-  bullshit_score: 0,
-  speed_s: 1,
-  input_tokens: 1,
-  output_tokens: 1,
-  total_tokens: 2,
-  tool_calls: 0,
-  tools_used: "",
-  pmids_cited: 0,
-  pmids_valid: 0,
-  pmids_fabricated: 0,
-  other_citations: 0,
-  composite: 1,
-  ...over,
+describe("current CSV format", () => {
+  it("round-trips every column, keeping blanks as NaN", () => {
+    const rows: ScoreRow[] = [
+      scoreRow({ query_id: "q", run: 2, split: "test", retrieval_only: true, pmids_fabricated: 2, pmids_off_topic: 1, other_citations: 4, citations_checked: 3, citations_misattributed: 1 }),
+      scoreRow({ query_id: "r", key_kind: "rubric", accuracy: 7.5, accuracy_source: "human", accuracy_graders: 2 }),
+      scoreRow({ query_id: "u", key_kind: "rubric", accuracy: Number.NaN, accuracy_source: "ungraded" }),
+      scoreRow({ query_id: "c", key_kind: "accept", category: "control", accuracy: 10, accuracy_source: "accept", bullshit_score: 1 }),
+      scoreRow({ query_id: "t", status: "timeout", accuracy: 0, accuracy_source: "failed", evidence_quality: Number.NaN }),
+      scoreRow({ query_id: "p", status: "provider-error", accuracy: Number.NaN, evidence_quality: Number.NaN }),
+    ];
+    expect(parseCsv(toCsv(rows)).map(toScoreRow)).toEqual(rows);
+  });
 });
+
+const mk = (id: string, over: Partial<ScoreRow> = {}): ScoreRow => scoreRow({ query_id: id, model: "m", ...over });
 
 describe("mergeSources", () => {
-  it("later dir wins a cell, a failure never displaces ok, and provenance is recorded", () => {
-    const a: Source = { dir: "A", rows: [mk("x", { composite: 1 }), mk("y", { composite: 1 })] };
-    const b: Source = { dir: "B", rows: [mk("x", { composite: 9 }), mk("y", { status: "provider-error" })] };
+  it("later dir wins a cell, a missing run never displaces data, and provenance is recorded", () => {
+    const a: Source = { dir: "A", rows: [mk("x", { accuracy: 1 }), mk("y", { accuracy: 1 })] };
+    const b: Source = { dir: "B", rows: [mk("x", { accuracy: 9 }), mk("y", { status: "provider-error", accuracy: Number.NaN })] };
     const { rows, provenance, sources } = mergeSources([a, b], 1);
-    expect(rows.find((r) => r.query_id === "x")!.composite).toBe(9);
+    expect(rows.find((r) => r.query_id === "x")!.accuracy).toBe(9);
     expect(rows.find((r) => r.query_id === "y")!.status).toBe("ok");
     expect(provenance["x|mcp|m|1"]).toBe("B");
     expect(provenance["y|mcp|m|1"]).toBe("A");
     expect(sources).toEqual(["A", "B"]);
+  });
+
+  it("a later failure is a result and replaces an earlier answer: no best-of-N", () => {
+    const a: Source = { dir: "A", rows: [mk("x", { accuracy: 10 }), mk("y", { status: "timeout", accuracy: 0, accuracy_source: "failed" })] };
+    const b: Source = { dir: "B", rows: [mk("x", { status: "no-answer", accuracy: 0, accuracy_source: "failed" }), mk("y", { status: "scoring-error", accuracy: Number.NaN })] };
+    const { rows } = mergeSources([a, b], 1);
+    expect(rows.find((r) => r.query_id === "x")!.status).toBe("no-answer");
+    expect(rows.find((r) => r.query_id === "y")!.status).toBe("timeout");
   });
 
   it("skips dirs below --min-rows", () => {
@@ -116,6 +119,15 @@ describe("mergeSources", () => {
     expect(w).toMatch(/answer-key versions for: q1/);
     expect(w).toMatch(/no manifest.*C/);
     expect(provenanceWarnings([{ dir: "A", manifest: man("a", 2, 1) }, { dir: "B", manifest: man("a", 2, 1) }])).toEqual([]);
+  });
+
+  it("compares the scorer version the rows carry now, not the one the run started with", () => {
+    const run = { git: { commit: "a", dirty: false }, scorer_version: 4, queries: [{ id: "q1", answerKeyVersion: 1 }] };
+    const rescored = { ...run, rescored: { at: "2026-11-09T00:00:00Z", scorer_version: 8, harness_commit: "b", harness_dirty: false } };
+    // Same run-time version, but one dir was scored again since: the rows differ.
+    expect(provenanceWarnings([{ dir: "A", manifest: run }, { dir: "B", manifest: rescored }]).join("\n")).toMatch(/scorer versions: 4 \(A\) vs 8 \(B\)/);
+    // Different run-time versions, both scored again with the current one: comparable.
+    expect(provenanceWarnings([{ dir: "A", manifest: rescored }, { dir: "B", manifest: { ...rescored, scorer_version: 7 } }])).toEqual([]);
   });
 });
 

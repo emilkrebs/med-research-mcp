@@ -6,15 +6,15 @@
  *
  * A wildcard (`"*"` for condition/model/run) matches every row with that queryId.
  * Setting a dimension to `null` excludes that specific score from aggregation
- * (treats it as missing / unscored). Overriding a component recomputes the
- * row's composite unless the override sets `composite` itself. Several graders
- * may score the same row (distinct `author`s); their values are averaged.
+ * (treats it as missing / unscored). Several graders may score the same row
+ * (distinct `author`s); their values are averaged. On a fabricated-study or
+ * control row, correcting `bullshit_score` (the lexical rejection detector got
+ * it wrong) moves the row's accuracy with it.
  *
  * The `reason` field is mandatory: an override without a rationale is rejected.
  */
 
 import { readFile } from "node:fs/promises";
-import { compositeForCategory } from "./scoring/composite.js";
 import type {
   ConditionId,
   OverridesFile,
@@ -31,15 +31,14 @@ export interface RawRowWithBreakdown {
   record: Record<string, unknown>;
 }
 
-type Dim = "accuracy" | "evidence_quality" | "bullshit_score" | "composite";
-const DIMS: Dim[] = ["accuracy", "evidence_quality", "bullshit_score", "composite"];
+type Dim = "accuracy" | "evidence_quality" | "bullshit_score";
+const DIMS: Dim[] = ["accuracy", "evidence_quality", "bullshit_score"];
 
 /** Inclusive valid range per dimension. */
 const RANGES: Record<Dim, [number, number]> = {
   accuracy: [0, 10],
   evidence_quality: [0, 5],
   bullshit_score: [0, 1],
-  composite: [0, 10],
 };
 
 export function parseOverrides(raw: string): OverridesFile {
@@ -51,7 +50,7 @@ export function parseOverrides(raw: string): OverridesFile {
     throw new Error("overrides.json: `overrides` must be an array");
   }
 
-  const validConditions = ["closed-book", "web-search", "mcp", "mcp-skill", "*"] as const;
+  const validConditions = ["closed-book", "web-search", "pubmed", "mcp", "mcp-skill", "*"] as const;
   for (const [i, o] of parsed.overrides.entries()) {
     if (!o.queryId || typeof o.queryId !== "string") {
       throw new Error(`overrides[${i}]: missing or invalid queryId`);
@@ -151,12 +150,14 @@ function resolveDim(wild: ScoreOverride[], exact: ScoreOverride[], dim: Dim): nu
 }
 
 /**
- * Apply overrides to scored rows. After a component (accuracy / evidence /
- * bullshit) is overridden, the composite is recomputed via `compositeForCategory`
- * unless an override sets `composite` explicitly. A `null` component becomes NaN
- * ("unscored"): a NaN accuracy or bullshit score makes a recomputed composite NaN
- * too, while a NaN evidence score drops that term (see `composite`). Any numeric accuracy
- * override marks the row's `accuracy_source` as `human`.
+ * Apply overrides to scored rows. A `null` value becomes NaN ("unscored"). Any
+ * numeric accuracy override marks the row's `accuracy_source` as `human` and
+ * records how many graders it is the mean of (`accuracy_graders`). On a
+ * `reject`/`accept` row an overridden `bullshit_score` sets the accuracy too
+ * (score × 10), unless the same override gives an accuracy itself.
+ *
+ * Entries written before the composite score was removed may carry a
+ * `composite` value; it is ignored, with a warning.
  */
 export function applyOverrides(
   raw: RawRowWithBreakdown[],
@@ -178,6 +179,8 @@ export function applyOverrides(
       warnings.push(`override for queryId="${o.queryId}" matched no rows`);
     }
   }
+  const legacy = overrides.overrides.filter((o) => "composite" in o).length;
+  if (legacy > 0) warnings.push(`${legacy} override(s) set "composite", which no longer exists: ignored`);
 
   raw.forEach((match, idx) => {
     const entries = overrides.overrides.filter((o) => matches(o, match.row));
@@ -207,20 +210,22 @@ export function applyOverrides(
       }
     }
 
-    if (typeof resolved.accuracy === "number") target.accuracy_source = "human";
+    if (typeof resolved.accuracy === "number") {
+      target.accuracy_source = "human";
+      // Exact entries are one per grader; a wildcard entry stands for a single decision.
+      const graders = new Set(exact.filter((o) => typeof o.accuracy === "number").map((o) => o.author ?? "\u0000anonymous"));
+      target.accuracy_graders = Math.max(1, graders.size);
+    } else if (resolved.accuracy === null) {
+      delete target.accuracy_graders;
+    }
 
-    // An explicit composite wins; otherwise a changed component forces a recompute.
-    if (resolved.composite === undefined) {
-      const componentChanged =
-        resolved.accuracy !== undefined || resolved.evidence_quality !== undefined || resolved.bullshit_score !== undefined;
-      if (componentChanged) {
-        target.composite = compositeForCategory(target.category, {
-          accuracy: target.accuracy,
-          evidenceQuality: target.evidence_quality,
-          bullshitScore: target.bullshit_score,
-          speedS: target.speed_s,
-          totalTokens: target.total_tokens,
-        });
+    // The accuracy of a fabricated-study or control row is its premise score on the 0–10 scale.
+    const premiseRow = target.key_kind === "reject" || target.key_kind === "accept";
+    if (premiseRow && resolved.bullshit_score !== undefined && resolved.accuracy === undefined) {
+      target.accuracy = Number.isFinite(target.bullshit_score) ? target.bullshit_score * 10 : Number.NaN;
+      if (typeof resolved.bullshit_score === "number") {
+        target.accuracy_source = "human";
+        target.accuracy_graders = Math.max(1, new Set(exact.filter((o) => typeof o.bullshit_score === "number").map((o) => o.author ?? "\u0000anonymous")).size);
       }
     }
 

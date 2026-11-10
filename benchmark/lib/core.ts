@@ -14,6 +14,8 @@
 export {
   searchLiterature,
   fetchLiterature,
+  searchPubMed,
+  fetchPubMed,
   fetchFulltext,
   classifyArticle,
   DESIGN_TIER,

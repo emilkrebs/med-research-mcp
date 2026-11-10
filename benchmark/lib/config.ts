@@ -1,9 +1,9 @@
 /**
- * Central configuration: the composite-score weights and normalization
- * references. Models are defined in the adjacent `models.data.ts` catalog so
+ * Central configuration: the conditions, the shared system prompt and the run
+ * defaults. Models are defined in the adjacent `models.data.ts` catalog so
  * swapping models doesn't require editing this module.
  *
- * Every field the paper depends on lives here so a run is reproducible from a
+ * Every setting a result depends on lives here so a run is reproducible from a
  * single file. API keys are read from the environment, never hard-coded.
  */
 
@@ -91,6 +91,7 @@ export const CONDITIONS: Record<ConditionLetter, ConditionId> = {
   B: "web-search",
   C: "mcp",
   D: "mcp-skill",
+  E: "pubmed",
 };
 
 export const CONDITION_LETTER: Record<ConditionId, ConditionLetter> = {
@@ -98,11 +99,15 @@ export const CONDITION_LETTER: Record<ConditionId, ConditionLetter> = {
   "web-search": "B",
   mcp: "C",
   "mcp-skill": "D",
+  pubmed: "E",
 };
+
+/** Every condition, baselines first, in the order reports list them. */
+export const CONDITION_ORDER: ConditionId[] = ["closed-book", "web-search", "pubmed", "mcp", "mcp-skill"];
 
 /**
  * Identical system prompt for every condition — the only thing that varies
- * between A/B/C is which tools are on the table. (Spec §"System Prompt".)
+ * between A/B/C/E is which tools are on the table. (Spec §"System Prompt".)
  */
 export const SYSTEM_PROMPT =
   "Answer the following question. Support claims with specific evidence. " +
@@ -126,28 +131,6 @@ export function systemPromptFor(condition: ConditionId): string {
   return condition === "mcp-skill" ? `${SYSTEM_PROMPT}\n\n${SKILL_TEXT}` : SYSTEM_PROMPT;
 }
 
-/** Composite-score weights. Must sum to 1. (Spec §"Composite Score".) */
-export const WEIGHTS = {
-  accuracy: 0.4,
-  evidence: 0.25,
-  bullshit: 0.25,
-  speed: 0.05,
-  cost: 0.05,
-} as const;
-
-/**
- * Normalization references for the two "faster/cheaper is better" terms, both
- * mapped to [0,1] (1 = instant / free, 0 = at or beyond the reference).
- * These set the scale of the 5% speed and 5% cost terms; document the values
- * you use alongside published results.
- */
-export const NORMALIZATION = {
-  /** A response at or above this wall-clock time gets speed_score 0. */
-  speedRefS: Number(process.env.BENCH_SPEED_REF_S ?? 60),
-  /** A response at or above this many total tokens gets cost_score 0. */
-  tokenRef: Number(process.env.BENCH_TOKEN_REF ?? 20_000),
-} as const;
-
 export const DEFAULTS = {
   runs: 3,
   /**
@@ -165,4 +148,6 @@ export const DEFAULTS = {
   timeoutMs: Number(process.env.BENCH_TIMEOUT_MS ?? 300_000),
   /** Web-search results returned to the model in condition B. */
   webResults: 6,
+  /** Resamples for bootstrap confidence intervals in the summary (seeded, so reports are reproducible). */
+  bootstrapResamples: 10_000,
 } as const;

@@ -1,9 +1,9 @@
 {
   "name": "med-research-mcp-benchmark",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Benchmark harness for med-research-mcp. Default run tests the MCP; optional closed-book and web-search baselines are available for comparison.",
+  "description": "Benchmark harness for med-research-mcp. Default run tests the MCP on the development queries; closed-book, web-search and plain-PubMed baselines and a held-out query set are available for comparison.",
   "engines": {
     "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
   },
@@ -16,6 +16,7 @@
     "test": "vitest run",
     "merge": "tsx merge.ts",
     "verify-keys": "tsx scripts/verify-keys.ts",
+    "sample-heldout": "tsx scripts/sample-heldout.ts",
     "rescore": "tsx run.ts --rescore"
   },
   "dependencies": {

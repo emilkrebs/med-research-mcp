@@ -267,24 +267,27 @@ The `memory` backend is an LRU of 200 entries per store that dies with the proce
 
 ## The benchmark: grading answers
 
-The [benchmark](../benchmark/) measures whether the MCP helps a model give accurate, well-cited answers to biomedical questions. It runs 32 queries across 7 categories against one or more conditions: `mcp` (the real server, in-process), `mcp-skill` (the same plus the `med-research` skill in the system prompt), and optional `closed-book` and `web-search` baselines. [`benchmark/README.md`](../benchmark/README.md) has the full details; this is how an answer gets its score.
+The [benchmark](../benchmark/) measures whether the MCP helps a model give accurate, well-cited answers to biomedical questions. It has two query sets: a **development set** of 32 queries, used while building the server, the skill and the scorer, and a **held-out set**, drawn at random from PubMed across twelve clinical fields, which nothing is tuned against and which the reported numbers come from. Each query runs under one or more conditions: `mcp` (the real server, in-process), `mcp-skill` (the same plus the `med-research` skill in the system prompt), and the baselines `closed-book`, `web-search` and `pubmed` (plain PubMed tools without the MCP's labels, filters, other databases and full text). [`benchmark/README.md`](../benchmark/README.md) has the full details; this is how an answer is scored.
 
-**1. Citations are checked, never trusted.** Every cited PMID is fetched from live PubMed; DOIs and PMCIDs are resolved to PMIDs first, and Europe PMC and ChinaXiv ids are looked up in their own database. A PMID that doesn't resolve is a **fabrication**. One that does is classified by the same `classifyArticle` the MCP uses, so **evidence quality** is the mean `designTier` of the valid citations, leaving out unrated ones. A transient NCBI failure becomes a `scoring-error`, never a fabrication.
+There is no single score. Each of these is reported on its own:
 
-**2. Misattribution is audited.** A real paper cited for something it doesn't say passes the fabrication check, so [`attribution.ts`](../benchmark/lib/scoring/attribution.ts) compares the text around each citation with the record: topic, year, author, claimed design, and figures against the abstract. It flags only clear contradictions and is reported next to the composite, not in it.
+**1. Citations are checked, never trusted.** Every cited PMID is fetched from live PubMed; DOIs and PMCIDs are resolved to PMIDs first, and Europe PMC and ChinaXiv ids are looked up in their own database. A citation is **fabricated** when the record doesn't exist, or when it exists but mentions none of the query's topics: PMIDs are consecutive numbers, so one typed from memory almost always lands on some unrelated paper, and existence alone proves nothing. A transient NCBI failure becomes a `scoring-error`, never a fabrication.
 
-**3. Accuracy depends on the query's answer key:**
+**2. Claims next to citations are audited.** For the citations that are valid, [`attribution.ts`](../benchmark/lib/scoring/attribution.ts) compares the text around each one with the record: year, author, claimed design, and figures against the abstract. It flags only clear contradictions.
 
-| Key | Queries | How it is graded |
-| --- | --- | --- |
-| `values` | 13 | The model ends with an `ANSWER — field: value \| …` line, and each field is compared with the key. Fully automated |
-| `reject` | 4 | The query asks about a study that doesn't exist. Full marks only for saying so about that study, while citing no non-existent PMID |
-| `rubric` | 15 | Open-ended. Until a human grades it, accuracy is a provisional proxy (citation tier × 2) that must not be quoted as accuracy |
+**3. Accuracy needs ground truth:**
 
-**4. Rubric answers are graded by people.** [`grade.ts`](../benchmark/grade.ts) shows each answer blind (prompt, rubric, answer and the cited records, but not the condition, model, run or proxy score) in a seeded random order. Grades go to `overrides.json`, and `run.ts --rescore` applies them. Several graders can grade the same run; their grades are averaged, and `--agreement` reports Krippendorff's α and ICC.
+| Key | How it is graded |
+| --- | --- |
+| `values` | The model ends with an `ANSWER — field: value \| …` line, and each field is compared with the key. Every key names its PubMed record and quotes the passage that states its numbers; `verify-keys` re-checks them against the live record |
+| `reject` | The query asks about a study that doesn't exist. Full marks only for saying so about that study, while citing no fabricated record |
+| `accept` | A real study, asked about in the same form as a fabricated one. Full marks for not rejecting it. Together the two show whether a model tells real from fabricated or rejects everything |
+| `rubric` | Open-ended (development set only). No accuracy at all until a person grades it |
 
-**5. The LLM judge gives a second opinion.** [`judge.ts`](../benchmark/judge.ts) grades the same blind view plus the abstracts of the cited PubMed records, against the rubric. Its grades go to `judge-<model>.json` and a report, `judge-<model>.md`, which compares conditions (including mcp-skill vs mcp). They are never written to `overrides.json`, so they never count as human grades. A judge can be wrong about medicine and may not know recent papers, so spot-check it by hand.
+**4. Rubric answers are graded by people.** [`grade.ts`](../benchmark/grade.ts) shows each answer blind (prompt, rubric, answer and the cited records, but not the condition, model or run) in a seeded random order. Grades go to `overrides.json`, and `run.ts --rescore` applies them. Have at least two people grade; their grades are averaged, the summary says how many graders each answer had, and `--agreement` reports Krippendorff's α and ICC. Nothing automatic stands in for a missing grade.
 
-**6. The composite** (0–10) weighs accuracy 40%, evidence quality 25%, citation integrity 25%, speed 5% and token cost 5%. A bullshit query scores only on whether the model rejected the fabricated study.
+**5. The LLM judge gives a second opinion.** [`judge.ts`](../benchmark/judge.ts) grades the same blind view plus the abstracts of the cited PubMed records, against the rubric. Its grades go to `judge-<model>.json` and a report, `judge-<model>.md`. They are never written to `overrides.json`, so they never count as human grades. A judge can be wrong about medicine and may not know recent papers, so spot-check it by hand.
 
-One caveat matters when reading the results: the MCP condition sees the same design labels the scorer uses, which gives it a structural advantage on the evidence term. See [Validity and limitations](../benchmark/README.md#validity-and-limitations) before citing any number.
+**6. A failure to answer is a result.** A run that ends without an answer or runs out of time scores 0, so a condition can't look better by giving up on hard queries. A run lost to a provider error is missing data: it is left out, counted, and flagged until it has been run again.
+
+The summary reports accuracy on the keyed queries, the share of fabricated studies rejected and of real ones accepted, the fabricated-citation rate, the contradicted-claim rate, tokens, time and failures, each per condition, with intervals over queries and paired tests between conditions. The design tier of the cited records is listed as a description of what was cited; it is not a score. See [Validity and limitations](../benchmark/README.md#validity-and-limitations) before citing any number.

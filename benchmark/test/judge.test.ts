@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildJudgePrompt, parseArgs, parseJudgeReply } from "../judge.js";
+import { JUDGE_SYSTEM, buildJudgePrompt, parseArgs, parseJudgeReply } from "../judge.js";
 import type { GradeView } from "../grade.js";
 
 const view: GradeView = {
@@ -10,6 +10,7 @@ const view: GradeView = {
   pmids: [
     { pmid: "111", valid: true, studyType: "randomized-controlled-trial", designTier: 4, title: "X trial" },
     { pmid: "999", valid: false, studyType: "unknown", title: "(no title)" },
+    { pmid: "222", valid: false, offTopic: true, studyType: "review", designTier: 1, title: "Dental CT" },
   ],
 };
 
@@ -19,9 +20,18 @@ describe("buildJudgePrompt", () => {
     expect(p).toContain("QUESTION:\nWhat dose of X was studied?");
     expect(p).toContain("RUBRIC (grade against this):");
     expect(p).toContain("PMID 111 — VALID | randomized-controlled-trial | X trial\nAbstract: Participants received 300 mg/day.");
-    expect(p).toContain("PMID 999 — FABRICATED");
+    expect(p).toContain("PMID 999 — FABRICATED (no such record)");
+    expect(p).toContain("PMID 222 — FABRICATED (exists, but off-topic) | review | Dental CT");
     // Blind: nothing identifying the condition, model or run.
     expect(p).not.toMatch(/mcp|closed-book|haiku|run \d/i);
+  });
+});
+
+describe("JUDGE_SYSTEM", () => {
+  it("does not hold a figure from the full text against an answer the judge can only check by abstract", () => {
+    expect(JUDGE_SYSTEM).toContain("full text");
+    expect(JUDGE_SYSTEM).toContain("do not count it against the answer");
+    expect(JUDGE_SYSTEM).toContain("about something else");
   });
 });
 

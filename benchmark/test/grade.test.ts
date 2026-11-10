@@ -22,20 +22,26 @@ const query: BenchmarkQuery = {
   verified: true,
 };
 
-function breakdown(status: ScoreBreakdown["status"] | undefined, proxy = 6.66): ScoreBreakdown {
+/** A stored status, including the pre-v8 `truncated` that old result dirs still carry. */
+type StoredStatus = ScoreBreakdown["status"] | "truncated";
+
+function breakdown(status: StoredStatus | undefined): ScoreBreakdown {
   return {
     ...(status ? { status } : {}),
-    accuracy: { score: proxy, kind: "rubric" },
+    accuracy: { score: Number.NaN, kind: "rubric" },
     evidenceQuality: {
       score: 3,
-      pmids: [{ pmid: "111", valid: true, studyType: "cohort", designTier: 3, title: "A title" }],
+      pmids: [
+        { pmid: "111", valid: true, studyType: "cohort", designTier: 3, title: "A title" },
+        { pmid: "222", valid: false, offTopic: true, studyType: "randomized-controlled-trial", designTier: 4, title: "Dental CT" },
+        { pmid: "333", valid: false },
+      ],
     },
-    bullshit: { score: 0, rejected: false, fabricatedPmids: [] },
-    composite: 5,
+    bullshit: { score: Number.NaN, rejected: false, fabricatedPmids: ["222", "333"], offTopicPmids: ["222"] },
   } as ScoreBreakdown;
 }
 
-function rec(run: number, extra: Partial<RawFile> = {}, status: ScoreBreakdown["status"] | null = "ok"): RawItem {
+function rec(run: number, extra: Partial<RawFile> = {}, status: StoredStatus | null = "ok"): RawItem {
   const record = {
     queryId: "synth-1",
     category: "synthesis",
@@ -65,7 +71,7 @@ const isRubric = (): boolean => true;
 describe("blinding", () => {
   const { record } = rec(1);
 
-  it("hides condition, model, run and proxy by default", () => {
+  it("hides condition, model and run by default, and shows no automatic score", () => {
     const text = renderView(buildView(record, query, false), 0, 1);
     expect(text).toContain("PROMPT-TEXT");
     expect(text).toContain("RUBRIC-TEXT");
@@ -73,15 +79,21 @@ describe("blinding", () => {
     expect(text).toContain("PMID 111");
     expect(text).not.toContain("secret-model");
     expect(text).not.toMatch(/\bmcp\b/);
-    expect(text).not.toContain("6.66");
-    expect(text).not.toMatch(/proxy/i);
+    expect(text).not.toMatch(/proxy|auto-score|composite/i);
   });
 
   it("shows them with --unblind", () => {
     const text = renderView(buildView(record, query, true), 0, 1);
     expect(text).toContain("secret-model");
     expect(text).toContain("mcp");
-    expect(text).toContain("6.66");
+    expect(text).not.toMatch(/proxy|auto-score/i);
+  });
+
+  it("tells the grader which citations are fabricated, and what an off-topic one really is", () => {
+    const text = renderView(buildView(record, query, false), 0, 1);
+    expect(text).toContain('PMID 111 — VALID | cohort | design tier 3/5 | "A title"');
+    expect(text).toContain('PMID 222 — FABRICATED (exists, but off-topic) | randomized-controlled-trial | design tier 4/5 | "Dental CT"');
+    expect(text).toContain("PMID 333 — FABRICATED (no such record)");
   });
 
   it("uses a stable opaque item id", () => {
@@ -151,17 +163,20 @@ describe("item selection", () => {
     const items = [
       rec(1),
       rec(2, {}, "provider-error"),
-      rec(3, {}, "truncated"),
+      rec(3, {}, "no-answer"),
       rec(4, {}, "scoring-error"),
+      rec(8, {}, "timeout"),
+      rec(9, {}, "truncated"), // a results dir not rescored since scorer v7
       rec(5, {}, null), // legacy, fine
       rec(6, { error: "boom" }, null), // legacy, errored
       rec(7, { text: "  " }, null), // legacy, empty
     ];
-    expect(skipReason(items[4]!.record)).toBeNull();
+    expect(skipReason(items.find((i) => i.record.run === 5)!.record)).toBeNull();
     const sel = selectItems(items, { overrides: [] }, "alice", 1, isRubric);
     expect(sel.toGrade.map((i) => i.record.run).sort()).toEqual([1, 5]);
-    expect(sel.skipped).toEqual({ "provider-error": 2, truncated: 2, "scoring-error": 1 });
-    expect(sel.rubricTotal).toBe(7);
+    // A run without an answer needs no grade (it scores 0); a missing run has nothing to grade.
+    expect(sel.skipped).toEqual({ "provider-error": 2, "no-answer": 3, "scoring-error": 1, timeout: 1 });
+    expect(sel.rubricTotal).toBe(9);
   });
 
   it("removes this grader's graded items only, and ordering depends on the seed", () => {

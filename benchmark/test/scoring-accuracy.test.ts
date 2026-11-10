@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { scoreAccuracy } from "../lib/scoring/accuracy.js";
 import type { BenchmarkQuery } from "../lib/types.js";
-import type { CitationAudit } from "../lib/scoring/verify.js";
-
-const audit: CitationAudit = { cited: [], valid: [], fabricated: [], evidenceQuality: 0, other: [], echoedFromPrompt: [] };
 
 const q = (expected: string[]): BenchmarkQuery => ({
   id: "t",
@@ -13,7 +10,7 @@ const q = (expected: string[]): BenchmarkQuery => ({
   verified: true,
 });
 
-const score = (expected: string[], text: string) => scoreAccuracy(q(expected), text, audit);
+const score = (expected: string[], text: string) => scoreAccuracy(q(expected), text);
 
 describe("values ANSWER-line parser", () => {
   it("'rct: not sure' does not match 'rct: no'", () => {
@@ -61,10 +58,14 @@ describe("values ANSWER-line parser", () => {
 });
 
 describe("other kinds", () => {
-  it("rubric uses the citation proxy", () => {
-    const query: BenchmarkQuery = { ...q([]), answerKey: { kind: "rubric", rubric: "r", expectPmids: true } };
-    expect(scoreAccuracy(query, "x", audit).score).toBe(0);
-    const valid = [{ pmid: "1", exists: true, designTier: 4, studyType: "cohort" as const, title: "", abstract: "" }];
-    expect(scoreAccuracy(query, "x", { ...audit, valid, evidenceQuality: 4 }).score).toBe(8);
+  it("a rubric answer has no automatic accuracy, whatever it cites or says", () => {
+    const query: BenchmarkQuery = { ...q([]), answerKey: { kind: "rubric", rubric: "r" } };
+    expect(scoreAccuracy(query, "A long answer citing PMID 28202713, a randomized trial.").score).toBeNaN();
+    expect(scoreAccuracy(query, "").detail.kind).toBe("rubric");
+  });
+
+  it("reject and accept keys are scored from the premise, not here", () => {
+    expect(scoreAccuracy({ ...q([]), answerKey: { kind: "reject", fabricated: "x" } }, "x").score).toBeNaN();
+    expect(scoreAccuracy({ ...q([]), answerKey: { kind: "accept", pmid: "1", author: "A", year: 2020 } }, "x").score).toBeNaN();
   });
 });

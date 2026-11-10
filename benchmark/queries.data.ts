@@ -1,7 +1,13 @@
 /**
- * The 32-query benchmark set: the spec's 6 categories (24 queries) plus 4
- * deterministic regional edge cases and a 7th category, `recent` (4 queries on
- * papers newer than the benchmarked models' training data).
+ * The development set: 32 queries (split `dev`). These are the queries the
+ * server, the `med-research` skill and the scorer were built and tuned against,
+ * so their scores are development numbers, not results. The numbers to report
+ * come from the held-out set in `queries.heldout.data.ts`, which nothing may be
+ * tuned against.
+ *
+ * It is the spec's 6 categories (24 queries) plus 4 deterministic regional edge
+ * cases and a 7th category, `recent` (4 queries on papers newer than the
+ * benchmarked models' training data).
  * Edit this array to add/remove/tune queries. It's plain TypeScript, so `tsc`
  * checks every `category`, answer-key `kind`, and field against the types in
  * `lib/types.ts` — a typo fails the build instead of at run time.
@@ -14,29 +20,38 @@
  *     recent-01…04), where the query forces the model to end
  *     its answer in a fixed one-line format and the scorer checks the exact
  *     tokens it emitted against the correct ones. Each such key's expected
- *     tokens were confirmed on 2026-07-14 and RE-VERIFIED on 2026-10-17 against
- *     live PubMed, and every pinned PMID resolves (36615805 meta-analysis of
- *     21 RCTs 5, 23439798 RCT 4, 22591295 cohort 3, 28202713, 27633186). The
- *     study type is the paper's actual design and the score is `DESIGN_TIER`
- *     for it. The library's classifier labels 36615805 and 28202713
- *     meta-analysis but leaves their tier null (pooled designs aren't in the
- *     metadata); 23439798 and 22591295 carry no design PublicationType, so their
- *     keys rest on the abstract, quoted in each note. factual-01/02/03 prompts
- *     were rewritten on 2026-10-17 for the current taxonomy and scale and are at
- *     answerKeyVersion 4. The regional and recent keys were read from each
- *     record's abstract on 2026-10-17 (quoted in each key's `note`).
+ *     tokens were confirmed on 2026-07-14 and RE-VERIFIED on 2026-10-17 and
+ *     2026-11-09 against the live records. The study type is the paper's actual
+ *     design and the score is `DESIGN_TIER` for it. The library's classifier
+ *     labels 36615805 and 28202713 meta-analysis but leaves their tier null
+ *     (pooled designs aren't in the metadata); 23439798 and 22591295 carry no
+ *     design PublicationType, so their keys rest on the abstract. factual-01/02/03
+ *     prompts were rewritten on 2026-10-17 for the current taxonomy and scale
+ *     and are at answerKeyVersion 4.
  *
- * On `topics`: terms a cited paper must mention to count as on-topic in the
- * attribution audit (lib/scoring/attribution.ts). Kept broad on purpose — they
- * only catch a citation to an unrelated paper, not a weak one.
+ * On `source`: every `values` key names the record it was read from and quotes
+ * the passage of its abstract that states the expected numbers (` … ` joins
+ * passages that are apart). `npm run verify-keys` fetches each record and
+ * checks that the passage is still in it and holds each number, so a key is
+ * re-verified against its primary source before every publish run, not once.
+ *
+ * On `topics`: terms a cited paper must mention to count as on-topic
+ * (lib/scoring/attribution.ts). A cited record that mentions none of them is a
+ * different paper than the answer claims and counts as a fabricated citation,
+ * so keep the lists broad: they should only catch an unrelated paper, never a
+ * weak or tangential one.
+ *
+ * On `retrievalOnly`: set on the queries whose answer training data cannot hold
+ * (a paper newer than the models, a record only a regional database has). A
+ * closed-book baseline scores 0 on them by construction, so the summary also
+ * reports each closed-book comparison without them.
+ *
  * The open-ended `rubric` keys (synthesis, edge-case, compound, and the
- * find-it-yourself drill-downs) still assert real-world facts that take human
- * judgment to weigh, so they stay `verified: false`: they run and score
- * automatically (a provisional citation-quality proxy, not correctness — see
- * `grade.ts`), but the harness refuses to treat them as publishable until a
- * human grades them with `npx tsx benchmark/grade.ts <results-dir>`, which
- * writes accuracy into that run's `overrides.json` for `--rescore` to apply.
- * Fill in / review the `false` ones before quoting results.
+ * find-it-yourself drill-downs) have no ground-truth string: they stay
+ * `verified: false` and get an accuracy only from people, with
+ * `npx tsx benchmark/grade.ts <results-dir>`, which writes grades into that
+ * run's `overrides.json` for `--rescore` to apply. Until then they are
+ * unscored; nothing automatic stands in for the grade.
  *
  * Response contract: the deterministic factual queries tell the model to finish
  * with one line in an exact format (`ANSWER — …`). The scorer (lib/scoring/
@@ -45,8 +60,8 @@
  * to be present with exactly the expected value (or the value followed by a
  * qualifier such as "(95% CI …)") — so a model that follows the format and gets
  * the facts right scores full marks, and one that gets the design/score/PMID
- * wrong (or ignores the format) does not. All three conditions face the same
- * contract, so it stays fair across closed-book / web / MCP.
+ * wrong (or ignores the format) does not. Every condition faces the same
+ * contract, so it stays fair across closed-book / web / PubMed / MCP.
  */
 
 import type { BenchmarkQuery } from "./lib/types.js";
@@ -67,6 +82,11 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "values",
       expected: ["study type: meta-analysis", "evidence score: 5/5"],
       note: "PMID 36615805 = caffeine/endurance-running systematic review & meta-analysis (NLM PublicationType 'Meta-Analysis'). Its abstract: 'A total of 21 randomized controlled trials were included', so as a meta-analysis of randomized trials it scores 5. classifyArticle labels it meta-analysis but leaves the tier null, because the pooled designs aren't in the metadata. Verified 2026-07-14; re-verified 2026-10-17 against live PubMed.",
+      source: {
+        database: "pubmed",
+        id: "36615805",
+        quote: "A total of 21 randomized controlled trials were included in the analysis",
+      },
     },
     verified: true,
     answerKeyVersion: 4,
@@ -81,6 +101,11 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "values",
       expected: ["study type: randomized-controlled-trial", "evidence score: 4/5"],
       note: "PMID 23439798 = Chandrasekhar 2012 ashwagandha stress/anxiety RCT — the abstract describes a 'prospective, randomized, double-blind, placebo-controlled study'. The record has no NLM design metadata (PublicationType 'Journal Article' only, no MeSH), so classifyArticle returns unknown and the model must read the design from the abstract; by the prompt's scale an RCT is 4. Verified 2026-07-14; re-verified 2026-10-17 against live PubMed.",
+      source: {
+        database: "pubmed",
+        id: "23439798",
+        quote: "Single center, prospective, double-blind, randomized, placebo-controlled trial.",
+      },
     },
     verified: true,
     answerKeyVersion: 4,
@@ -95,6 +120,11 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "values",
       expected: ["rct: no", "study type: cohort"],
       note: "PMID 22591295 = Freedman 2012 NEJM 'Association of coffee drinking with total and cause-specific mortality', a prospective cohort of the NIH-AARP study — not an RCT. It has no design PublicationType (MeSH lists 'Cohort Studies', but MeSH design headings aren't used), so classifyArticle returns unknown and the model must read the design from the abstract. Verified 2026-07-14; re-verified 2026-10-17 against live PubMed.",
+      source: {
+        database: "pubmed",
+        id: "22591295",
+        quote: "In this large prospective study, coffee consumption was inversely associated with total and cause-specific mortality.",
+      },
     },
     verified: true,
     answerKeyVersion: 4,
@@ -109,6 +139,11 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "values",
       expected: ["pmid: 28202713"],
       note: "PMID 28202713 = Martineau et al. 2017 BMJ IPD meta-analysis of vitamin D and acute respiratory tract infection (NLM 'Meta-Analysis'), an IPD meta-analysis of randomised controlled trials. This is the one accepted answer. Verified 2026-07-14; re-verified 2026-10-17 against live PubMed with the current grader.",
+      source: {
+        database: "pubmed",
+        id: "28202713",
+        quote: "Systematic review and meta-analysis of individual participant data (IPD) from randomised controlled trials.",
+      },
     },
     verified: true,
     answerKeyVersion: 2,
@@ -123,10 +158,11 @@ export const QUERIES: BenchmarkQuery[] = [
     answerKey: {
       kind: "rubric",
       rubric:
-        "Award full marks only if the answer names a specific trazodone dose or dose range (e.g. mg/day) AND cites a real PMID whose abstract actually reports that dose. Deduct heavily if the dose is stated with no supporting citation, or the cited abstract does not mention it.",
-      expectPmids: true,
+        "Award full marks only if the answer names a specific trazodone dose or dose range (e.g. mg/day) AND cites a real PMID whose abstract or full text reports that dose. A dose the answer took from the article's full text counts as supported when the answer says so; open the article if you can and check it. Deduct heavily if the dose is stated with no supporting citation, or the cited article contradicts it.",
     },
     verified: false,
+    // v2 (2026-11-09): a figure from the cited article's full text is supported; v1 required it in the abstract.
+    answerKeyVersion: 2,
   },
   {
     id: "drill-down-02",
@@ -136,10 +172,11 @@ export const QUERIES: BenchmarkQuery[] = [
     answerKey: {
       kind: "rubric",
       rubric:
-        "Full marks only for a specific daily dose (mg) AND a duration (weeks) that match the abstract of a real, cited PMID. Penalize any dose/duration not backed by the cited source.",
-      expectPmids: true,
+        "Full marks only for a specific daily dose (mg) AND a duration (weeks) that match the abstract or full text of a real, cited PMID. Penalize any dose/duration not backed by the cited source.",
     },
     verified: false,
+    // v2 (2026-11-09): the cited article's full text counts as the source too.
+    answerKeyVersion: 2,
   },
   {
     id: "drill-down-03",
@@ -153,6 +190,11 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "values",
       expected: ["pmid: 27633186", "hazard ratio: 0.74"],
       note: "PMID 27633186 = Marso et al. 2016 NEJM SUSTAIN-6. Primary composite outcome: cardiovascular death, nonfatal myocardial infarction, or nonfatal stroke; hazard ratio 0.74 (95% CI 0.58–0.95). Confirmed from the abstract 2026-07-14; re-confirmed 2026-10-17.",
+      source: {
+        database: "pubmed",
+        id: "27633186",
+        quote: "The primary outcome occurred in 108 of 1648 patients (6.6%) in the semaglutide group and in 146 of 1649 patients (8.9%) in the placebo group (hazard ratio, 0.74; 95% confidence interval [CI], 0.58 to 0.95; P<0.001 for noninferiority).",
+      },
     },
     verified: true,
     answerKeyVersion: 2,
@@ -165,10 +207,11 @@ export const QUERIES: BenchmarkQuery[] = [
     answerKey: {
       kind: "rubric",
       rubric:
-        "Full marks for a sample size and follow-up duration that appear in the abstract of the cited, real PMID. Penalize figures not supported by the source.",
-      expectPmids: true,
+        "Full marks for a sample size and follow-up duration that appear in the abstract or full text of the cited, real PMID. Penalize figures not supported by the source.",
     },
     verified: false,
+    // v2 (2026-11-09): the cited article's full text counts as the source too.
+    answerKeyVersion: 2,
   },
 
   // ─── Evidence synthesis (8) ───────────────────────────────────────
@@ -181,7 +224,6 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "rubric",
       rubric:
         "Reward a comparison grounded in study designs (RCTs/meta-analyses vs weaker evidence), that weighs the quality of evidence on each side and cites real PMIDs whose abstracts support the claims. Penalize unsupported strength claims and any cited PMID that does not exist or does not match its claim.",
-      expectPmids: true,
     },
     verified: false,
   },
@@ -194,7 +236,6 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "rubric",
       rubric:
         "Reward an honest strength-of-evidence assessment (small/low-quality trials vs robust ones), grounded in cited real PMIDs that match their claims. Penalize overstated certainty and fabricated or mismatched citations.",
-      expectPmids: true,
     },
     verified: false,
   },
@@ -207,7 +248,6 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "rubric",
       rubric:
         "Reward a mechanism-aware comparison (phosphocreatine vs carnosine buffering) tied to evidence quality and cited real PMIDs that support the claims. Penalize unsupported claims and bad citations.",
-      expectPmids: true,
     },
     verified: false,
   },
@@ -220,7 +260,6 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "rubric",
       rubric:
         "Reward citing meta-analyses/RCTs, noting EPA-vs-DHA and dose nuances and heterogeneity, with real PMIDs matching claims. Penalize overstated conclusions and fabricated/mismatched citations.",
-      expectPmids: true,
     },
     verified: false,
   },
@@ -233,7 +272,6 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "rubric",
       rubric:
         "Reward acknowledging that berberine evidence is largely smaller/lower-quality trials and meta-analyses of them versus metformin's large evidence base, with real supporting PMIDs. Penalize equivalence claims not backed by cited sources and bad citations.",
-      expectPmids: true,
     },
     verified: false,
   },
@@ -246,7 +284,6 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "rubric",
       rubric:
         "Reward specific dose ranges and timing relative to destination bedtime, grounded in cited real reviews/RCTs (e.g. Cochrane-type evidence) whose abstracts support the claims. Penalize invented specifics and mismatched citations.",
-      expectPmids: true,
     },
     verified: false,
   },
@@ -259,7 +296,6 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "rubric",
       rubric:
         "Reward noting that positive findings come mostly from small RCTs with risk-of-bias concerns, cited to real PMIDs that match. Penalize confident causal claims beyond what the cited evidence supports, and bad citations.",
-      expectPmids: true,
     },
     verified: false,
   },
@@ -272,7 +308,6 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "rubric",
       rubric:
         "Reward the finding that head-to-head trials generally show comparable fat loss when calories are matched, cited to real RCTs/meta-analyses whose abstracts support it. Penalize a strong winner claim without supporting cited evidence and bad citations.",
-      expectPmids: true,
     },
     verified: false,
   },
@@ -288,20 +323,21 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "rubric",
       rubric:
         "Reward actually surfacing Chinese-language or China-indexed sources (e.g. via a non-PubMed database) rather than only English PubMed, with identifiers. Penalize claiming to have found Chinese-language papers without any locatable source.",
-      expectPmids: false,
     },
     verified: false,
   },
   {
     id: "edge-case-02",
     category: "edge-case",
-    topics: ["rhodiola", "adaptogen", "eleutherococcus", "schisandra"],
+    // The plant adaptogens of the Soviet literature, as listed in PMID 34445021's abstract ("Panax ginseng,
+    // Eleutherococcus senticosus, Rhaponticum carthamoides, Rhodiola rosea, and Schisandra chinensis");
+    // leuzea is Rhaponticum's older name (PMID 30303602). Checked 2026-11-10.
+    topics: ["rhodiola", "adaptogen", "eleutherococcus", "schisandra", "ginseng", "rhaponticum", "leuzea"],
     prompt: "What Russian or Soviet-era research exists on adaptogens such as Rhodiola rosea for physical endurance?",
     answerKey: {
       kind: "rubric",
       rubric:
         "Reward surfacing Russian/Soviet-indexed sources or clearly noting their historical existence with locatable identifiers, and honestly flagging translation/quality limits. Penalize confidently describing specific Soviet studies with no locatable source.",
-      expectPmids: false,
     },
     verified: false,
   },
@@ -320,7 +356,13 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "values",
       expected: ["patients: 44", "control drug: diclofenac"],
       note: "Europe PMC CBA:521529 (Chen Zuhong, J Guangzhou Univ TCM 2005): \"Fortyfour cases of RA were randomized into two groups: group A (n=24) was treated with YZTD … group B (n=20) was treated with diclofenac sodium.\" Not in PubMed.",
+      source: {
+        database: "europepmc",
+        id: "CBA:521529",
+        quote: "Fortyfour cases of RA were randomized into two groups: group A (n=24) was treated with YZTD for oral use and with the residue of YZTD for external application; group B (n=20) was treated with diclofenac sodium.",
+      },
     },
+    retrievalOnly: true,
     verified: true,
   },
   {
@@ -333,7 +375,13 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "values",
       expected: ["patients: 101", "cure rate: 37.3"],
       note: "Europe PMC CBA:549902 (Sun Weifeng et al., J Guangzhou Univ TCM 2003): \"One hundred and one cases … randomized into Group A (n=51) and Group B (n=50) … The cure rate and symptom-relief rate were 37.3% and 45.1% in Group A\" (Group B: motilium). Not in PubMed.",
+      source: {
+        database: "europepmc",
+        id: "CBA:549902",
+        quote: "One hundred and one cases of FD with LDSD syndrome were randomized into Group A (n=51) and Group B (n=50). … The cure rate and symptom-relief rate were 37.3% and 45.1% in Group A",
+      },
     },
+    retrievalOnly: true,
     verified: true,
   },
   {
@@ -346,7 +394,13 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "values",
       expected: ["patients: 43", "treatment group: 21"],
       note: "Europe PMC CBA:614218 (Su Haifang et al., Chin Arch TCM 2005): \"43 patients with SMI after myocardial infarction were randomized into the treatment group with 21 patients and the control group with 22 patients\" (control: isosorbide mononitrate). Not in PubMed.",
+      source: {
+        database: "europepmc",
+        id: "CBA:614218",
+        quote: "43 patients with SMI after myocardial infarction were randomized into the treatment group with 21 patients and the control group with 22 patients.",
+      },
     },
+    retrievalOnly: true,
     verified: true,
   },
   {
@@ -359,7 +413,13 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "values",
       expected: ["studies: 38", "outcome indicator types: 50"],
       note: "ChinaXiv chinaxiv-202608.00133 (Su Die et al., posted 2026-08-26): \"A total of 38 relevant studies were included, involving 50 types of outcome indicators\". Not in PubMed or Europe PMC on 2026-10-17.",
+      source: {
+        database: "chinaxiv",
+        id: "chinaxiv-202608.00133",
+        quote: "A total of 38 relevant studies were included, involving 50 types of outcome indicators",
+      },
     },
+    retrievalOnly: true,
     verified: true,
   },
 
@@ -373,7 +433,6 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "rubric",
       rubric:
         "Reward correctly reporting that the cancer signal comes from animal/preclinical toxicology (and that GW501516 was dropped from development for this reason) and that human efficacy/safety data are essentially absent, cited to real sources. Penalize inventing human trials or downplaying the preclinical carcinogenicity.",
-      expectPmids: true,
     },
     verified: false,
   },
@@ -386,7 +445,6 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "rubric",
       rubric:
         "Reward correctly reporting that MOTS-c human evidence is minimal/observational and most data are preclinical, cited to real sources. Penalize inventing human RCTs or overstating benefits.",
-      expectPmids: true,
     },
     verified: false,
   },
@@ -407,7 +465,13 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "values",
       expected: ["pmid: 42765482", "studies: 63", "upper-body strength g: 0.54"],
       note: "PMID 42765482 (Wang et al., J Int Soc Sports Nutr, epub 2026-09-21): \"Sixty-three studies (n = 1489) were included … upper-body strength (g = 0.54, p < 0.001)\".",
+      source: {
+        database: "pubmed",
+        id: "42765482",
+        quote: "Sixty-three studies (n = 1489) were included. Compared with resistance training alone (RT), resistance training plus creatine (RT + CR) produced significant increases in upper-body strength (g = 0.54, p < 0.001)",
+      },
     },
+    retrievalOnly: true,
     verified: true,
   },
   {
@@ -420,7 +484,13 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "values",
       expected: ["pmid: 42714195", "patients: 70", "melatonin psqi day 14: 8.11"],
       note: "PMID 42714195 (Pushpa et al., Indian J Cancer, epub 2026-09-08): \"70 patients … were randomised to oral melatonin 3 mg (Group M, n = 35) or multivitamin (placebo) … Day-14 PSQI scores were lower in Group M than Group P (8.11 ± 1.55 versus 9.66 ± 1.83)\".",
+      source: {
+        database: "pubmed",
+        id: "42714195",
+        quote: "70 patients aged 18-65 years with head and neck cancer and sleep disturbances for >1 month were randomised to oral melatonin 3 mg (Group M, n = 35) or multivitamin (placebo) (Group P, n = 35) once daily for 14 days. … Day-14 PSQI scores were lower in Group M than Group P (8.11 ± 1.55 versus 9.66 ± 1.83; P = 0.0003)",
+      },
     },
+    retrievalOnly: true,
     verified: true,
   },
   {
@@ -433,7 +503,13 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "values",
       expected: ["pmid: 42738987", "eligible rcts: 4", "pooled participants: 161"],
       note: "PMID 42738987 (Lee & Heo, Nutrients, epub 2026-08-27): \"Four RCTs were eligible; three (n = 161) provided poolable data\".",
+      source: {
+        database: "pubmed",
+        id: "42738987",
+        quote: "Four RCTs were eligible; three (n = 161) provided poolable data",
+      },
     },
+    retrievalOnly: true,
     verified: true,
   },
   {
@@ -446,7 +522,13 @@ export const QUERIES: BenchmarkQuery[] = [
       kind: "values",
       expected: ["pmid: 42841486", "participants per group: 64", "adjusted nihss difference: -1.30"],
       note: "PMID 42841486 (Huang et al., J Vis Exp, epub 2026-10-06): \"randomized 1:1 … with 64 participants per group … (adjusted difference: -1.30 points; 95% confidence interval: -2.36 to -0.24; P = 0.017)\".",
+      source: {
+        database: "pubmed",
+        id: "42841486",
+        quote: "randomized 1:1 to standard care or the combined intervention for 28 days, with 64 participants per group. … (adjusted difference: -1.30 points; 95% confidence interval: -2.36 to -0.24; P = 0.017)",
+      },
     },
+    retrievalOnly: true,
     verified: true,
   },
 

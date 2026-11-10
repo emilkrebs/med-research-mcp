@@ -25,7 +25,7 @@ describe("palette", () => {
 });
 
 describe("colored progress output", () => {
-  function render(color: boolean, composite: number): string[] {
+  function render(color: boolean, accuracy: number, fabricated = 0): string[] {
     const lines: string[] = [];
     let t = 0;
     const r = new ProgressReporter({ total: 2, concurrency: 1, color, tokenBudget: 100_000, write: (l) => lines.push(l), now: () => t });
@@ -39,7 +39,7 @@ describe("colored progress output", () => {
     jp.event({ type: "step-start", step: 1, forced: "token cap", tokensSoFar: 52_000 });
     jp.scoring();
     t += 8000;
-    jp.finished({ status: "ok", composite, accuracy: 10, evidence_quality: 0, bullshit_score: 1 } as ScoreRow, {
+    jp.finished({ status: "ok", accuracy, pmids_cited: 3, pmids_fabricated: fabricated } as ScoreRow, {
       speedS: 8,
       usage: { inputTokens: 2000, outputTokens: 600, totalTokens: 2600 },
       stepCount: 2,
@@ -57,15 +57,18 @@ describe("colored progress output", () => {
     expect(colored.map(stripAnsi)).toEqual(plain);
   });
 
-  it("colors by meaning: tool calls cyan, errors red, forced answers and skips yellow, composite by value", () => {
+  it("colors by meaning: tool calls cyan, errors red, forced answers and skips yellow, accuracy by value", () => {
     const lines = render(true, 10);
     const find = (needle: string) => lines.find((l) => stripAnsi(l).includes(needle)) ?? "";
     expect(find("→ literature_fetch")).toContain("\u001b[36mliterature_fetch");
     expect(find("✖ literature_fetch")).toContain("\u001b[31m");
     expect(find("answer only, tools removed")).toContain("\u001b[33m");
     expect(find("skipped")).toContain("\u001b[33m");
-    expect(find("composite")).toContain("\u001b[32m10.00");
-    expect(render(true, 5.1).find((l) => stripAnsi(l).includes("composite"))).toContain("\u001b[33m5.10");
-    expect(render(true, 2).find((l) => stripAnsi(l).includes("composite"))).toContain("\u001b[31m2.00");
+    expect(find("accuracy")).toContain("\u001b[32m10.0");
+    expect(render(true, 5.1).find((l) => stripAnsi(l).includes("accuracy"))).toContain("\u001b[33m5.1");
+    expect(render(true, 2).find((l) => stripAnsi(l).includes("accuracy"))).toContain("\u001b[31m2.0");
+    // A fabricated citation stands out in red; none is dim.
+    expect(render(true, 10, 2).find((l) => stripAnsi(l).includes("accuracy"))).toContain("\u001b[31m2 fabricated");
+    expect(find("accuracy")).not.toContain("\u001b[31m0 fabricated");
   });
 });

@@ -2,11 +2,12 @@
  * The agent loop: run one (model × condition × query) and capture everything
  * needed to score and audit it — text, tool calls, tokens, wall-clock.
  *
- * Conditions A–C differ only in the toolset handed to `generateText`:
+ * Conditions A, B, C and E differ only in the toolset handed to `generateText`:
  *   A closed-book → no tools
  *   B web-search  → Brave `web_search` / `web_fetch`
+ *   E pubmed      → plain `pubmed_search` / `pubmed_fetch`: PubMed records as PubMed serves them
  *   C mcp         → literature_* tools served by the real MCP server (in-memory transport)
- * The system prompt is identical across those three (spec §"System Prompt").
+ * The system prompt is identical across those four (spec §"System Prompt").
  *   D mcp-skill   → C's tools plus the shipped `med-research` skill in the system prompt
  */
 
@@ -14,6 +15,7 @@ import { generateText, stepCountIs, type LanguageModel, type ToolSet } from "ai"
 import { DEFAULTS, systemPromptFor, type ModelSpec } from "./config.js";
 import { resolveModel } from "./providers.js";
 import { mcpTools } from "./tools/literature.js";
+import { pubmedTools } from "./tools/pubmed.js";
 import { webSearchTools } from "./tools/websearch.js";
 import type { BenchmarkQuery, ConditionId, RunRecord, ToolCallRecord, Usage } from "./types.js";
 
@@ -38,6 +40,8 @@ async function toolsFor(condition: ConditionId): Promise<ToolHandle> {
       return { tools: undefined, close: noClose };
     case "web-search":
       return { tools: webSearchTools(), close: noClose };
+    case "pubmed":
+      return { tools: pubmedTools(), close: noClose };
     case "mcp":
     case "mcp-skill":
       return mcpTools();
@@ -217,7 +221,7 @@ export interface RunOptions {
 }
 
 /** Execute one run and return its full record. Never throws — provider failures
- * and timeouts are captured in `error` so the batch keeps going and the row scores as a zero. */
+ * and timeouts are captured in `error` so the batch keeps going (a timeout scores 0, a provider failure is missing data). */
 export async function runOne(
   query: BenchmarkQuery,
   condition: ConditionId,
@@ -238,6 +242,8 @@ export async function runOne(
   const base: Omit<RunRecord, "text" | "toolCalls" | "toolCallCount" | "toolsUsed" | "usage" | "speedS" | "finishedAt"> = {
     queryId: query.id,
     category: query.category,
+    split: query.split ?? "dev",
+    ...(query.retrievalOnly ? { retrievalOnly: true } : {}),
     condition,
     model: model.label,
     provider: model.provider,

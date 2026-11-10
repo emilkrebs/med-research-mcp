@@ -19,10 +19,10 @@ Three tools, a triage-first workflow. **Always start with `literature_search`** 
 
 Bare keywords match tens of thousands of papers and bury the signal. Use field tags and booleans.
 
-- `[tiab]` — title/abstract (most precise): `creatine AND cognition[tiab]`
-- `[mesh]` — controlled MeSH: `"Creatine"[mesh] AND "Cognition"[mesh]`
-- `[au]` — author: `Kreider R[au]`
-- Combine: `(ashwagandha[tiab]) AND (cortisol[tiab] OR stress[tiab]) AND humans[mesh]`
+- `[tiab]` — title/abstract (most precise): `zinc AND "common cold"[tiab]`
+- `[mesh]` — controlled MeSH: `"Zinc"[mesh] AND "Common Cold"[mesh]`
+- `[au]` — author: `Hemilä H[au]`
+- Combine: `(zinc[tiab]) AND ("common cold"[tiab] OR rhinovirus[tiab]) AND humans[mesh]`
 - Restrict to strong designs: `AND (randomized controlled trial[pt] OR meta-analysis[pt])` — `[pt]` is publication type.
 - Narrow first. On `QUERY_TOO_BROAD`, add a `[tiab]` term or an `AND` clause.
 
@@ -87,21 +87,21 @@ Lead with the strongest evidence, its design and how certain it is; summarize co
 
 ### 1. Simple lookup — known PMID
 
-> "What study design is PMID 36615805, and how strong is that design?"
+> "What study design is PMID 22570464, and how strong is that design?"
 
-One call, no fan-out: `literature_search({query:"36615805[pmid]"})` — it returns `studyType`, `designTier`, `flags` and the abstract. If `flags` has `retracted`/`notice`/`protocol`, lead with that. If `designTier` is `null`, read the abstract: for a synthesis, find what it pooled; for `unknown`, classify it (above) and say so. Answer: *"Systematic review and meta-analysis of 21 randomized controlled trials (NLM tag; pooled designs from the abstract): design tier 5 of 5 (PMID 36615805)."* Stop.
+One call, no fan-out: `literature_search({query:"22570464[pmid]"})` — it returns `studyType`, `designTier`, `flags` and the abstract. If `flags` has `retracted`/`notice`/`protocol`, lead with that. If `designTier` is `null`, read the abstract: for a synthesis, find what it pooled; for `unknown`, classify it (above) and say so. Answer: *"Systematic review and meta-analysis of randomized controlled trials — 82 met the inclusion criteria, 63 were pooled (NLM tag; pooled designs from the abstract): design tier 5 of 5 (PMID 22570464)."* Stop.
 
 ### 2. Evidence synthesis — compare X vs Y
 
-> "Compare DORAs vs trazodone for sleep quality. Which has stronger evidence, and why?"
+> "Compare glucosamine vs chondroitin for knee osteoarthritis pain. Which has stronger evidence, and why?"
 
-Frame PICO, then two targeted searches (one per arm, study-type filter): `(suvorexant OR lemborexant OR daridorexant) AND sleep quality[tiab] AND (meta-analysis[pt] OR randomized controlled trial[pt])`, and `trazodone AND sleep quality[tiab] AND (...)`. `literature_fetch` the top 2–3 PMIDs per arm; read what each review pooled, effect sizes + CIs, n, I². Judge **which arm's evidence is more certain**, not which effect is bigger: start from design (a meta-analysis of RCTs beats one small RCT), then rate down for bias, imprecision, inconsistency, indirectness and publication bias (ground rule 1). Name which arm is stronger and why; cite PMIDs; state certainty in GRADE terms. Cap at ~6 calls.
+Frame PICO, then two targeted searches (one per arm, study-type filter): `glucosamine AND knee[tiab] AND osteoarthritis[tiab] AND pain[tiab] AND (meta-analysis[pt] OR randomized controlled trial[pt])`, and `chondroitin AND knee[tiab] AND osteoarthritis[tiab] AND pain[tiab] AND (...)`. `literature_fetch` the top 2–3 PMIDs per arm; read what each review pooled, effect sizes + CIs, n, I². Judge **which arm's evidence is more certain**, not which effect is bigger: start from design (a meta-analysis of RCTs beats one small RCT), then rate down for bias, imprecision, inconsistency, indirectness and publication bias (ground rule 1). Name which arm is stronger and why; cite PMIDs; state certainty in GRADE terms. Cap at ~6 calls.
 
 ### 3. Bullshit detection — the study doesn't exist
 
-> "Summarize the 2023 Jensen trial on melatonin and REM sleep."
+> "Summarize the 2020 Nilsen trial on taurine and slow-wave sleep."
 
-Search author+topic then title terms: `Jensen[au] AND melatonin AND REM sleep`, then `Jensen melatonin REM sleep 2023`. **Zero corroborating results after 2–3 distinct queries → STOP** — don't keep reformulating 8–10 times and return empty. Answer plainly: *"I could not find this trial in PubMed; it does not appear to exist."* Invent no PMID, cite no fabricated study. Suggest the user double-check the reference. (This corrects the real failure mode: empty final text after exhausting the step budget.)
+Search author+topic then title terms: `Nilsen[au] AND taurine AND sleep`, then `taurine slow-wave sleep 2020`. **Zero corroborating results after 2–3 distinct queries → STOP** — don't keep reformulating 8–10 times and return empty. Answer plainly: *"I could not find this trial in PubMed; it does not appear to exist."* Invent no PMID, cite no fabricated study. Suggest the user double-check the reference. (This corrects the real failure mode: empty final text after exhausting the step budget.)
 
 ## Small-model tips
 
