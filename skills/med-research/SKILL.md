@@ -93,9 +93,9 @@ One call, no fan-out: `literature_search({query:"22570464[pmid]"})` — it retur
 
 ### 2. Evidence synthesis — compare X vs Y
 
-> "Compare glucosamine vs chondroitin for knee osteoarthritis pain. Which has stronger evidence, and why?"
+> "Compare intranasal corticosteroids vs oral antihistamines for allergic rhinitis symptoms. Which has stronger evidence, and why?"
 
-Frame PICO, then two targeted searches (one per arm, study-type filter): `glucosamine AND knee[tiab] AND osteoarthritis[tiab] AND pain[tiab] AND (meta-analysis[pt] OR randomized controlled trial[pt])`, and `chondroitin AND knee[tiab] AND osteoarthritis[tiab] AND pain[tiab] AND (...)`. `literature_fetch` the top 2–3 PMIDs per arm; read what each review pooled, effect sizes + CIs, n, I². Judge **which arm's evidence is more certain**, not which effect is bigger: start from design (a meta-analysis of RCTs beats one small RCT), then rate down for bias, imprecision, inconsistency, indirectness and publication bias (ground rule 1). Name which arm is stronger and why; cite PMIDs; state certainty in GRADE terms. Cap at ~6 calls.
+Frame PICO, then two targeted searches (one per arm, study-type filter): `intranasal corticosteroid*[tiab] AND allergic rhinitis[tiab] AND (meta-analysis[pt] OR randomized controlled trial[pt])`, and `oral antihistamine*[tiab] AND allergic rhinitis[tiab] AND (...)`. `literature_fetch` the top 2–3 PMIDs per arm; read what each review pooled, effect sizes + CIs, n, I². Judge **which arm's evidence is more certain**, not which effect is bigger: start from design (a meta-analysis of RCTs beats one small RCT), then rate down for bias, imprecision, inconsistency, indirectness and publication bias (ground rule 1). Name which arm is stronger and why; cite PMIDs; state certainty in GRADE terms. Cap at ~6 calls.
 
 ### 3. Bullshit detection — the study doesn't exist
 
