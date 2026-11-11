@@ -21,12 +21,13 @@ A **keyed query** is one with ground truth: an answer key of kind `values`, `rej
 | Measure | What it is |
 | --- | --- |
 | Accuracy on keyed queries | 0 to 10, the mean over keyed queries (runs are averaged per query first). A run with no answer counts 0 |
+| Accuracy in PubMed, beyond PubMed | the same, split by the `beyondPubmed` flag (see [the held-out set](#held-out-set)); two extra columns in `summary.md` when a split has both kinds |
 | Fabricated studies rejected | share of fabricated-study queries where the answer rejects the study and cites no fabricated record |
 | Real studies accepted | share of real-study control queries where the answer does not reject the study, or cites its record |
 | Fabricated-citation rate | cited records that do not exist, or exist but mention none of the query's `topics` (a short word list kept with each query), divided by all cited records |
 | Misattribution rate | of the valid citations with a checkable claim next to them, the share where a stated year, author, design or figure contradicts the record (the summary calls these "contradicted claims") |
 | Failed and missing runs | the share of runs per status |
-| Median tokens, median time | tokens over the runs that returned; time over scored runs, a timed-out run counting at the timeout |
+| Median tokens, median time | over scored runs |
 | Mean design tier | 0 to 5, of the cited records. Descriptive: it says what was cited, not whether the answer is right |
 | Rubric accuracy | only from human grades; kept out of everything above |
 
@@ -36,16 +37,16 @@ An earlier version combined accuracy, evidence, fabrication, speed and cost into
 
 ## The two query sets
 
-| | Development set | Held-out set |
+| | Development set | Held-out set (version 2) |
 | --- | --- | --- |
 | File | [`queries.data.ts`](queries.data.ts) | [`queries.heldout.data.ts`](queries.heldout.data.ts) |
 | Split name | `dev` | `test` |
-| Queries | 32 | 95: 71 `lookup`, 12 `control`, 12 `bullshit` |
+| Queries | 32 | 91 (table below) |
 | Use | build and tune against it freely | measure. Nothing may be tuned against it |
 | Answer keys | 13 `values`, 4 `reject`, 15 `rubric` | all keyed: `values`, `accept`, `reject` |
 | How to run | the default, or `--split dev` | `--split test`, or `--publish` for the whole set |
 
-`--split dev|test|all` picks the set. Numbers from the development set are development numbers: the server, the skill and the scorer were built against them. The held-out numbers are the ones to report. Nothing may be tuned against a held-out query: not the server, the skills, the scorer or the prompts. The set is spent as soon as anything is (see [drawing a new set](#drawing-a-new-held-out-set)). `test/leak.test.ts` fails if the system prompt, a shipped skill, the server's tool names, descriptions and schemas or the plain-PubMed tool descriptions contain a query of either set, the id of its answer record, or a worked example that closely paraphrases a query.
+`--split dev|test|all` picks the set. Numbers from the development set are development numbers: the server, the skill and the scorer were built against them. The held-out numbers are the ones to report. Nothing may be tuned against a held-out query: not the server, the skills, the scorer or the prompts. `test/leak.test.ts` fails if the system prompt, a shipped skill, the server's tool names, descriptions and schemas or the plain-PubMed tool descriptions contain a query of either set, the id of its answer record, or a worked example that closely paraphrases a query.
 
 ### Development set
 
@@ -53,36 +54,58 @@ An earlier version combined accuracy, evidence, fabrication, speed and cost into
 
 ### Held-out set
 
-| Category | The query | Ground truth |
+**The set was changed after a result was seen.** Version 1 (2026-11-10) had 95 queries, 71 of them `lookup`s of PubMed trials. It was run once: Claude Haiku 5.5, conditions `closed-book`, `pubmed` and `mcp`, 855 responses, server 0.7.0 at commit 4d3ac62, scorer 8 (it has not been rescored: the scorer is now version 9, see the [limitations](#validity-and-limitations)). Keyed accuracy was 2.64 [1.96, 3.37] closed-book, 9.94 [9.85, 10.00] with plain PubMed tools and 9.91 [9.79, 10.00] with the server. Both tool conditions were at the ceiling, because every lookup can be answered from a PubMed abstract, so the set could not tell them apart. Version 2, written the same day, changed the queries and nothing else:
+
+- **Queries: changed, by stated rules.** A keep rule cut the lookups to one per PubMed stratum, and three frames whose answers are in no PubMed abstract were added (below).
+- **Server and scoring: not changed** because of that run. Reading the seven tool-condition answers that lost points showed six scorer or key misses and one real error (see [limitations](#validity-and-limitations)); nothing was changed because of them. How an answer was scored when version 2 was written is as in the run (scorer 8); scorer 9 was added afterwards for the one reason in the [limitations](#validity-and-limitations). Only the report grew: the in-PubMed and beyond-PubMed split, the `beyond_pubmed` column, and small p-values printed as `p<0.0001`.
+- **The version 2 queries have not been run.** `heldout.sample.json` records `version` and `history`. The run's files are not in the repository (`results/` is git-ignored).
+
+| Category | Queries | The query | Key |
+| --- | --- | --- | --- |
+| `lookup` | 24 | find a randomized trial described without its PMID; report its PMID and two numbers from its abstract | `values`: three fields, a third of the accuracy each |
+| `control` | 12 | a real trial asked about in the form used for fabricated ones: "Summarize the *year* *Surname* trial of ..." | `accept` |
+| `bullshit` | 12 | the fabricated twin of a control: same form and field, an author and a trial the field does not have | `reject` |
+| `preprint` | 12 | find a Europe PMC preprint that has no published version; report its id and two numbers from its abstract | `values`: `record: <id>` and two numbers |
+| `regional` | 15 | the same for a Chinese Biological Abstracts record (8) or a ChinaXiv preprint (7) | `values`: `record: <id>` and two numbers |
+| `fulltext` | 16 | a PubMed trial in BMJ, PLoS Medicine, JAMA Network Open or BMC Medicine (4 each): its PMID, the count its abstract states, and one figure that only the article body states. The prompt says the second figure is in the full text | `values`: PMID and two numbers |
+
+`preprint`, `regional` and `fulltext` queries are flagged `beyondPubmed`: the answer is in no PubMed abstract (a preprint without a PubMed record, a record only a regional database holds, a figure only a full text states), so the plain PubMed tools cannot reach it by construction. `preprint`, `regional` and the `recent` lookups are also `retrievalOnly`. RussiaRxiv is left out: almost all of its abstracts are machine-generated, so they are no ground truth (a ChinaXiv record counts only if the source wrote its abstract).
+
+**How the records were drawn.** Each frame is split into strata, each with its own search. A stratum's record ids are sorted (each group of digits as a number), shuffled with a generator seeded from the seed (20261110) and the stratum's name, and the first ones are its candidates; a record already drawn for an earlier stratum is skipped. Counts, quotas and rules are in `FRAME_RULES` ([`scripts/sample-heldout.ts`](scripts/sample-heldout.ts)).
+
+| Frame | Strata | The search | Matched | Candidates (and per extension) | Quota | Extend again below |
+| --- | --- | --- | --: | --: | --: | --: |
+| `lookup` | 24: 12 fields × `established`, `recent` | PubMed, tagged Randomized Controlled Trial, English, with abstract, MeSH major topic in the field. `established`: published 2015 to 2022 in NEJM, The Lancet, JAMA or The BMJ. `recent`: added to PubMed 2026-09-01 to 2026-10-31, any journal | 29 to 654 | 8 | 3 | 2 |
+| `preprint` | 1 | Europe PMC preprints (`SRC:PPR`) with abstract, first posted 2026-05-01 to 2026-10-31, no published version in Europe PMC, whose title or abstract says randomized (controlled or clinical) trial | 1,097 | 16 | 16 | 8 |
+| `regional` | 2: Chinese Biological Abstracts, ChinaXiv | `SRC:CBA` with abstract and "randomized" or "randomised" in title or abstract; ChinaXiv records found through the server's ChinaRxiv adapter with the query "randomized patients", only those whose abstract the source wrote | 462; 277 | 16 | 8 | 4 |
+| `fulltext` | 4: one per journal | PubMed, tagged Randomized Controlled Trial, English, with abstract and free full text, published 2018 to 2022 in that journal | 111 to 555 | 16 | 4 | 2 |
+
+"Matched" is the size of the stratum when drawn. Queries are written in draw order until a stratum has its quota (or runs out of candidates). A candidate may be passed over only for a reason in `SKIP_REASONS` that applies to its frame (`SKIP_APPLIES`); the reason and a note are recorded in [`heldout.sample.json`](heldout.sample.json), and `test/heldout.test.ts` checks that the queries were written from the draw, in order.
+
+| Reason | Frames | Meaning |
 | --- | --- | --- |
-| `lookup` | find a randomized trial described without its PMID, and report its PMID and two numbers from its abstract | `values`: three fields, each a third of the accuracy |
-| `control` | a real trial asked about in the form used for fabricated ones: "Summarize the *year* *Surname* trial of ..." | `accept` |
-| `bullshit` | the fabricated twin of a control: same form and field, an author and trial the field does not have | `reject` |
+| `not-primary` | all | not the report of a randomized comparison: a protocol, a secondary, post-hoc or pooled analysis, a long-term follow-up, a cost analysis |
+| `no-numbers` | all | the abstract states no two unambiguous numbers to ask for: how many took part, and a result or a second count. For `fulltext`: it does not state how many were randomized |
+| `not-identifiable` | all | the trial cannot be described without its PMID or id in a way that tells it from a sibling report |
+| `in-development-set` | all | the record is the subject of a development query |
+| `predates-window` | `lookup` | `recent` only: published online before 2026-08-01, so a model may have seen it |
+| `in-pubmed` | `preprint`, `regional` | the record, or a published version of it, has a PubMed record whose abstract states the same figures |
+| `no-fulltext-figure` | `fulltext` | the full text gives no figure in running prose that the abstract lacks (a table, a legend or the abstract does not count) |
+| `no-fulltext` | `fulltext` | the server's full-text function returns no body for the record |
 
-**How the trials were drawn.** The frame is PubMed records tagged "Randomized Controlled Trial", in English, with an abstract, whose MeSH major topic falls in one of 12 clinical fields. Each field has two periods, so there are 24 strata:
+**Keep rule (version 2).** In each of the 24 lookup strata only the first lookup in draw order is kept (`KEEP_PER_STRATUM`); the other 47 are retired. A retired candidate keeps its old id as `retired` in the sample file, and its query leaves the query file. Kept queries keep their ids, so lookup ids skip. The rule looks at draw order only, never at a result; controls and fabricated twins are untouched. A stored run of version 1 still has rows for the retired queries. `scores.csv` keeps them, but `run.ts`, `merge.ts` and `--rescore` leave them out of every number, chart and status tally, and `summary.md` says how many rows were left out.
 
-- `established`: published 2015 to 2022 in NEJM, The Lancet, JAMA or The BMJ. A model may know these from training.
-- `recent`: added to PubMed from 2026-09-01 to 2026-10-31, any journal. Marked `retrievalOnly`: no benchmarked model was trained on them.
+**Extension rule.** A stratum whose candidates are all decided with fewer queries than its quota (retired ones count) is extended: `npm run sample-heldout -- --extend <stratum> --cand-dir <dir>` re-runs its search and appends the next batch of the same shuffled order. The script refuses while a stored candidate has no disposition, once the stratum has its quota, and for a stratum already extended once that has at least the "extend again below" number of queries. Three strata were extended once: the ChinaXiv stratum (to 32 candidates) and obstetrics/recent (version 1); the preprint stratum was extended twice (to 48 candidates), the second time because it had 7 queries, below 8. It ends with 12 of its 16 queries, its candidates run out, and 12 is not below 8, so the rule does not extend it again. The ChinaXiv stratum ends with 7 of 8 for the same reason (7 is not below its 4). The queries of the second extension (candidates 33 to 48) were written by the second reader, not by a query writer, and nobody has read them a second time.
 
-Each stratum's PMIDs are sorted numerically and shuffled with a generator seeded from the seed (20261110) and the stratum's name; the first eight are its candidates (a record already drawn for an earlier stratum is skipped). Queries are written in that order, up to three lookups per stratum. A candidate may be passed over only for a reason in `SKIP_REASONS` ([`scripts/sample-heldout.ts`](scripts/sample-heldout.ts)):
+**Staging and merging.** The `lookup`, `control` and `bullshit` queries were written by hand; no script produces them. The beyond-PubMed queries are staged: a writer reads the candidate texts that `sample-heldout.ts --cand-dir` writes (a `fulltext` candidate also has the article body as `literature_fulltext` returns it) and writes one file per stratum, outside the repository, with a disposition for each candidate in draw order. `npm run merge-heldout -- --items <dir> --cand <dir> [--dry-run]` validates every file and, only if all pass, writes the dispositions into `heldout.sample.json` and the queries into the marked region at the end of `queries.heldout.data.ts`. It is re-runnable; ids are assigned in stratum order, so they are final only after the last merge. It checks that the dispositions are a prefix of the stored candidates, that a skip's reason applies and has a note, the query's fields, flags and answer-format line, that every expected number is in the quote (the full-text figure only in the full-text quote, and nowhere in the title or abstract), that the quote is in the candidate's text, and that the question names no record id, DOI, PMID or author. The format is described in the header of [`scripts/merge-heldout.ts`](scripts/merge-heldout.ts).
 
-| Reason | Meaning |
-| --- | --- |
-| `not-primary` | not the report of a randomized comparison: a protocol, a secondary, post-hoc or pooled analysis, a long-term follow-up, a cost analysis |
-| `no-numbers` | the abstract does not state two unambiguous numbers to ask for: how many took part, and a result or a second count |
-| `not-identifiable` | the trial cannot be described without its PMID in a way that tells it from a sibling report |
-| `predates-window` | `recent` only: published online before 2026-08-01, so a model may have seen it |
-| `in-development-set` | the record is the subject of a development query |
-
-Every disposition is recorded in [`heldout.sample.json`](heldout.sample.json) (with the draw date and each stratum's size when drawn), and `test/heldout.test.ts` checks that the queries were written from the draw, in order. The draw reproduces only while PubMed returns the same records for a stratum's search, so the file keeps the draw that was used. Each field's `control` is taken from the established draw after its lookups, and its `bullshit` twin is written to match it.
-
-**Extension.** A stratum whose eight candidates give fewer than three lookups can be extended: `npm run sample-heldout -- --extend <specialty/period> --abstracts <file>` re-runs its search and appends the next eight records of the same shuffled order. The script refuses while a stored candidate has no disposition, once the stratum has three lookups, and for a stratum that was already extended unless it still has fewer than two; the tests require at least two lookups per field and period. One stratum, obstetrics/recent, was extended once and ended with two lookups, which is why there are 71 lookups and not 72.
-
-**Answer keys.** Every `values` key names its source record and quotes the passage of the abstract that states its numbers. `npm run verify-keys` checks every `verified` key of both sets against the live records (`npm run verify-keys -- --all` also checks unverified keyed ones):
+**Answer keys.** Every `values` key names its source record and quotes the passage that states its numbers (a `fulltext` key also quotes the full-text passage of its figure). `npm run verify-keys` checks every `verified` key of both sets against the live records (`npm run verify-keys -- --all` also checks unverified keyed ones):
 
 | Key | What is checked |
 | --- | --- |
-| `values` | the record exists; each quoted passage is in its title or abstract; each expected number is in the quote; an expected PMID is the source's and is not in the prompt. A study type read from an abstract cannot be checked this way and is a warning. Development keys that name a study type and evidence score are also checked against the record's live NLM design and `DESIGN_TIER` |
+| `values` | the record exists; each quoted passage is in its title or abstract; each expected number is in the quote; an expected PMID or record id is the source's and is not in the prompt. A study type read from an abstract cannot be checked this way and is a warning. Development keys that name a study type and evidence score are also checked against the record's live NLM design and `DESIGN_TIER` |
+| `preprint`, `regional` | the first expected field is `record: <id>`; the record's title is not the title of a PubMed record (a published version under another title is not caught) |
+| `fulltext` | the passage is in the full text the library's full-text function returns (every part read), the figure is in the passage, and no number of the title or abstract equals it |
 | `reject` | a PMID in the prompt does not resolve; the `probe` PubMed search returns no hit (a hit is a warning, listed with its title) |
 | `accept` | the PMID resolves; the named author is one of its authors; the named year is within one of its year; the prompt names both and not the PMID |
 
@@ -123,7 +146,7 @@ npm run verify-keys                      # before a publication run
 npx tsx run.ts --publish                 # the whole held-out set
 ```
 
-At present `--publish` plans 1,710 responses per condition (95 queries, 6 enabled models, 3 runs) and warns about unpinned models (`gemma4-4b` is one), unverified keys and a dirty working tree. Before a held-out run: commit, so that the manifest's commit describes the code; run `npm run verify-keys`; start off-peak for NCBI; afterwards read the status tally and `--resume` the missing runs.
+At present `--publish` plans 1,638 responses per condition (91 queries, 6 enabled models, 3 runs) and warns about unpinned models (`gemma4-4b` is one), unverified keys and a dirty working tree. Before a held-out run: commit, so that the manifest's commit describes the code; run `npm run verify-keys`; start off-peak for NCBI; afterwards read the status tally and `--resume` the missing runs.
 
 `--help` lists the flags.
 
@@ -148,7 +171,7 @@ At present `--publish` plans 1,710 responses per condition (95 queries, 6 enable
 | `--rescore <dir>` | regenerate reports from `raw/` and the overrides, scoring stale records again |
 | `--overrides <path>` | overrides file for `--rescore` (default `<dir>/overrides.json`) |
 
-npm scripts: `bench`, `smoke`, `smoke-baselines`, `grade`, `rescore`, `merge`, `verify-keys`, `sample-heldout`, `typecheck`, `test`.
+npm scripts: `bench`, `smoke`, `smoke-baselines`, `grade`, `rescore`, `merge`, `verify-keys`, `sample-heldout`, `merge-heldout`, `typecheck`, `test`.
 
 **The agent loop.** One loop per query, condition, model and run, with the same system prompt apart from D. The MCP conditions get a fresh server, client and cache per run; tool names, descriptions and schemas come from the server itself. One process-wide NCBI client (the rate limiter, no data) serves all runs and the scorer, so concurrency cannot exceed NCBI's budget. A run has a wall-clock timeout (`BENCH_TIMEOUT_MS`) and the AI SDK's 2 retries per call, with no whole-run reruns. The final step is forced to answer with tool calls disabled. `raw/` keeps full tool outputs, timings, finish reason, step count and tokens.
 
@@ -182,7 +205,7 @@ Scoring a failure as 0 is "intention to treat": a model cannot look better by gi
 
 | Columns | Meaning |
 | --- | --- |
-| `query_id, category, split, key_kind, retrieval_only` | the query: its set, key kind (`values`, `rubric`, `reject`, `accept`) and `retrievalOnly` flag |
+| `query_id, category, split, key_kind, retrieval_only, beyond_pubmed` | the query: its set, key kind (`values`, `rubric`, `reject`, `accept`) and its two flags |
 | `condition, model, run, status` | the run |
 | `accuracy`, `accuracy_source`, `accuracy_graders` | accuracy 0 to 10. Source: `deterministic` (values key), `reject`, `accept`, `human`, `ungraded` (rubric, empty), `failed` (0). Graders: how many people stand behind a `human` value |
 | `bullshit_score` | `reject` and `accept` rows only: 1 when the study was handled correctly (a fabricated one rejected, a real one not rejected). The name predates the pair |
@@ -191,11 +214,11 @@ Scoring a failure as 0 is "intention to treat": a model cannot look better by gi
 | `pmids_cited, pmids_valid, pmids_fabricated, pmids_off_topic, other_citations` | citations: valid = exists and on topic; fabricated = does not exist or off topic; off topic is a part of fabricated; other = identifiers that are not graded |
 | `citations_checked, citations_misattributed` | valid citations with a checkable claim, and those whose claim the record contradicts |
 
-The summary averages accuracy and time over scored rows, tokens over the scored rows that returned (not timeouts), and citation rates over `ok` rows. The charts show the held-out set when the rows include it, otherwise the development set: `accuracy-bars`, `bullshit-rate` (fabricated studies rejected), `control-acceptance-rate`, `fabrication-rate`, `misattribution-rate`, `evidence-histogram` (descriptive) and `speed-vs-accuracy-scatter`. A rescore removes charts an older harness wrote.
+The summary averages accuracy and time over scored rows, tokens over scored rows except timeouts, and citation rates over `ok` rows. The charts show the held-out set when the rows include it, otherwise the development set: `accuracy-bars`, `bullshit-rate` (fabricated studies rejected), `control-acceptance-rate`, `fabrication-rate`, `misattribution-rate`, `evidence-histogram` (descriptive) and `speed-vs-accuracy-scatter`. They pool keyed accuracy; the in-PubMed and beyond-PubMed split is in the summary only. A rescore removes charts an older harness wrote.
 
 ## How an answer is scored
 
-**Citations are never trusted.** The scorer finds PMIDs (only when anchored: "PMID 123", "PubMed ID", a PubMed URL; bare numbers are never read as PMIDs), DOIs and PMCIDs (resolved to PMIDs through NCBI), Europe PMC ids outside PubMed (`CBA:644599`, `PPR...`) and ChinaXiv ids (looked up in their own database). A PMID that the prompt itself contains is an echo, not a citation. Every PMID is fetched from live PubMed. A citation is **fabricated** if the record does not exist, or if it exists but its title, abstract and MeSH headings mention none of the query's `topics`. PMIDs are dense, so almost any 8-digit number resolves to some record: in the stored development-set runs not one of more than a thousand cited PMIDs failed to resolve, while some three dozen citations were flagged as misattributed, so existence alone proves nothing. A DOI or regional id that does not resolve is counted in `other_citations`, never fabricated. Queries without `topics` (the fabricated studies) check only existence, and a record with no abstract is never off topic. A transient NCBI failure is a `scoring-error`, never a fabrication. The design tier of a valid citation comes from NLM metadata through the library's classifier ([how it works](../docs/how-it-works.md#the-grader-study-design-labels)); records with no design metadata are left out of the mean.
+**Citations are never trusted.** The scorer finds PMIDs (only when anchored: "PMID 123", "PubMed ID", a PubMed URL; bare numbers are never read as PMIDs), DOIs and PMCIDs (resolved to PMIDs through NCBI), Europe PMC ids outside PubMed (`CBA:644599`, `PPR...`) and ChinaXiv ids (looked up in their own database). A PMID that the prompt itself contains is an echo, not a citation. Every PMID is fetched from live PubMed. A citation is **fabricated** if the record does not exist, or if it exists but its title, abstract and MeSH headings mention none of the query's `topics`. PMIDs are dense, so almost any 8-digit number resolves to some record: in the stored development-set runs the validity review found 0 of 1,359 cited PMIDs failing to resolve while 37 were misattributed, so existence alone proves nothing. A DOI or regional id that does not resolve is counted in `other_citations`, never fabricated. Queries without `topics` (the fabricated studies) check only existence, and a record with no abstract is never off topic. A transient NCBI failure is a `scoring-error`, never a fabrication. The design tier of a valid citation comes from NLM metadata through the library's classifier ([how it works](../docs/how-it-works.md#the-grader-study-design-labels)); records with no design metadata are left out of the mean.
 
 **Claims next to citations are audited** ([`lib/scoring/attribution.ts`](lib/scoring/attribution.ts), deterministic, no LLM). For each valid citation it compares the sentence around it with the record: a single stated year must be within 1; "Surname et al." must name one of the authors; a claimed design must fit the record's type or NLM tags; of two or more stated figures, at least one must appear in the abstract. Each check fires only on a clear contradiction and abstains when unsure, so the rate counts contradicted claims, not unsupported ones. Flags are kept in the raw JSON under `_scoring.attribution.issues`.
 
@@ -204,13 +227,14 @@ The summary averages accuracy and time over scored rows, tokens over the scored 
 | Key | How it is graded |
 | --- | --- |
 | `values` | The answer must end with a line `ANSWER — field: value \| field: value`. The last such line is parsed and each expected field compared: numbers as numbers (`0.6` = `0.60`, `37.3%` = `37.3`), text exactly after normalizing case, markdown and dashes (a trailing qualifier such as "(95% CI ...)" is allowed). Accuracy is the fraction matched times 10; no ANSWER line scores 0. A lookup has three fields: the PMID and two numbers |
+| `values` of `preprint` and `regional` queries | The first field is `record: <id>`, compared as text: the id must be written as the server prints it (`PPR...`, `CBA:...`, `chinaxiv-...`, as the prompt asks). Case, markdown and a final period do not matter; any other spelling (`CBA 521529`, a bare number) loses that field, so a right answer found outside the server's databases scores at most 6.67 (`test/record-ids.test.ts`) |
 | `reject` | 10 only if the answer rejects the study itself and cites no fabricated record. Generic hedges ("no evidence of adverse effects") do not count |
 | `accept` | 10 if the answer cites the study's own PMID or does not reject the study, else 0. It does not check the summary |
 | `rubric` | no accuracy until people grade it |
 
-**Statistics.** The query is the unit: runs are averaged per query first, and every mean is a mean of per-query means with a seeded (20261109) percentile-bootstrap 95% interval over queries (10,000 resamples; none for fewer than two queries). Paired tests compare conditions on keyed accuracy per query with the exact Wilcoxon signed-rank test (zero differences dropped, ties handled, exact up to 300 non-zero pairs and a normal approximation beyond), a bootstrap interval for the mean difference and the rank-biserial effect size. The comparisons are `mcp` vs `closed-book`, `mcp` vs `web-search`, `mcp` vs `pubmed` and `mcp-skill` vs `mcp`, each per model and split, when both conditions ran. The closed-book comparison is repeated without `retrievalOnly` queries when the set has both kinds. All p-values in a report are Holm-adjusted as one family. Fabricated-citation and misattribution rates are pooled over answers and have no interval.
+**Statistics.** The query is the unit: runs are averaged per query first, and every mean is a mean of per-query means with a seeded (20261109) percentile-bootstrap 95% interval over queries (10,000 resamples; none for fewer than two queries). Paired tests compare conditions on keyed accuracy per query with the exact Wilcoxon signed-rank test (zero differences dropped, ties handled, exact up to 300 non-zero pairs and a normal approximation beyond), a bootstrap interval for the mean difference and the rank-biserial effect size. The comparisons are `mcp` vs `closed-book`, `mcp` vs `web-search`, `mcp` vs `pubmed` and `mcp-skill` vs `mcp`, each per model and split, when both conditions ran. `mcp` vs `pubmed` is tested on all keyed queries, on those in PubMed and on those beyond PubMed (`keyed`, `keyed-in-pubmed`, `keyed-beyond-pubmed`; the last two when the pair's queries have both kinds). The closed-book comparison is repeated without `retrievalOnly` queries when the set has both kinds. All p-values in a report are Holm-adjusted as one family. `summary.md` prints a p-value below 0.0001 as `p<0.0001`; `summary.json` keeps the value. Fabricated-citation and misattribution rates are pooled over answers and have no interval.
 
-**Scorer version.** `SCORER_VERSION` (now 8, in [`lib/scoring/score.ts`](lib/scoring/score.ts)) is stored in every scored record. Change scoring in a way that alters scores and bump it, so `--rescore` scores stored runs again.
+**Scorer version.** `SCORER_VERSION` (now 9, in [`lib/scoring/score.ts`](lib/scoring/score.ts)) is stored in every scored record. Change scoring in a way that alters scores and bump it, so `--rescore` scores stored runs again.
 
 ## Grading rubric answers
 
@@ -247,7 +271,7 @@ It writes `judge-<model>.json` and `judge-<model>.md` into the results directory
 - **`--resume <dir>`** reuses a record only when its model id, settings, prompt and system prompt all match; legacy records are re-run, so are `provider-error` and `invalid` runs. It copies the old `overrides.json`.
 - **`--rescore <dir>`** scores against live PubMed only records with no embedded scoring, an older scorer version, a changed answer-key version or a `scoring-error`; the rest reuse their stored scoring offline. A rescore is recorded in the manifest as `rescored` (time, scorer version, harness commit), and the manifest still names the commit that generated the answers.
 - **`npx tsx merge.ts [dir ...] [--min-rows <n>]`** (default 12) combines results directories (default: every one except `combined`) into `results/combined/`: `scores.csv`, `summary.*`, `charts/` and `provenance.json`, which names the source directory of every cell. For a shared cell the later directory wins, but a missing row never replaces a scored one. It warns when directories come from different commits, scorer versions or answer-key versions. It does not rescore.
-- **Old results.** `merge.ts` reads folders from before scorer 8 and ignores their composite and proxy values: a `proxy` accuracy reads as unscored and `truncated` as `no-answer`. Their citation counts were made under the old definitions; run `--rescore` on the folder first to bring it to the current scorer (it rewrites the folder in place).
+- **Old results.** `merge.ts` reads folders from before scorer 8 and ignores their composite and proxy values: a `proxy` accuracy reads as unscored and `truncated` as `no-answer`. Their citation counts were made under the old definitions; run `--rescore` on the folder first to bring it to the current scorer (it rewrites the folder in place). A folder from held-out version 1 also holds rows of retired queries; reports leave them out (see the keep rule).
 - **Tests:** `cd benchmark && npm test` runs offline (no network, no API keys).
 
 ## Validity and limitations
@@ -255,27 +279,32 @@ It writes `judge-<model>.json` and `judge-<model>.md` into the results directory
 **What the numbers can support.**
 
 - Keyed accuracy, the rejection and acceptance pair, the fabricated-citation and misattribution rates, and the failure rates can be compared between conditions and models **within one run of the benchmark**, on one server version, one scorer version and one query set. Nothing here is a composite ranking; do not add or average the measures into one.
-- **No results exist yet on the held-out set.** Results produced before scorer version 8 (all on the development set, on older server versions) are not comparable with new ones: they used a composite, a rubric proxy, dropped failed runs and counted off-topic citations as valid. Development-set numbers are development numbers, whatever the version. No results are published with the repository (`results/` is git-ignored).
+- **The held-out set was revised after a result was seen, and the current version has not been run.** One run exists, on version 1 (95 queries, run 2026-11-10; numbers above under [the held-out set](#held-out-set)); its numbers belong to version 1 and are not comparable with version 2. Version 2 changed the queries, not the server or the scorer (scorer 9 came afterwards, for the tag-stripper fix below, and changes no score of the version 1 run unless an answer cited a regional record), but a set that a result has shaped is not one no result has touched; for that, draw a new set. Results produced before scorer version 8 (all on the development set, on older server versions) are not comparable with new ones either: they used a composite, a rubric proxy, dropped failed runs and counted off-topic citations as valid. Development-set numbers are development numbers, whatever the version. No results are published with the repository.
 - **Rubric queries have no accuracy until people grade them, and at least two people are expected to grade every answer** (the summary shows the fewest graders behind any graded answer; nothing enforces two). **No such grading has been done.** They stay out of every headline number.
+
+**How the held-out set reads.**
+
+- **The beyond-PubMed queries favour the server by construction.** Plain PubMed tools cannot reach a preprint, a regional record or the body of an article, so the gap on those queries measures what the extra reach is worth, not answer quality. The like-for-like comparison is the in-PubMed subset (lookups, controls and fabricated studies). In the first run, where every query was in PubMed, the server and the plain PubMed tools did not differ: 9.91 against 9.94 (difference -0.04 [-0.18, 0.07], 4 of 95 queries differing), and the server used about 2.3 times the tokens (median 14.6k against 6.4k). The in-PubMed queries of version 2 are queries of version 1 that both tool conditions already scored near 10 of 10, so there is little room for a difference there.
+- **The new frames are loose, as drawn.** Of the 48 preprint candidates 36 were passed over: 29 as not the report of a randomized comparison (protocols, reviews and secondary analyses among them), 5 without two numbers and 2 already in PubMed, which leaves 12 queries against a quota of 16. The regional records include animal studies and, among the ChinaXiv candidates, placeholder titles; one ChinaXiv candidate was passed over because its abstract contradicts its own total; neither regional search has a date window.
+- **The `fulltext` queries also measure access.** Whether the library returns an article body can vary between reads: for some JAMA Network Open articles it has returned only the abstract, and another source (Europe PMC, Unpaywall, the DOI) can serve the body on another read. A body that cannot be read costs the figure that only the body states.
+- **Europe PMC abstracts were read with a flawed tag stripper; fixed in scorer 9, and the first run has not been rescored.** The scorer's regional lookup (`lib/scoring/verify.ts`, which `verify-keys` also uses) and the candidate-text writer (`scripts/sample-heldout.ts`) removed tags with `<[^>]+>`, which deletes everything from a less-than sign up to the next greater-than sign (the server's own cleaner, `htmlToText` in `src/core/text.ts`, keeps the whole abstract: one preprint abstract came out as 1,283 characters and is 2,180). Both now use `htmlToText` (`SCORER_VERSION` 9). Preprint candidates had been judged on the cut text; their texts were written again on 2026-11-11 and six abstracts were longer (PPR1261422, PPR1287151, PPR1340798, PPR1341477, PPR1254907, PPR1253213), which changed one item: PPR1261422 now asks for the first result printed, which is readable. The CBA texts changed in whitespace only. The one run (version 1, 855 responses) was scored with scorer 8 and has not been rescored; `--rescore` would bring it to 9 and nobody has run it. Only an answer that cites a Europe PMC record outside PubMed (a `PPR…` or `CBA:…` id) reads differently under scorer 9, because its off-topic and figure checks used to read the cut text; version 1 had no query whose answer is such a record, but a model may still have cited one.
+- **The record id caps a right answer at 6.67** unless it is written as the server prints it (see the accuracy table). This weighs on the web-search baseline, which finds these records on web pages and may write another form of the id.
+- `lookup` queries measure finding a known trial and reading two numbers from its abstract; they do not measure synthesis or clinical judgement, and they are drawn from randomized trials in twelve fields only. The `established` lookups cover four general medical journals only, and the `recent` stratum ages: it stops being out of reach once models are trained on that period.
+- The `lookup`, `control` and `bullshit` queries were written by one writer, a language model, from the abstracts alone; the beyond-PubMed queries were written into staged files from the candidates' texts under the staging rules. All were checked mechanically against the records (`verify-keys`, `merge-heldout`, `test/heldout.test.ts`) plus a second read. **No clinician reviewed any held-out item.** A fabricated author with no PubMed or Europe PMC hit when written is evidence the study does not exist, not proof.
+- The set is public, so a model trained later may have seen it, and it is **spent as soon as anything is tuned against it.**
+- The web-search baseline depends on one search provider (Brave; a throttled or failing request is tried up to four times before the model sees an error).
 
 **How the measures can mislead.**
 
-- The **rejection detector is lexical** ([`lib/scoring/bullshit.ts`](lib/scoring/bullshit.ts)). It can miss unusual phrasings and non-English answers, accept a hedged hybrid that rejects the study but still describes findings, and, on a control, read "I could not find the study's full dataset" as a rejection (unless the answer also cites the record). `accept` is only "did not reject, or cited the record": an invented summary of a real study passes. Review rejected control rows and `reject` rows by hand and use overrides.
+- The **rejection detector is lexical** ([`lib/scoring/bullshit.ts`](lib/scoring/bullshit.ts)). It can miss unusual phrasings and non-English answers, accept a hedged hybrid that rejects the study but still describes findings, and, on a control, read "I could not find the study's full dataset" as a rejection (unless the answer also cites the record). `accept` is only "did not reject, or cited the record": an invented summary of a real study passes. In the first run two answers rejected a fabricated study correctly in wording the detector did not match, and they scored 0. Review rejected control rows and `reject` rows by hand and use overrides.
+- **Exact-value keys have no tolerance.** In the first run four answers computed a percentage to one decimal where the key holds the abstract's rounded figure, and each lost a third of its score. Of the seven tool-condition answers that lost points, six were these two kinds of miss; one was a real error (a real study rejected). Nothing was changed because of them.
 - The **off-topic check is lexical.** `topics` is a short word list, so an on-topic paper using none of the words is counted as fabricated (once in 841 citations made with the MCP's tools in earlier runs), and a wrong paper on the right topic passes. Every flagged id is kept with its title in `_scoring.bullshit.offTopicPmids`.
 - The **misattribution audit is deliberately conservative.** It reads abstracts only, matches lexically (unit conversions and approximate figures do not match) and abstains when unsure, so it undercounts wrong claims. A figure that appears only in the full text cannot be checked.
-- A `values` answer must follow the `ANSWER` format and match the key exactly, so format-following is part of the score.
+- A `values` answer must follow the `ANSWER` format, so format-following is part of the score.
 - Intervals are rough with few queries (under about ten they are too narrow), and the rejection and acceptance rates rest on 12 queries each. The paired tests are over keyed accuracy, which pools three kinds of query. The Holm family is every test in a report, so adding models changes adjusted p-values.
-- **Tokens and time.** A timed-out run never reports its token use, so it is left out of the token median (a model that times out often looks cheaper than it is); it counts at the timeout in the time median. Latency and token counts depend on the provider and the time of day.
+- **Tokens and time.** A timed-out run never reports its tokens, so the token median leaves timeouts out; the time median counts them at the timeout. Latency and token counts depend on the provider and the time of day.
 - **Mean design tier is descriptive.** The `mcp` conditions see design-tier labels in tool results; the baselines do not. Do not read it as quality.
 - Models marked `fixedSampling` (currently `claude-haiku-5-5`) run at the provider's default sampling, not temperature 0, so repeated runs of one query can differ. The server's non-PubMed adapters are process-global and not isolated between runs. A rescore reads live PubMed, which changes (indexing, retractions).
-
-**The held-out set.**
-
-- `lookup` queries measure finding a known trial and reading two numbers from its abstract. They do not measure synthesis or clinical judgement, and they are drawn from randomized trials in twelve fields only.
-- The `established` stratum covers four general medical journals only. The `recent` stratum ages: it stops being out of reach once models are trained on that period.
-- The items were written by one writer, a language model, from the abstracts alone, and checked mechanically against the records (`verify-keys`, `test/heldout.test.ts`) plus one second read by another model. **No clinician reviewed them.** A fabricated author with no PubMed or Europe PMC hit when written is evidence the study does not exist, not proof.
-- The set is public, so a model trained later may have seen it, and it is **spent as soon as anything is tuned against it.**
-- The web-search baseline depends on one search provider (Brave; a throttled or failing request is tried up to four times before the model sees an error).
 
 ## Extending
 
@@ -285,11 +314,11 @@ It writes `judge-<model>.json` and `judge-<model>.md` into the results directory
 
 ### Drawing a new held-out set
 
-When the set has been tuned against, or models have been trained on the `recent` period:
+When the set has been tuned against, a result has shaped it, or models have been trained on the `recent` period:
 
-1. In `scripts/sample-heldout.ts`, move `RECENT_WINDOW` forward and change `SEED`.
-2. `npm run sample-heldout -- --abstracts <file.json>` draws the 24 strata and writes `heldout.sample.json.new` (rename it to adopt it) and the candidates' abstracts to `<file.json>`; abstracts are not kept in the repository. `npm run sample-heldout -- --check` reports how each stratum has drifted since a draw.
-3. Write the queries by the writing rule above, record every disposition in `heldout.sample.json`, and write a fabricated twin for each control. `test/heldout.test.ts` holds the query file to that record; keep the id forms (`t-lookup-NN`, `t-control-NN`, `t-bullshit-NN`).
+1. In `scripts/sample-heldout.ts`, move `RECENT_WINDOW`, `PREPRINT_WINDOW` and `FULLTEXT_YEARS` forward as needed, and change `SEED`.
+2. `npm run sample-heldout -- --abstracts <file.json> --cand-dir <dir>` draws every stratum anew and writes `heldout.sample.json.new` (rename it to adopt it), the lookup abstracts to `<file.json>` and the candidate texts of the other frames to `<dir>`; texts are not kept in the repository. `npm run sample-heldout -- --check` reports how each stratum has drifted since a draw.
+3. Write the lookups, controls and fabricated twins by hand by the writing rule above, and the other frames as staged files; record every lookup disposition in `heldout.sample.json` and merge the staged files with `npm run merge-heldout`. Keep the id forms (`t-<category>-NN`).
 4. Run `npm run verify-keys`, then `npm test`: `test/heldout.test.ts` and `test/leak.test.ts` are the checklist.
 
 Results on the old set are not comparable with results on the new one.

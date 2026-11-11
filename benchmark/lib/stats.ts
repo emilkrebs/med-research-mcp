@@ -162,14 +162,14 @@ export function wilcoxon(diffs: number[]): WilcoxonResult {
   const r = (wPlus - (total - wPlus)) / total;
 
   if (n <= WILCOXON_EXACT_MAX_N) {
-    return { n, statistic: wPlus, p: round(wilcoxonExactP(doubled, doubledWPlus), 6), r: round(r), method: "exact" };
+    return { n, statistic: wPlus, p: roundP(wilcoxonExactP(doubled, doubledWPlus)), r: round(r), method: "exact" };
   }
   const meanW = total / 2;
   const sdW = Math.sqrt((n * (n + 1) * (2 * n + 1)) / 24 - tieTerm / 48);
   const cc = Math.sign(wPlus - meanW) * 0.5; // continuity correction
   const z = sdW === 0 ? 0 : (wPlus - meanW - cc) / sdW;
   const p = sdW === 0 ? 1 : 2 * (1 - normalCDF(Math.abs(z)));
-  return { n, statistic: wPlus, p: round(Math.min(1, p), 6), r: round(r), method: "normal" };
+  return { n, statistic: wPlus, p: roundP(Math.min(1, p)), r: round(r), method: "normal" };
 }
 
 /**
@@ -242,4 +242,14 @@ export function comparePaired(a: number[], b: number[], opts: BootstrapOptions =
 function round(x: number, dp = 4): number {
   const f = 10 ** dp;
   return Math.round(x * f) / f;
+}
+
+/**
+ * A p-value rounded to 6 decimals, except that a positive one that would round to 0 is kept as it is:
+ * rounding turned the exact p of 86 differing queries (about 1e-23) into 0, and "p=0" is not a p-value.
+ * Every other p-value is stored as before.
+ */
+export function roundP(p: number): number {
+  const r = round(p, 6);
+  return r === 0 && p > 0 ? p : r;
 }

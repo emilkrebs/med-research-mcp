@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   Verifier,
   auditCitations,
@@ -288,3 +288,27 @@ describe("defaultFetch control-PMID guard", () => {
   });
 });
 
+
+describe("defaultRegionalLookup reads a Europe PMC record as the server does", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const record = (abstractText: string, title = "A <i>trial</i>.") => ({
+    resultList: { result: [{ id: "PPR123", source: "PPR", title, abstractText, authorString: "Su H, Zou R.", pubYear: "2026", journalTitle: "" }] },
+  });
+  const lookup = async (body: unknown) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } })));
+    const { defaultRegionalLookup } = await import("../lib/scoring/verify.js");
+    return defaultRegionalLookup({ database: "europepmc", id: "PPR123" });
+  };
+
+  it("keeps the text between a bare less-than sign and a later greater-than sign", async () => {
+    const got = await lookup(record("<p>Pain fell (P < 0.001) in 60 patients and the effect sizes were all > 0.5.</p>"));
+    expect(got?.abstract).toBe("Pain fell (P < 0.001) in 60 patients and the effect sizes were all > 0.5.");
+  });
+
+  it("still removes real markup from the abstract and the title, and decodes references", async () => {
+    const got = await lookup(record("<h4>Methods</h4><p>We randomized <i>60</i> adults to 10<sup>-3</sup> M &plusmn; 2.</p>"));
+    expect(got?.abstract).toBe("Methods: We randomized 60 adults to 10⁻³ M ± 2.");
+    expect(got?.title).toBe("A trial");
+  });
+});

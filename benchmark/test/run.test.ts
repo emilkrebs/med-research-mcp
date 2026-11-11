@@ -4,7 +4,7 @@ import { DEFAULTS, DEFAULT_MODELS, MODELS } from "../lib/config.js";
 import { SCORER_VERSION } from "../lib/scoring/score.js";
 import { buildManifest, effectiveScorerVersion, fingerprintFor, rescoreReason, resumeDecision, detectGit } from "../lib/manifest.js";
 import { CONDITIONS, SKILL_TEXT, SYSTEM_PROMPT, systemPromptFor } from "../lib/config.js";
-import { resolveConditions, resolveQueries, resolveSplit } from "../lib/cli.js";
+import { CATEGORIES, resolveConditions, resolveQueries, resolveSplit } from "../lib/cli.js";
 import { QUERIES, queriesOf } from "../lib/queries.js";
 import { RUN_STATUSES, isFailure, isScored, normalizeStatus, runOutcome } from "../lib/status.js";
 import type { RunRecord, ScoreBreakdown } from "../lib/types.js";
@@ -77,6 +77,18 @@ describe("query sets", () => {
     expect(resolveQueries("bullshit", "all").length).toBeGreaterThanOrEqual(devBs.length);
     expect(resolveQueries("factual-01", "test").map((q) => q.id)).toEqual(["factual-01"]);
     expect(resolveQueries("factual-01,factual,factual-01", "dev").map((q) => q.id)).toEqual(["factual-01", "factual-02", "factual-03", "factual-04"]);
+  });
+
+  it("the beyond-PubMed categories are known to --queries and select within the held-out set", () => {
+    for (const category of ["preprint", "regional", "fulltext"] as const) {
+      expect(CATEGORIES).toContain(category);
+      // Known category names never fail as "unknown query"; before the writers have merged, a category may be empty.
+      const selected = resolveQueries(category, "test");
+      expect(selected.every((q) => q.split === "test" && q.category === category && q.beyondPubmed === true)).toBe(true);
+      expect(resolveQueries(category, "dev")).toEqual([]);
+      expect(parseCli(["--split", "test", "--queries", category]).queries).toEqual(selected);
+    }
+    expect(() => resolveQueries("preprints", "test")).toThrow(/Unknown query or category/);
   });
 
   it("every query belongs to exactly one split and the two never share an id", () => {

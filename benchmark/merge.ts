@@ -29,7 +29,7 @@ import { effectiveScorerVersion, readManifest, type Manifest } from "./lib/manif
 import { isFailure, isScored, normalizeStatus } from "./lib/status.js";
 import { renderCharts } from "./lib/report/charts.js";
 import { toCsv } from "./lib/report/csv.js";
-import { buildSummary, toMarkdown, type SummaryMeta } from "./lib/report/summary.js";
+import { buildSummary, partitionByCatalog, toMarkdown, type SummaryMeta } from "./lib/report/summary.js";
 import type { AccuracySource, AnswerKey, ConditionId, ScoreRow, Split } from "./lib/types.js";
 
 const RESULTS_DIR = join(import.meta.dirname, "results");
@@ -114,6 +114,7 @@ export function toScoreRow(r: Record<string, string>): ScoreRow {
     split: r.split === "test" || r.split === "dev" ? (r.split as Split) : (query?.split ?? "dev"),
     key_kind: kind,
     retrieval_only: r.retrieval_only !== undefined && r.retrieval_only !== "" ? r.retrieval_only === "true" : (query?.retrievalOnly ?? false),
+    beyond_pubmed: r.beyond_pubmed !== undefined && r.beyond_pubmed !== "" ? r.beyond_pubmed === "true" : (query?.beyondPubmed ?? false),
     condition: r.condition as ConditionId,
     model: r.model!,
     run: Number(r.run),
@@ -303,7 +304,9 @@ function main(): void {
   writeFileSync(join(outDir, "scores.csv"), toCsv(rows));
   writeFileSync(join(outDir, "provenance.json"), `${JSON.stringify({ sources: used, warnings, cells: provenance }, null, 2)}\n`);
 
-  const charts = renderCharts(rows);
+  // scores.csv keeps every row; no number of a report or chart may include a query that left the catalog.
+  const inCatalog = (id: string): boolean => queryById(id) !== undefined;
+  const charts = renderCharts(partitionByCatalog(rows, inCatalog).kept);
   for (const [name, svg] of Object.entries(charts)) writeFileSync(join(outDir, "charts", name), svg);
   console.log(`Rendered ${Object.keys(charts).length} charts to ${join(outDir, "charts")}`);
 
@@ -325,7 +328,7 @@ function main(): void {
     unverified_queries: QUERIES.filter((q) => !q.verified && q.answerKey.kind !== "rubric" && queryIds.has(q.id)).map((q) => q.id),
     sources: used,
   };
-  const summary = buildSummary(rows, meta);
+  const summary = buildSummary(rows, meta, { inCatalog });
   writeFileSync(join(outDir, "summary.json"), JSON.stringify(summary, null, 2));
   writeFileSync(join(outDir, "summary.md"), toMarkdown(summary));
   console.log(toMarkdown(summary));

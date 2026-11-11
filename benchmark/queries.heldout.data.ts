@@ -1,27 +1,32 @@
 /**
- * The held-out set (split `test`): the queries the benchmark's reported numbers come from.
+ * The held-out set (split `test`), version 2: the queries the benchmark's reported numbers come from.
  *
- * Written from the draw: see `scripts/sample-heldout.ts` for how the trials were drawn and
- * `heldout.sample.json` for what became of each candidate. `test/heldout.test.ts` holds this
- * file to that record, so change the two together.
+ * This file is NOT generated. The `lookup`, `control` and `bullshit` queries were written by hand (by a
+ * language model, from the abstracts alone) on 2026-11-10, from the draw recorded in `heldout.sample.json`;
+ * no script produces them. Only the region between the BEGIN and END markers at the end is machine-written:
+ * `scripts/merge-heldout.ts` fills it from the staged query files of the beyond-PubMed frames, so those are
+ * changed in the staged files and merged, never edited here. `test/heldout.test.ts` holds this file to the
+ * sample file, so change the two together.
  *
  * Nothing may be tuned against these queries: not the server, not the skills, not the
  * scorer, not the prompts. Develop on `queries.data.ts`; run this set (`--publish`, or
  * `--split test`) to measure. If a change is ever made because of a result here, the set
  * is spent: draw a new one (the script explains how).
  *
- * Three kinds of query, all with ground truth:
+ * Version history (also in `heldout.sample.json`). Version 1 had 71 `lookup` queries. Its first run (the
+ * server under test and a baseline with plain PubMed tools, both near 9.9 of 10) showed that every lookup
+ * can be answered from a PubMed abstract, so the set could not tell the two apart. Version 2 keeps one
+ * lookup per stratum, by a rule that looks at draw order only (the FIRST lookup of the stratum; the other
+ * 47 are `retired` in the sample file and are not in this file), and adds queries whose answer is in no
+ * PubMed abstract. Nothing in the server or the scorer was changed because of that run. Kept queries keep
+ * their ids, so the stored run's answers to them still count.
+ *
+ * Six kinds of query, all with ground truth:
  *
  *  - `lookup` — find one randomized trial, described without its PMID, and report two
  *    numbers from its abstract. The trials were DRAWN, not chosen: every PubMed record of a
- *    stratum was shuffled with a fixed seed, and a query was written for each candidate in
- *    that order, passing one over only for a listed reason. `test/heldout.test.ts` checks
- *    the queries against the draw. Strata: 12 clinical fields × 2 periods, three queries
- *    each where the candidates allowed. A stratum whose first eight candidates gave fewer
- *    than three queries is extended by eight down the same shuffled order (`--extend`,
- *    recorded as `extended` in `heldout.sample.json`), never by hand-picking, and is
- *    extended again only while it has fewer than two queries; only obstetrics/recent
- *    needed it, was extended once, and ended with two queries.
+ *    stratum was shuffled with a fixed seed, and the first lookup that could be written (a candidate was
+ *    passed over only for a listed reason) is kept. Strata: 12 clinical fields × 2 periods, one query each.
  *      established — 2015–2022, NEJM / Lancet / JAMA / BMJ: trials a model may know from training;
  *      recent      — added to PubMed 2026-09-01…2026-10-31, any journal: `retrievalOnly`,
  *                    since no benchmarked model was trained on them. They age.
@@ -35,9 +40,24 @@
  *    Controls and fabricated studies are read as a pair of rates: a model that rejects
  *    everything gets every fabricated study right and every control wrong.
  *
- * Every `values` key names its PubMed record and quotes the passage of the abstract that
- * states the expected numbers; `npm run verify-keys` re-checks each quote and number
- * against the live record. Written 2026-11-10 from the abstracts alone.
+ * and, flagged `beyondPubmed` (the plain PubMed tools cannot reach the answer by construction), drawn from
+ * their own frames the same way (see `scripts/sample-heldout.ts`):
+ *
+ *  - `preprint` — a preprint in Europe PMC (`SRC:PPR`) that reports a randomized trial, posted 2026-05-01…
+ *    2026-10-31, with no PubMed record: find it and report two numbers from its abstract. `retrievalOnly`.
+ *  - `regional` — the same task for a Chinese Biological Abstracts record (`SRC:CBA`) and for a ChinaXiv
+ *    preprint found through the server's ChinaRxiv adapter. `retrievalOnly`.
+ *  - `fulltext` — a PubMed-indexed randomized trial of 2018–2022 in BMJ, PLoS Medicine, JAMA Network Open or
+ *    BMC Medicine, with open-access full text: how many were randomized (in the abstract) and one figure that
+ *    the full text states in running prose and the abstract does not state at all.
+ *  A `preprint` or `regional` query asks for the record's id and two numbers, like a lookup (its PMID and two
+ *  numbers): `ANSWER — record: <id> | a: <number> | b: <number>`, so that finding the right record is a third of
+ *  the accuracy. The id is compared as text, written as the server prints it (`PPR…`, `CBA:…`, `chinaxiv-…`);
+ *  case, markdown and a final period do not matter, other forms (`CBA 521529`, a bare number) do not match.
+ *
+ * Every `values` key names its record and quotes the passage of the abstract that
+ * states the expected numbers (a `fulltext` key also quotes the full-text passage of its figure);
+ * `npm run verify-keys` re-checks each quote and number against the live record. Written 2026-11-10.
  */
 
 import type { BenchmarkQuery } from "./lib/types.js";
@@ -62,42 +82,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     },
     verified: true,
   },
-  {
-    id: "t-lookup-02",
-    category: "lookup",
-    specialty: "cardiology",
-    topics: ["ferric carboxymaltose", "iron", "heart failure"],
-    prompt:
-      "The AFFIRM-AHF trial, published in The Lancet in 2020, randomized patients with iron deficiency who had been stabilised after an episode of acute heart failure to intravenous ferric carboxymaltose or placebo. How many patients were randomly assigned, and what rate ratio did it report for the primary composite of total hospitalisations for heart failure and cardiovascular death? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomly assigned: <number> | rate ratio: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 33197395", "randomly assigned: 1132", "rate ratio: 0.79"],
-      source: {
-        database: "pubmed",
-        id: "33197395",
-        quote: "1132 patients were randomly assigned to study groups … 293 primary events (57·2 per 100 patient-years) occurred in the ferric carboxymaltose group and 372 (72·5 per 100 patient-years) occurred in the placebo group (rate ratio [RR] 0·79, 95% CI 0·62-1·01, p=0·059).",
-      },
-    },
-    verified: true,
-  },
-  {
-    id: "t-lookup-03",
-    category: "lookup",
-    specialty: "cardiology",
-    topics: ["ertugliflozin", "diabetes"],
-    prompt:
-      "A multicenter, double-blind trial published in the New England Journal of Medicine in 2020 randomized patients with type 2 diabetes and atherosclerotic cardiovascular disease to ertugliflozin or placebo. How many patients underwent randomization, and what hazard ratio did it report for major adverse cardiovascular events? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | hazard ratio: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 32966714", "randomized: 8246", "hazard ratio: 0.97"],
-      source: {
-        database: "pubmed",
-        id: "32966714",
-        quote: "A total of 8246 patients underwent randomization and were followed for a mean of 3.5 years. … (hazard ratio, 0.97; 95.6% confidence interval [CI], 0.85 to 1.11; P<0.001 for noninferiority).",
-      },
-    },
-    verified: true,
-  },
   // ─── lookup · cardiology · recent ───
   {
     id: "t-lookup-04",
@@ -113,44 +97,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
         database: "pubmed",
         id: "42743421",
         quote: "Sixty patients undergoing valvular heart surgery were enrolled using a continuous sampling method and randomly allocated into two equal groups of 30 patients each.",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-05",
-    category: "lookup",
-    specialty: "cardiology",
-    topics: ["ultrafiltration", "hemofiltration", "cardiopulmonary bypass"],
-    prompt:
-      "A randomized, outcome-assessor-blinded clinical trial published in the Journal of Extra-Corporeal Technology in 2026 compared conventional ultrafiltration with subzero balanced ultrafiltration combined with simple modified ultrafiltration (SBUF-SMUF) during cardiopulmonary bypass in children with congenital heart disease. How many patients were allocated in total, and what was the post-bypass hematocrit, in percent, in the SBUF-SMUF group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | patients allocated: <number> | sbuf-smuf hematocrit percent: <percent>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42743423", "patients allocated: 80", "sbuf-smuf hematocrit percent: 31.2"],
-      source: {
-        database: "pubmed",
-        id: "42743423",
-        quote: "80 pediatric patients with congenital heart disease were allocated to either CUF (n = 40) or SBUF-SMUF (n = 40) during CPB … Post-bypass hematocrit levels were higher (31.2% vs. 27.3%, p = 0.001) and extubation occurred earlier in the SBUF-SMUF group",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-06",
-    category: "lookup",
-    specialty: "cardiology",
-    topics: ["cryoballoon", "atrial fibrillation"],
-    prompt:
-      "The CEPAF trial, a multicentre, randomized, open-label trial published in Europace in 2026, compared cryoballoon ablation with antiarrhythmic drug therapy as initial treatment for treatment-naive persistent atrial fibrillation. How many patients were assigned, and in what percentage of the patients assigned to cryoballoon ablation did recurrence occur between days 91 and 365 in the intention-to-treat population? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | patients assigned: <number> | cryoballoon recurrence percent: <percent>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42677894", "patients assigned: 320", "cryoballoon recurrence percent: 18.8"],
-      source: {
-        database: "pubmed",
-        id: "42677894",
-        quote: "assigned 320 symptomatic, treatment-naive patients with PersAF (1:1) to CBA or AAD therapy … recurrence during days 91-365 occurred in 30/160 (18.8%) patients assigned to CBA",
       },
     },
     retrievalOnly: true,
@@ -175,42 +121,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     },
     verified: true,
   },
-  {
-    id: "t-lookup-08",
-    category: "lookup",
-    specialty: "oncology",
-    topics: ["myeloma", "transplantation", "lenalidomide"],
-    prompt:
-      "A phase 3 trial published in the New England Journal of Medicine in 2022 randomly assigned adults with newly diagnosed multiple myeloma to lenalidomide, bortezomib and dexamethasone (RVD) alone or to RVD plus high-dose melphalan and autologous stem-cell transplantation, each followed by lenalidomide maintenance until disease progression. How many patients were in the RVD-alone group, and what hazard ratio for disease progression or death did it report for the RVD-alone group compared with the transplantation group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | rvd-alone group patients: <number> | hazard ratio: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 35660812", "rvd-alone group patients: 357", "hazard ratio: 1.53"],
-      source: {
-        database: "pubmed",
-        id: "35660812",
-        quote: "Among 357 patients in the RVD-alone group and 365 in the transplantation group, at a median follow-up of 76.0 months, 328 events of disease progression or death occurred; the risk was 53% higher in the RVD-alone group than in the transplantation group (hazard ratio, 1.53; 95% confidence interval [CI], 1.23 to 1.91; P<0.001)",
-      },
-    },
-    verified: true,
-  },
-  {
-    id: "t-lookup-09",
-    category: "lookup",
-    specialty: "oncology",
-    topics: ["colorectal", "follow-up"],
-    prompt:
-      "The COLOFOL randomized clinical trial, published in JAMA in 2018, compared more frequent with less frequent follow-up testing with computed tomography and carcinoembryonic antigen after curative surgery for stage II or III colorectal cancer. How many patients were randomized, counting those later left out of the intention-to-treat analysis, and what was the 5-year overall mortality rate, in percent, in the high-frequency follow-up group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | high-frequency mortality percent: <percent>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 29800179", "randomized: 2555", "high-frequency mortality percent: 13.0"],
-      source: {
-        database: "pubmed",
-        id: "29800179",
-        quote: "Among 2555 patients who were randomized, 2509 were included in the intention-to-treat analysis … The 5-year overall patient mortality rate in the high-frequency group was 13.0% (161/1253)",
-      },
-    },
-    verified: true,
-  },
   // ─── lookup · oncology · recent ───
   {
     id: "t-lookup-10",
@@ -226,44 +136,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
         database: "pubmed",
         id: "42923857",
         quote: "with sixty overweight women with PCOS were randomly assigned to intervention and control groups … In the intervention group the mean BMI score decreased from 27.27±1.16 to 26.50±1.32 at 12 weeks (P<0.001).",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-11",
-    category: "lookup",
-    specialty: "oncology",
-    topics: ["remimazolam", "radiofrequency ablation"],
-    prompt:
-      "A randomized controlled trial published in Drug Design, Development and Therapy in 2026 compared remimazolam with propofol, each combined with remifentanil, for anesthesia in patients with liver cancer undergoing ultrasound-guided percutaneous radiofrequency ablation. How many participants were randomly assigned, and what was the incidence of apnea, in percent, in the remimazolam group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomly assigned: <number> | remimazolam apnea percent: <percent>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42801141", "randomly assigned: 82", "remimazolam apnea percent: 17.1"],
-      source: {
-        database: "pubmed",
-        id: "42801141",
-        quote: "Eighty-two participants were randomly assigned to receive either propofol (Group P, n = 41) or remimazolam (Group R, n = 41) … Group R had higher respiratory rate (p = 0.015), lower apnea incidence (17.1% vs 36.6%, p = 0.038)",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-12",
-    category: "lookup",
-    specialty: "oncology",
-    topics: ["quadratus lumborum", "esketamine"],
-    prompt:
-      "A single-centre, randomized, placebo-controlled trial published in Drug Design, Development and Therapy in 2026 tested an anterior quadratus lumborum block at the lateral supra-arcuate ligament, low-dose esketamine, or both in elderly patients having laparoscopic radical surgery for colorectal cancer. How many patients were assigned, and what adjusted difference in the QoR-40 total score on day 3 did it report between the combined group and the esketamine-alone group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | patients assigned: <number> | qor-40 difference day 3: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42871149", "patients assigned: 90", "qor-40 difference day 3: 8.30"],
-      source: {
-        database: "pubmed",
-        id: "42871149",
-        quote: "90 patients aged ≥60 years were assigned to QLB-LSAL with a saline infusion (Group Q), esketamine alone (Group E), or QLB-LSAL with esketamine (Group QE) … On day 3 the QoR-40 total score was higher in Group QE than in Group E (adjusted difference 8.30, 95% CI 4.37-12.23, Tukey P<0.001)",
       },
     },
     retrievalOnly: true,
@@ -288,42 +160,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     },
     verified: true,
   },
-  {
-    id: "t-lookup-14",
-    category: "lookup",
-    specialty: "infectious-disease",
-    topics: ["diclofenac", "norfloxacin", "urinary tract infection"],
-    prompt:
-      "A randomised, double blind, non-inferiority trial published in The BMJ in 2017 compared symptomatic treatment with the NSAID diclofenac against the antibiotic norfloxacin in women with uncomplicated lower urinary tract infection in Swiss general practices. How many women were randomly assigned, and what percentage of the women assigned to diclofenac had symptom resolution at day 3? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomly assigned: <number> | diclofenac resolution percent: <percent>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 29113968", "randomly assigned: 253", "diclofenac resolution percent: 54"],
-      source: {
-        database: "pubmed",
-        id: "29113968",
-        quote: "253 women with uncomplicated lower UTI were randomly assigned 1:1 … 72/133 (54%) women assigned to diclofenac and 96/120 (80%) assigned to norfloxacin experienced symptom resolution at day 3",
-      },
-    },
-    verified: true,
-  },
-  {
-    id: "t-lookup-15",
-    category: "lookup",
-    specialty: "infectious-disease",
-    topics: ["poliovirus", "polio"],
-    prompt:
-      "A paper published in The Lancet in 2021 reported two randomised studies done in Belgium on the safety and immunogenicity of two novel type 2 oral poliovirus vaccine candidates (novel OPV2-c1 and novel OPV2-c2) compared with a monovalent type 2 oral poliovirus vaccine in healthy adults. How many volunteers were enrolled and randomly assigned in the historical control study of the monovalent vaccine, and what percentage of the previously OPV-vaccinated recipients of novel OPV2-c1 reported solicited systemic adverse events after first doses? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | historical control volunteers: <number> | opv2-c1 adverse events percent: <percent>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 33308429", "historical control volunteers: 100", "opv2-c1 adverse events percent: 71"],
-      source: {
-        database: "pubmed",
-        id: "33308429",
-        quote: "100 volunteers were enrolled and randomly assigned to receive one or two doses of monovalent OPV2 (n=50 in each group) … 71 (71%) of 100 recipients of novel OPV2-c1",
-      },
-    },
-    verified: true,
-  },
   // ─── lookup · infectious-disease · recent ───
   {
     id: "t-lookup-16",
@@ -339,44 +175,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
         database: "pubmed",
         id: "42858264",
         quote: "enrolled 104 osteoarthritis patients undergoing UKA, randomly assigned to the non-ALBC group (n = 52, bone cement without antibiotics) and ALBC group (ALBC with 1.0 g vancomycin hydrochloride, n = 52)",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-17",
-    category: "lookup",
-    specialty: "infectious-disease",
-    topics: ["lidocaine", "rabies immunoglobulin"],
-    prompt:
-      "A single-center, double-blind, randomized, placebo-controlled trial published in Vaccine in 2026 tested lidocaine spray for reducing pain during rabies immunoglobulin infiltration in adults at a university hospital in Bangkok. How many participants were randomized, and what median pain score during needle penetration did it report for the lidocaine group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | lidocaine needle pain median: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42731309", "randomized: 76", "lidocaine needle pain median: 25.0"],
-      source: {
-        database: "pubmed",
-        id: "42731309",
-        quote: "A total of 76 participants were randomized to the lidocaine or placebo group (n = 38 each). … the lidocaine group reported significantly lower median pain during needle penetration (25.0 (IQR: 17.0, 42.0) vs 56.5 (IQR: 45.0, 75.0)",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-18",
-    category: "lookup",
-    specialty: "infectious-disease",
-    topics: ["tanreqing", "influenza"],
-    prompt:
-      "A multicenter, randomized, double-blind, double-dummy trial published in the Journal of Traditional Chinese Medicine in 2026 compared Tanreqing capsule with oseltamivir in patients with uncomplicated influenza in the Beijing-Tianjin area. How many patients were randomly divided between the two groups, and what percentage of the Tanreqing group reached a normal temperature within 1 day? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomly divided: <number> | tanreqing normal temperature percent: <percent>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42958676", "randomly divided: 122", "tanreqing normal temperature percent: 72.88"],
-      source: {
-        database: "pubmed",
-        id: "42958676",
-        quote: "A total of 122 patients with uncomplicated influenza in the Beijing-Tianjin area were randomly divided into an observation group and a control group. … The number of patients in TRQC group achieved normal temperature within 1 d was significantly more than oseltamivir group (72.88% vs50.80%, P < 0.05).",
       },
     },
     retrievalOnly: true,
@@ -401,42 +199,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     },
     verified: true,
   },
-  {
-    id: "t-lookup-20",
-    category: "lookup",
-    specialty: "neurology",
-    topics: ["epidural steroid", "gabapentin", "radicul"],
-    prompt:
-      "A multicenter, randomized, double blind comparative efficacy study published in The BMJ in 2015 compared epidural steroid injections with gabapentin for lumbosacral radicular pain in military, Veterans Administration and civilian hospitals. How many people took part, and what adjusted difference in average leg pain score between the two groups did it report at one month? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | participants: <number> | adjusted difference at one month: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 25883095", "participants: 145", "adjusted difference at one month: 0.4"],
-      source: {
-        database: "pubmed",
-        id: "25883095",
-        quote: "145 people with lumbosacral radicular pain secondary to herniated disc or spinal stenosis … adjusted difference 0.4, 95% confidence interval -0.3 to 1.2; P=0.25",
-      },
-    },
-    verified: true,
-  },
-  {
-    id: "t-lookup-21",
-    category: "lookup",
-    specialty: "neurology",
-    topics: ["asundexian", "stroke"],
-    prompt:
-      "The PACIFIC-Stroke trial, an international, randomised, double-blind, placebo-controlled, phase 2b dose-finding trial published in The Lancet in 2022, tested the oral factor XIa inhibitor asundexian after acute non-cardioembolic ischaemic stroke. How many participants were randomly assigned, and what hazard ratio did it report for the primary safety outcome with all asundexian doses pooled versus placebo? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomly assigned: <number> | pooled safety hazard ratio: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 36063821", "randomly assigned: 1808", "pooled safety hazard ratio: 1.57"],
-      source: {
-        database: "pubmed",
-        id: "36063821",
-        quote: "1880 patients were screened and 1808 participants were randomly assigned … (all asundexian doses pooled vs placebo hazard ratio 1·57 [90% CI 0·91-2·71])",
-      },
-    },
-    verified: true,
-  },
   // ─── lookup · neurology · recent ───
   {
     id: "t-lookup-22",
@@ -452,44 +214,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
         database: "pubmed",
         id: "42714024",
         quote: "A total of 168 participants were enrolled in the First Light trial and 105 in the Radiant Light trial.",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-23",
-    category: "lookup",
-    specialty: "neurology",
-    topics: ["adipose-derived stem cells", "parkinson"],
-    prompt:
-      "The REPOSE study, a pilot phase IIa randomized, double-blind, placebo-controlled trial published in Cell Transplantation in 2026, tested intravenous human pluripotent adipose-derived stem cells in Parkinson's disease. How many participants were randomized, and across how many infusions in total did it report that no treatment-related adverse event was observed? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | infusions: <number>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42775498", "randomized: 40", "infusions: 60"],
-      source: {
-        database: "pubmed",
-        id: "42775498",
-        quote: "Forty participants with Hoehn and Yahr stages I-III PD were randomized 1:1 … No treatment-related adverse events of any grade were observed across 60 infusions.",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-24",
-    category: "lookup",
-    specialty: "neurology",
-    topics: ["laser", "mirror therapy", "complex regional pain"],
-    prompt:
-      "A randomised controlled trial published in Physiotherapy Research International in 2026 compared low-level laser therapy with mirror therapy, each added to kinesiotherapy, for complex regional pain syndrome type I after stroke. With how many patients was the study initially conducted, and how many cases were analysed after dropouts? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | patients initially: <number> | cases analysed: <number>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42751984", "patients initially: 47", "cases analysed: 44"],
-      source: {
-        database: "pubmed",
-        id: "42751984",
-        quote: "initially conducted with 47 patients with post-stroke CRPS-I … A total of 44 cases (22 in each group) were analysed, as there were 3 dropouts on subsequent follow-ups.",
       },
     },
     retrievalOnly: true,
@@ -514,42 +238,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     },
     verified: true,
   },
-  {
-    id: "t-lookup-26",
-    category: "lookup",
-    specialty: "psychiatry",
-    topics: ["e-cigarette", "smoking cessation"],
-    prompt:
-      "A randomized clinical trial published in JAMA in 2020 compared nicotine e-cigarettes plus counseling, nonnicotine e-cigarettes plus counseling, and counseling alone for smoking cessation in adults at Canadian sites. How many participants were randomized, and what was the point prevalence abstinence at 12 weeks, in percent, in the nicotine e-cigarette group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | nicotine e-cigarette abstinence percent: <percent>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 33170240", "randomized: 376", "nicotine e-cigarette abstinence percent: 21.9"],
-      source: {
-        database: "pubmed",
-        id: "33170240",
-        quote: "Among 376 randomized participants … Point prevalence abstinence was significantly greater for nicotine e-cigarettes plus counseling vs counseling alone at 12 weeks (21.9% vs 9.1%",
-      },
-    },
-    verified: true,
-  },
-  {
-    id: "t-lookup-27",
-    category: "lookup",
-    specialty: "psychiatry",
-    topics: ["body dysmorphic", "cognitive behavio"],
-    prompt:
-      "A single blind, parallel group randomised controlled trial published in The BMJ in 2016 compared a therapist guided internet based cognitive behavioural therapy programme for body dysmorphic disorder (BDD-NET) with online supportive therapy. How many adult outpatients took part, and what percentage of those receiving BDD-NET were classed as responders at follow-up? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | participants: <number> | bdd-net responders percent: <percent>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 26837684", "participants: 94", "bdd-net responders percent: 56"],
-      source: {
-        database: "pubmed",
-        id: "26837684",
-        quote: "94 self referred adult outpatients with a diagnosis of body dysmorphic disorder … At follow-up, 56% of those receiving BDD-NET were classed as responders, compared with 13% receiving supportive therapy.",
-      },
-    },
-    verified: true,
-  },
   // ─── lookup · psychiatry · recent ───
   {
     id: "t-lookup-28",
@@ -565,44 +253,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
         database: "pubmed",
         id: "42686878",
         quote: "216 university students took part in a randomized controlled trial with an intervention and a waitlist control group … PP analyses (n = 150) revealed significant improvements",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-29",
-    category: "lookup",
-    specialty: "psychiatry",
-    topics: ["cognitive bias modification", "depressi"],
-    prompt:
-      "A single-blind, randomised, controlled, two-centre trial published in EBioMedicine in 2026 tested a tablet-based attentional cognitive bias modification training for positive emotion processing in outpatients with major depressive disorder and in healthy controls. How many participants were included, and what between-treatment difference, in microvolts, did it report for the EPN to positive high arousal stimuli in the patients with depression? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | participants: <number> | between-treatment difference: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42679601", "participants: 240", "between-treatment difference: 1.65"],
-      source: {
-        database: "pubmed",
-        id: "42679601",
-        quote: "240 participants were included (119 MDD; 121 HCS) … The between-treatment difference was 1.65 μV, 95% CI [0.19, 3.11].",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-30",
-    category: "lookup",
-    specialty: "psychiatry",
-    topics: ["genome sequencing", "developmental disorder"],
-    prompt:
-      "A nationwide prospective randomized trial published in Genome Medicine in 2026, involving all Belgian human genetics centers, compared genome sequencing with the standard of care for diagnosing unexplained developmental disorders. How many individuals did it involve, and what diagnostic yield, in percent, did it report for genome sequencing? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | individuals: <number> | genome sequencing yield percent: <percent>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42830293", "individuals: 567", "genome sequencing yield percent: 39.8"],
-      source: {
-        database: "pubmed",
-        id: "42830293",
-        quote: "with GS for 567 individuals with unexplained DD … The diagnostic yield of GS was 39.8% (113/284) vs. 30% for SoC (85/283) (p = 0.015)",
       },
     },
     retrievalOnly: true,
@@ -627,42 +277,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     },
     verified: true,
   },
-  {
-    id: "t-lookup-32",
-    category: "lookup",
-    specialty: "endocrinology",
-    topics: ["veverimer", "metabolic acidosis"],
-    prompt:
-      "A multicentre, randomised, double-blind, placebo-controlled, phase 3 trial published in The Lancet in 2019 tested veverimer in patients with metabolic acidosis associated with chronic kidney disease. How many participants were randomly assigned to veverimer, and what percentage of the patients in the veverimer group met the composite primary endpoint? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | assigned to veverimer: <number> | veverimer primary endpoint percent: <percent>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 30857647", "assigned to veverimer: 124", "veverimer primary endpoint percent: 59"],
-      source: {
-        database: "pubmed",
-        id: "30857647",
-        quote: "we randomly assigned 124 participants to veverimer and 93 to placebo. The composite primary endpoint was met by 71 (59%) of 120 patients in the veverimer group",
-      },
-    },
-    verified: true,
-  },
-  {
-    id: "t-lookup-33",
-    category: "lookup",
-    specialty: "endocrinology",
-    topics: ["lipoprotein(a)", "sln360", "short interfering rna"],
-    prompt:
-      "A single ascending dose study published in JAMA in 2022 tested SLN360, a short interfering RNA targeting hepatic production of apolipoprotein(a), against placebo in adults with elevated plasma lipoprotein(a) and no known clinically overt cardiovascular disease. How many participants were randomized and received the study intervention, and what was the median baseline lipoprotein(a) concentration, in nmol/L, in the placebo group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | placebo baseline lipoprotein-a: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 35368052", "randomized: 32", "placebo baseline lipoprotein-a: 238"],
-      source: {
-        database: "pubmed",
-        id: "35368052",
-        quote: "Among 32 participants who were randomized and received the study intervention … Median baseline Lp(a) concentrations were as follows: placebo, 238 (IQR, 203-308) nmol/L",
-      },
-    },
-    verified: true,
-  },
   // ─── lookup · endocrinology · recent ───
   {
     id: "t-lookup-34",
@@ -678,44 +292,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
         database: "pubmed",
         id: "42755121",
         quote: "Thirty participants were randomised … with adjusted differences of -1.7% (95% CI: -2.6; -0.8) for HbA1c and 28.8% (95% CI: 16.8; 40.9) for TIR in favour of myLoop CamAPS FX",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-35",
-    category: "lookup",
-    specialty: "endocrinology",
-    topics: ["canagliflozin", "podocyte", "diabetic kidney"],
-    prompt:
-      "A randomised controlled study published in the Annals of the Academy of Medicine, Singapore in 2026 tested canagliflozin added to standard therapy against placebo in patients with diabetic kidney disease, looking at a podocyte protection mechanism. How many patients were assigned to the canagliflozin (experimental) group, and what geometric mean ratio did it report for the urinary podocyte count compared with the control group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | experimental group patients: <number> | podocyte count ratio: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42745596", "experimental group patients: 87", "podocyte count ratio: 0.48"],
-      source: {
-        database: "pubmed",
-        id: "42745596",
-        quote: "DKD patients were randomly assigned to the experimental group (87 patients: standard therapy plus cangliflozin 100 mg/day) and the control group (85 patients: standard therapy plus placebo tablets) … urinary podocyte count (geometric mean ratio 0.48, 95% CI 0.43 to 0.54)",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-36",
-    category: "lookup",
-    specialty: "endocrinology",
-    topics: ["anakinra", "gout", "chronic kidney disease"],
-    prompt:
-      "The ASGARD trial, a UK randomised, multicentre, double-blind, double-dummy controlled feasibility study published in BMJ Open in 2026, compared subcutaneous anakinra with intramuscular methylprednisolone acetate for gout flares in people with chronic kidney disease. How many participants were randomised, and how many of them received per protocol treatment? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomised: <number> | received treatment per protocol: <number>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42816092", "randomised: 21", "received treatment per protocol: 17"],
-      source: {
-        database: "pubmed",
-        id: "42816092",
-        quote: "21 participants (mean age 72 years, mean eGFR 44 mL/min/1.73 m²) were randomised; 17 received per protocol treatment.",
       },
     },
     retrievalOnly: true,
@@ -740,42 +316,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     },
     verified: true,
   },
-  {
-    id: "t-lookup-38",
-    category: "lookup",
-    specialty: "pulmonology",
-    topics: ["thoracic radiotherapy", "small-cell lung cancer"],
-    prompt:
-      "A phase 3 randomised controlled trial published in The Lancet in 2015 tested thoracic radiotherapy in patients with extensive stage small-cell lung cancer who had responded to chemotherapy. How many patients were randomly assigned, and what hazard ratio for overall survival did it report for thoracic radiotherapy versus control? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomly assigned: <number> | overall survival hazard ratio: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 25230595", "randomly assigned: 498", "overall survival hazard ratio: 0.84"],
-      source: {
-        database: "pubmed",
-        id: "25230595",
-        quote: "We randomly assigned 498 patients between Feb 18, 2009, and Dec 21, 2012. … (hazard ratio [HR] 0.84, 95% CI 0.69-1.01; p=0.066)",
-      },
-    },
-    verified: true,
-  },
-  {
-    id: "t-lookup-39",
-    category: "lookup",
-    specialty: "pulmonology",
-    topics: ["influenza vaccine", "cardiovascular"],
-    prompt:
-      "A pragmatic, multicenter, double-blind, randomized clinical trial published in JAMA in 2021 compared high-dose trivalent with standard-dose quadrivalent inactivated influenza vaccine in patients with high-risk cardiovascular disease. How many participants were randomized, and what hazard ratio did it report for the primary outcome of death from any cause or hospitalization for cardiovascular or pulmonary causes? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | hazard ratio: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 33275134", "randomized: 5260", "hazard ratio: 1.06"],
-      source: {
-        database: "pubmed",
-        id: "33275134",
-        quote: "Among 5260 randomized participants … (hazard ratio, 1.06 [95% CI, 0.97-1.17]; P = .21)",
-      },
-    },
-    verified: true,
-  },
   // ─── lookup · pulmonology · recent ───
   {
     id: "t-lookup-40",
@@ -791,44 +331,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
         database: "pubmed",
         id: "42683528",
         quote: "A total of 59 patients were recruited, with 28 randomized to the intervention arm and 31 to the control arm … There were 8 cases or 13.6% of new/enlarging pneumothorax",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-41",
-    category: "lookup",
-    specialty: "pulmonology",
-    topics: ["deep learning", "ct angiography", "ctpa"],
-    prompt:
-      "A study published in the European Journal of Radiology in 2026 randomised patients undergoing pulmonary CT angiography to a conventional protocol or to an \"ultra triple-low\" protocol at 60 kVp combined with a deep learning-based reconstruction algorithm. How many patients were randomised, and by what percentage did the ultra triple-low protocol group reduce the effective dose? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomised: <number> | effective dose reduction percent: <percent>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42822118", "randomised: 70", "effective dose reduction percent: 84.93"],
-      source: {
-        database: "pubmed",
-        id: "42822118",
-        quote: "Seventy patients (body mass index (BMI) < 28 kg/m²) were randomised to Group A … Group B reduced effective dose by 84.93 % (0.71 ± 0.09 vs. 4.71 ± 1.13 mSv, P < 0.001)",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-42",
-    category: "lookup",
-    specialty: "pulmonology",
-    topics: ["high-frequency oscillatory", "nitric oxide", "pulmonary hypertension"],
-    prompt:
-      "A single-center, three-arm, open-label, randomized clinical trial published in the Canadian Respiratory Journal in 2026 compared high-frequency oscillatory ventilation combined with inhaled nitric oxide, conventional mechanical ventilation with inhaled nitric oxide, and high-frequency oscillatory ventilation alone in newborns with persistent pulmonary hypertension. How many neonates were randomized, and what risk ratio for death or ECMO did it report for high-frequency oscillatory ventilation plus inhaled nitric oxide versus conventional mechanical ventilation plus inhaled nitric oxide? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | risk ratio: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42803181", "randomized: 138", "risk ratio: 0.27"],
-      source: {
-        database: "pubmed",
-        id: "42803181",
-        quote: "138 neonates born at 34 weeks of gestation or later with echocardiographically confirmed PPHN and an oxygenation index of 25 or greater were randomized 1:1:1 … For HFOV + iNO versus CMV + iNO, the risk ratio was 0.27 (95% CI, 0.08-0.91)",
       },
     },
     retrievalOnly: true,
@@ -853,42 +355,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     },
     verified: true,
   },
-  {
-    id: "t-lookup-44",
-    category: "lookup",
-    specialty: "gastroenterology",
-    topics: ["resmetirom", "steatohepatitis"],
-    prompt:
-      "A multicentre, randomised, double-blind, placebo-controlled, phase 2 trial published in The Lancet in 2019 tested resmetirom (MGL-3196), a selective thyroid hormone receptor-β agonist, in patients with non-alcoholic steatohepatitis. How many patients were screened, and how many were randomly assigned to resmetirom? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | screened: <number> | assigned to resmetirom: <number>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 31727409", "screened: 348", "assigned to resmetirom: 84"],
-      source: {
-        database: "pubmed",
-        id: "31727409",
-        quote: "348 patients were screened and 84 were randomly assigned to resmetirom and 41 to placebo at 18 sites in the USA.",
-      },
-    },
-    verified: true,
-  },
-  {
-    id: "t-lookup-45",
-    category: "lookup",
-    specialty: "gastroenterology",
-    topics: ["gastrectomy", "gastric cancer"],
-    prompt:
-      "The CLASS-01 trial, a noninferiority, open-label, randomized clinical trial at centers in China published in JAMA in 2019, compared laparoscopic with open distal gastrectomy in patients with locally advanced gastric cancer. How many eligible patients were enrolled, and what was the 3-year disease-free survival rate, in percent, in the laparoscopic distal gastrectomy group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | enrolled: <number> | laparoscopic disease-free survival percent: <percent>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 31135850", "enrolled: 1056", "laparoscopic disease-free survival percent: 76.5"],
-      source: {
-        database: "pubmed",
-        id: "31135850",
-        quote: "A total of 1056 eligible patients with clinical stage T2, T3, or T4a gastric cancer without bulky nodes or distant metastases were enrolled … Three-year disease-free survival rate was 76.5% in the laparoscopic distal gastrectomy group",
-      },
-    },
-    verified: true,
-  },
   // ─── lookup · gastroenterology · recent ───
   {
     id: "t-lookup-46",
@@ -904,44 +370,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
         database: "pubmed",
         id: "42782492",
         quote: "A total of 120 patients with obesity were randomized to either SG (n = 60) or SG-TB (n = 60). … At 12 months, the SG-TB group showed a significantly lower incidence of de novo GERD compared to the SG group (3.3% vs. 28.3%; p < 0.001).",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-47",
-    category: "lookup",
-    specialty: "gastroenterology",
-    topics: ["rectus sheath", "transversus abdominis", "colorectal"],
-    prompt:
-      "A single-centre, three-arm randomized clinical trial at a Japanese cancer centre, published in the British Journal of Surgery in 2026, tested a surgeon-performed surgical rectus sheath block or a laparoscopic bilateral dual transversus abdominis plane block added to intravenous patient-controlled analgesia after minimally invasive colorectal cancer surgery. How many patients were randomized, and what adjusted mean difference in the 24-hour QoR-15 score did it report for the transversus abdominis plane block compared with control? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | tap block adjusted mean difference: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42685302", "randomized: 320", "tap block adjusted mean difference: 10.44"],
-      source: {
-        database: "pubmed",
-        id: "42685302",
-        quote: "320 patients were randomized (control, 110; SRSB, 107; and BD-TAP block, 103) … Compared with control, BD-TAP block resulted in a higher 24-h QoR-15 score (adjusted mean difference 10.44 (95% c.i. 3.06 to 17.83) points",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-48",
-    category: "lookup",
-    specialty: "gastroenterology",
-    topics: ["regorafenib", "colorectal"],
-    prompt:
-      "REVERCE II, a randomized phase II trial published in The Oncologist in 2026, compared regorafenib followed by anti-EGFR therapy with the reverse sequence in refractory RAS/BRAF wild-type metastatic colorectal cancer. How many patients were enrolled, and what was the median overall survival, in months, in the group that received regorafenib first? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | enrolled: <number> | regorafenib-first median overall survival: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42830449", "enrolled: 22", "regorafenib-first median overall survival: 21.9"],
-      source: {
-        database: "pubmed",
-        id: "42830449",
-        quote: "Twenty-two patients were enrolled (R-E: n = 12; E-R: n = 10) … Median OS for R-E and E-R was 21.9 and 13.3 months, respectively",
       },
     },
     retrievalOnly: true,
@@ -966,42 +394,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     },
     verified: true,
   },
-  {
-    id: "t-lookup-50",
-    category: "lookup",
-    specialty: "nephrology-urology",
-    topics: ["sunitinib", "sorafenib", "renal-cell carcinoma"],
-    prompt:
-      "The ECOG-ACRIN E2805 trial, a double-blind, placebo-controlled, randomised, phase 3 trial published in The Lancet in 2016, tested adjuvant sunitinib or sorafenib in patients with resected, high-risk, non-metastatic renal-cell carcinoma. How many patients were randomly assigned, and what hazard ratio for disease-free survival did it report for sunitinib versus placebo? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomly assigned: <number> | sunitinib hazard ratio: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 26969090", "randomly assigned: 1943", "sunitinib hazard ratio: 1.02"],
-      source: {
-        database: "pubmed",
-        id: "26969090",
-        quote: "1943 patients from the National Clinical Trials Network were randomly assigned to sunitinib (n=647), sorafenib (n=649), or placebo (n=647) … Median disease-free survival was 5·8 years (IQR 1·6-8·2) for sunitinib (hazard ratio [HR] 1·02, 97·5% CI 0·85-1·23, p=0·8038)",
-      },
-    },
-    verified: true,
-  },
-  {
-    id: "t-lookup-51",
-    category: "lookup",
-    specialty: "nephrology-urology",
-    topics: ["finerenone", "albuminuria"],
-    prompt:
-      "A randomized, double-blind, placebo-controlled, parallel-group study published in JAMA in 2015 tested different oral doses of the nonsteroidal mineralocorticoid receptor antagonist finerenone, given for 90 days, in patients with diabetes and high or very high albuminuria. How many patients were randomized, and what placebo-corrected mean ratio of the urinary albumin-creatinine ratio at day 90 relative to baseline did it report for the 7.5 mg/d finerenone group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | uacr ratio: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 26325557", "randomized: 823", "uacr ratio: 0.79"],
-      source: {
-        database: "pubmed",
-        id: "26325557",
-        quote: "Of 1501 screened patients, 823 were randomized and 821 received study drug. … (for 7.5 mg/d, 0.79 [90% CI, 0.68-0.91; P = .004]",
-      },
-    },
-    verified: true,
-  },
   // ─── lookup · nephrology-urology · recent ───
   {
     id: "t-lookup-52",
@@ -1017,44 +409,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
         database: "pubmed",
         id: "42873070",
         quote: "A total of 554 patients underwent randomization … Kaplan-Meier mortality estimates at day 90 were 63.3% and 53.6% (hazard ratio, 1.30; 95% CI, 1.04 to 1.63)",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-53",
-    category: "lookup",
-    specialty: "nephrology-urology",
-    topics: ["exercise", "chronic kidney disease", "skeletal muscle"],
-    prompt:
-      "A randomized controlled trial published in the American Journal of Physiology-Renal Physiology in 2026 studied skeletal muscle adaptation to a 12-week home-based, personalized exercise program versus usual care in patients with stages 3-5 chronic kidney disease. How many patients took part, and how many of them were in the exercise group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | patients: <number> | exercisers: <number>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42932910", "patients: 25", "exercisers: 19"],
-      source: {
-        database: "pubmed",
-        id: "42932910",
-        quote: "Twenty-five patients (19 exercisers and 6 usual care) with stages 3-5 CKD underwent a randomized controlled trial",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-54",
-    category: "lookup",
-    specialty: "nephrology-urology",
-    topics: ["pomalidomide", "myeloma", "renal impairment"],
-    prompt:
-      "POM-MM-003, an open-label, randomized, phase II study at centers in China published in Med in 2026, compared pomalidomide plus bortezomib and dexamethasone with bortezomib and dexamethasone alone in newly diagnosed multiple myeloma with renal impairment. How many patients were randomized, and what renal response rate, in percent, did it report for the pomalidomide group after four cycles of induction? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | pomalidomide renal response percent: <percent>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42716009", "randomized: 82", "pomalidomide renal response percent: 75.9"],
-      source: {
-        database: "pubmed",
-        id: "42716009",
-        quote: "82 patients were randomized to PVd (n = 58) and Vd (n = 24) groups … renal response rate (75.9% [44/58; 95% CI: 62.8-86.1] vs. 45.8% [11/24; 95% CI: 25.6-67.2]; p = 0.009)",
       },
     },
     retrievalOnly: true,
@@ -1079,42 +433,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     },
     verified: true,
   },
-  {
-    id: "t-lookup-56",
-    category: "lookup",
-    specialty: "musculoskeletal",
-    topics: ["hand exercise", "rheumatoid arthritis"],
-    prompt:
-      "The SARAH trial, a pragmatic, multicentre, parallel-group, randomised controlled trial published in The Lancet in 2015, tested a tailored strengthening and stretching hand exercise programme added to usual care in adults with rheumatoid arthritis of the hand. How many adults were randomly assigned, and what mean difference between groups in the improvement in overall hand function did it report? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomly assigned: <number> | mean difference: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 25308290", "randomly assigned: 490", "mean difference: 4.3"],
-      source: {
-        database: "pubmed",
-        id: "25308290",
-        quote: "we screened 1606 people, of whom 490 were randomly assigned to usual care (n=244) or tailored exercises (n=246) … (mean difference between groups 4·3, 95% CI 1·5-7·1; p=0·0028)",
-      },
-    },
-    verified: true,
-  },
-  {
-    id: "t-lookup-57",
-    category: "lookup",
-    specialty: "musculoskeletal",
-    topics: ["sirukumab", "rheumatoid arthritis"],
-    prompt:
-      "SIRROUND-T, a randomised, double-blind, placebo-controlled, phase 3 study published in The Lancet in 2017, tested sirukumab in patients with active rheumatoid arthritis refractory to anti-TNF therapy. How many patients were randomly assigned, and what percentage of the patients given 100 mg sirukumab every 2 weeks achieved an ACR20 response at week 16? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomly assigned: <number> | acr20 response percent: <percent>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 28215362", "randomly assigned: 878", "acr20 response percent: 45"],
-      source: {
-        database: "pubmed",
-        id: "28215362",
-        quote: "we randomly assigned 878 patients to treatment … 132 (45%) of 292 with 100 mg sirukumab every 2 weeks",
-      },
-    },
-    verified: true,
-  },
   // ─── lookup · musculoskeletal · recent ───
   {
     id: "t-lookup-58",
@@ -1130,44 +448,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
         database: "pubmed",
         id: "42832303",
         quote: "66 PsA patients with moderate disease activity (Psoriatic Arthritis Disease Activity Score [PASDAS] > 3.2 to <5.4) on stable immunomodulatory therapy were randomized 1:1 … Thirteen (43%) participants in the probiotic group and 17 (65%) in the placebo group achieved the primary outcome (P = 0.167).",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-59",
-    category: "lookup",
-    specialty: "musculoskeletal",
-    topics: ["chondroitin", "knee osteoarthritis", "knee oa"],
-    prompt:
-      "A 12-week, randomized, double-blind, placebo-controlled trial published in Nutrients in 2026 tested chondroitin sulfate supplementation for joint symptoms and physical function in adults with mild knee osteoarthritis. How many adults were randomly assigned, and how many of them received chondroitin sulfate? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomly assigned: <number> | chondroitin group: <number>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42942962", "randomly assigned: 100", "chondroitin group: 50"],
-      source: {
-        database: "pubmed",
-        id: "42942962",
-        quote: "100 adults with mild knee OA were randomly assigned to receive CS (1200 mg/day; n = 50) or placebo (n = 50)",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-60",
-    category: "lookup",
-    specialty: "musculoskeletal",
-    topics: ["neural mobilization", "adhesive capsulitis", "proprioceptive neuromuscular"],
-    prompt:
-      "A randomized controlled trial published in Physiotherapy Research International in 2026 tested adding neural mobilization techniques to proprioceptive neuromuscular facilitation and conventional physical therapy in patients with adhesive capsulitis of the shoulder. How many patients were randomly assigned, and what adjusted between-group difference in passive shoulder abduction, in degrees, did it report? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomly assigned: <number> | abduction difference degrees: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42750164", "randomly assigned: 56", "abduction difference degrees: 14.08"],
-      source: {
-        database: "pubmed",
-        id: "42750164",
-        quote: "Fifty-six patients with AC of both genders were randomly assigned to two groups of equal size. … abduction 14.08° (11.22, 16.94; p < 0.001, η² = 0.647)",
       },
     },
     retrievalOnly: true,
@@ -1192,42 +472,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     },
     verified: true,
   },
-  {
-    id: "t-lookup-62",
-    category: "lookup",
-    specialty: "obstetrics",
-    topics: ["nifedipine", "labetalol", "methyldopa", "hypertension"],
-    prompt:
-      "An open-label, randomised controlled trial published in The Lancet in 2019 compared oral nifedipine retard, labetalol and methyldopa for the management of severe hypertension in pregnancy. How many women were randomly assigned to a treatment group, and in what percentage of the women in the nifedipine group did the primary outcome occur? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomly assigned: <number> | nifedipine primary outcome percent: <percent>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 31378394", "randomly assigned: 894", "nifedipine primary outcome percent: 84"],
-      source: {
-        database: "pubmed",
-        id: "31378394",
-        quote: "894 (39%) women were randomly assigned to a treatment group and were included in the intention-to-treat analysis … (249 [84%] women vs 230 [76%] women; p=0·03)",
-      },
-    },
-    verified: true,
-  },
-  {
-    id: "t-lookup-63",
-    category: "lookup",
-    specialty: "obstetrics",
-    topics: ["negative pressure wound therapy", "caesarean", "cesarean"],
-    prompt:
-      "A multicentre, pragmatic, parallel group, randomised controlled trial published in The BMJ in 2021 compared closed incision negative pressure wound therapy with standard dressings in obese women undergoing caesarean section. How many women were randomised, and what risk ratio for surgical site infection did it report in the primary intention to treat analysis? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomised: <number> | risk ratio: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 33952438", "randomised: 2035", "risk ratio: 0.76"],
-      source: {
-        database: "pubmed",
-        id: "33952438",
-        quote: "2035 consenting women were randomised before the caesarean procedure to closed incision NPWT (n=1017) or standard dressing (n=1018) … (risk ratio 0.76, 95% confidence interval 0.57 to 1.01; P=0.06)",
-      },
-    },
-    verified: true,
-  },
   // ─── lookup · obstetrics · recent ───
   {
     id: "t-lookup-64",
@@ -1243,25 +487,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
         database: "pubmed",
         id: "42904460",
         quote: "This double-blind randomized controlled crossover study included 45 mothers, with 3- to 9-month-old infants, who exhibited clinically relevant scores on the Edinburgh Postnatal Depression Scale, with 35 mothers fulfilling the criteria of a major depressive episode",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-65",
-    category: "lookup",
-    specialty: "obstetrics",
-    topics: ["dadbooster", "fathers", "depression"],
-    prompt:
-      "A parallel, two-group randomized controlled trial published in the Journal of Medical Internet Research in 2026 tested DadBooster, an internet-delivered cognitive behavioral therapy program, against a waitlist control receiving routine care in fathers with postnatal depression. How many fathers were randomized, and what adjusted mean difference between DadBooster and waitlist control did it report for depression symptoms (DASS-21) at 12 weeks? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | adjusted mean difference: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42678899", "randomized: 50", "adjusted mean difference: -7.26"],
-      source: {
-        database: "pubmed",
-        id: "42678899",
-        quote: "Participants (N=50) were randomized (DadBooster: n=25; waitlist control: n=25) and analyzed as assigned; the trial is complete. Mean depression symptoms (DASS-21) at 12 weeks were significantly lower for DadBooster than waitlist control (adjusted mean difference -7.26, 95% CI -11.34 to -3.18",
       },
     },
     retrievalOnly: true,
@@ -1286,42 +511,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     },
     verified: true,
   },
-  {
-    id: "t-lookup-67",
-    category: "lookup",
-    specialty: "ophthalmology",
-    topics: ["teprotumumab", "thyroid eye disease"],
-    prompt:
-      "A randomized, double-masked, placebo-controlled, phase 3 multicenter trial published in the New England Journal of Medicine in 2020 tested the IGF-IR inhibitor teprotumumab in patients with active thyroid eye disease. How many patients were assigned to the teprotumumab group, and what percentage of them had a proptosis response at week 24? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | teprotumumab group patients: <number> | proptosis response percent: <percent>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 31971679", "teprotumumab group patients: 41", "proptosis response percent: 83"],
-      source: {
-        database: "pubmed",
-        id: "31971679",
-        quote: "A total of 41 patients were assigned to the teprotumumab group and 42 to the placebo group. At week 24, the percentage of patients with a proptosis response was higher with teprotumumab than with placebo (83% [34 patients] vs. 10% [4 patients], P<0.001)",
-      },
-    },
-    verified: true,
-  },
-  {
-    id: "t-lookup-68",
-    category: "lookup",
-    specialty: "ophthalmology",
-    topics: ["voretigene", "retinal dystrophy", "rpe65"],
-    prompt:
-      "A randomised, controlled, open-label, phase 3 trial published in The Lancet in 2017 tested the gene therapy voretigene neparvovec in patients with RPE65-mediated inherited retinal dystrophy. How many individuals were enrolled and randomly assigned, and what difference between the intervention and control groups in the mean bilateral multi-luminance mobility testing change score did it report at 1 year? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomly assigned: <number> | mobility test difference: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 28712537", "randomly assigned: 31", "mobility test difference: 1.6"],
-      source: {
-        database: "pubmed",
-        id: "28712537",
-        quote: "31 individuals were enrolled and randomly assigned to intervention (n=21) or control (n=10) … (difference of 1·6, 95% CI 0·72-2·41, p=0·0013)",
-      },
-    },
-    verified: true,
-  },
   // ─── lookup · ophthalmology · recent ───
   {
     id: "t-lookup-69",
@@ -1337,44 +526,6 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
         database: "pubmed",
         id: "42893472",
         quote: "66 participants with newly diagnosed VDT-related dry eye and limited corneal staining were assigned to a full-spectrum screen-bar lamp plus artificial tears (intervention group, n = 34) or artificial tears alone with no study lamp (control group, n = 32) … The modified intention-to-treat population included 65 participants.",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-70",
-    category: "lookup",
-    specialty: "ophthalmology",
-    topics: ["myopia", "defocus", "spectacle lenses"],
-    prompt:
-      "A one-year interim analysis of an ongoing non-inferiority randomized controlled trial, published in Translational Vision Science & Technology in 2026, compared partition multipoint defocus optics technology (PMDOT) spectacle lenses with lenses with highly aspherical lenslets for myopia control in children. How many children were randomized, and how many were in the PMDOT group? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | pmdot group children: <number>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42867309", "randomized: 194", "pmdot group children: 102"],
-      source: {
-        database: "pubmed",
-        id: "42867309",
-        quote: "194 children ages 8 to 13 years with spherical equivalent refraction (SER) of -0.75 to -4.5 diopters (D) were randomized to either the PMDOT or HAL group … The study included 102 children in the PMDOT group and 92 in the HAL group.",
-      },
-    },
-    retrievalOnly: true,
-    verified: true,
-  },
-  {
-    id: "t-lookup-71",
-    category: "lookup",
-    specialty: "ophthalmology",
-    topics: ["choroidal thickness", "defocus", "distant-image"],
-    prompt:
-      "A prospective, randomized, controlled, crossover pilot trial published in Frontiers in Public Health in 2026 examined short-term changes in choroidal thickness in children with myopia in response to a distant-image screen device and defocus-incorporated multiple segments (DIMS) lenses. How many children were recruited and randomized, and what choroidal thickness thickening at region C, in micrometres, did it report for the DIMS group compared with the single-vision lens group among participants using a tablet computer? Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | children: <number> | dims thickening at c: <value>`",
-    answerKey: {
-      kind: "values",
-      expected: ["pmid: 42761589", "children: 40", "dims thickening at c: 9.54"],
-      source: {
-        database: "pubmed",
-        id: "42761589",
-        quote: "A total of 40 children (8-13 years of age) with spherical equivalent refraction (SER) ranging from -0.50 to -6.00 diopters (D) were recruited and randomized into 4 groups … For participants using TC, the DIMS group showed greater ChT thickening at C (9.54 ± 3.19 μm, p = 0.005)",
       },
     },
     retrievalOnly: true,
@@ -1636,4 +787,832 @@ export const HELDOUT_QUERIES: BenchmarkQuery[] = [
     },
     verified: true,
   },
+
+  // ─── Beyond PubMed (version 2): the answer is in no PubMed abstract ───
+  // BEGIN beyond-pubmed (scripts/merge-heldout.ts writes this region from the staged files; edit those, not this)
+  // ─── preprint · europepmc ───
+  {
+    id: "t-preprint-01",
+    category: "preprint",
+    topics: ["sedentary", "physical activity", "insulin sensitivity"],
+    prompt:
+      "A 2026 Research Square preprint reports a randomised controlled trial in sedentary, physically inactive adults that compared an 8-week intervention of increased physical activity alone with the same increase in physical activity combined with reduced sedentary behaviour through sit-to-stand workstations, with insulin sensitivity as the outcome of interest. How many participants does the results section say were included, and what is the single between-group estimate for insulin sensitivity (in pmol/L*120min, the figure printed before the bracketed interval, with its sign) that the abstract gives? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | participants included: <number> | insulin sensitivity estimate: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: PPR1282579", "participants included: 29", "insulin sensitivity estimate: -11948"],
+      source: {
+        database: "europepmc",
+        id: "PPR1282579",
+        quote: "Twenty-nine participants (18 female), aged 47.4 ± 12.3 years were included. … significantly greater improvements in the PA group than in the PA-SB group group (-11948 [-23142 to -754] pmol/L*120min",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-preprint-02",
+    category: "preprint",
+    topics: ["telehealth", "cesarean", "exercise", "fitness"],
+    prompt:
+      "A 2026 Research Square preprint reports a randomized controlled trial, registered in the Clinical Trial Registry of India, of a telehealth exercise programme against a control group in mothers who had delivered by caesarean section, assessing physical fitness and mental health. How many post-cesarean mothers were randomly divided into groups, and what is the first figure of the pair printed for the telehealth exercise group (group A) on the one-minute sit-up test? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | mothers: <number> | group a sit-up: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: PPR1261422", "mothers: 35", "group a sit-up: 5.28"],
+      source: {
+        database: "europepmc",
+        id: "PPR1261422",
+        quote: "This randomized controlled trial was conducted on 35 post-cesarean mothers who randomly divided into 2 groups. … one-minute sit-up (A:5.28 + 2.44, B:1.18 + 1.38)",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-preprint-03",
+    category: "preprint",
+    topics: ["warm-up", "stretching", "treadmill", "oxygen consumption"],
+    prompt:
+      "A 2026 Research Square preprint reports a randomized controlled trial in active participants that compared a specific warm-up with static stretching before a 5 km treadmill run, looking at cardiovascular response and oxygen consumption. How many participants were randomly assigned in total, and what heart rate in beats per minute is reported for the specific warm-up group (the value before the plus-minus sign)? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | randomized: <number> | warm-up group heart rate: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: PPR1185294", "randomized: 20", "warm-up group heart rate: 170.50"],
+      source: {
+        database: "europepmc",
+        id: "PPR1185294",
+        quote: "twenty active participants were randomly assigned … Peak cardiovascular responses were mostly similar, except heart rate, which was significantly higher in the warm-up group (170.50",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-preprint-04",
+    category: "preprint",
+    topics: ["sarcopenia", "anti-inflammatory diet", "exercise", "older"],
+    prompt:
+      "A 2026 Research Square preprint reports a prospective, parallel-group randomized controlled trial of a 12-week intervention in hospitalized older patients with sarcopenia and acute infections, comparing an anti-inflammatory diet, exercise, exercise combined with the anti-inflammatory diet, and exercise combined with a high-protein diet. How many patients were randomized into the four groups, and how many patients completed the trial? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | randomized: <number> | completed: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: PPR1287151", "randomized: 200", "completed: 193"],
+      source: {
+        database: "europepmc",
+        id: "PPR1287151",
+        quote: "200 older sarcopenic patients were screened and subsequently randomized (1:1:1:1) into four groups for a 12-week intervention … A total of 193 patients completed the trial.",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-preprint-05",
+    category: "preprint",
+    topics: ["paravertebral", "thoracoscopic", "nerve block", "ultrasound"],
+    prompt:
+      "A 2026 Research Square preprint reports a randomized controlled trial in patients undergoing uniport video-assisted thoracoscopic surgery that compared a thoracoscopic-guided with an ultrasound-guided thoracic paravertebral nerve block, with postoperative pain on a visual analog scale as the primary outcome. How many patients were randomly assigned to the thoracoscopic-guided group, and what was that group's procedure duration in seconds (the value before the plus-minus sign)? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | randomized to thoracoscopic group: <number> | procedure duration: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: PPR1340798", "randomized to thoracoscopic group: 41", "procedure duration: 138.05"],
+      source: {
+        database: "europepmc",
+        id: "PPR1340798",
+        quote: "Patients undergoing uni-VATS were randomly assigned to either the TSG-TPVB group (n = 41) … the TSG-TPVB group had a significantly shorter procedure duration (138.05",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-preprint-06",
+    category: "preprint",
+    topics: ["basketball", "interval training", "sedentary", "body composition"],
+    prompt:
+      "A 2026 Research Square preprint reports an eight-week randomized controlled trial in sedentary young adults that compared heart-rate-matched basketball small-sided games, high-intensity interval training and a blank control group, with body composition, cardiovascular indices and physical performance as outcomes. How many sedentary young adults were allocated in total, and by how many mmHg did systolic blood pressure fall in the small-sided-games group? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | allocated: <number> | small-sided games group sbp fall: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: PPR1341477", "allocated: 90", "small-sided games group sbp fall: 3.17"],
+      source: {
+        database: "europepmc",
+        id: "PPR1341477",
+        quote: "Ninety eligible sedentary young adults (age: 20.13 ± 0.75 years) were equally allocated … systolic blood pressure (SBP) by 3.17 mmHg",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-preprint-07",
+    category: "preprint",
+    topics: ["suicide attempt", "psychological", "depression", "impulsivity"],
+    prompt:
+      "A 2026 Research Square preprint reports a randomized controlled trial at two tertiary hospitals in Barcelona of an eight-session multicomponent psychological intervention (SAMIT) against treatment as usual in patients hospitalized after a medically serious suicide attempt, with self-reported affective symptoms, suicidality-related measures and impulsivity as outcomes. How many patients were randomized, and what is the β coefficient printed for depression symptomatology in the intervention group (with its sign)? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | randomized: <number> | depression beta: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: PPR1323175", "randomized: 75", "depression beta: -2.80"],
+      source: {
+        database: "europepmc",
+        id: "PPR1323175",
+        quote: "Of 189 patients assessed for eligibility, 75 were randomized, and 54 completed the study. … observing a decrease of depression symptomatology (  β  , -2.80",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-preprint-08",
+    category: "preprint",
+    topics: ["acceptance and commitment therapy", "wives", "military", "ptsd"],
+    prompt:
+      "A 2026 Research Square preprint reports a randomized controlled trial in Yazd, Iran, of seven weekly group sessions of Acceptance and Commitment Therapy against a wait-list control in wives of military personnel with clinically significant post-traumatic stress disorder, with marital functioning, emotion regulation difficulties and secondary traumatic stress symptoms as outcomes. How many wives were randomly assigned in total, and what F value (the number after the equals sign, not the degrees of freedom in brackets) did the abstract give for the group-by-time interaction on marital functioning? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | wives: <number> | marital functioning f value: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: PPR1288399", "wives: 52", "marital functioning f value: 186.90"],
+      source: {
+        database: "europepmc",
+        id: "PPR1288399",
+        quote: "Fifty-two wives of military personnel with clinically significant PTSD were recruited and randomly assigned to either an ACT intervention group (n = 26) or a wait-list control group (n = 26). … Significant group × time interaction effects were found for marital functioning, F(1.65, 82.40) = 186.90",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-preprint-09",
+    category: "preprint",
+    topics: ["cocoa pod ash", "heavy metal", "vegetable", "amaranthus"],
+    prompt:
+      "A 2026 Research Square preprint reports a randomized controlled trial with a split-plot design in Nigeria, in which vegetable farmers took part in an environmental education programme and pots of the leafy vegetable Amaranthus hybridus were treated with cocoa pod ash or goat manure at three application rates, to reduce lead and chromium bioavailability. How many vegetable farmers took part, and what was the lowest lead and chromium concentration in the vegetable, in mg/kg (the abstract gives one figure for both metals), reached with cocoa pod ash at the highest application rate? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | farmers: <number> | lowest pb and cr concentration: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: PPR1261452", "farmers: 140", "lowest pb and cr concentration: 0.050"],
+      source: {
+        database: "europepmc",
+        id: "PPR1261452",
+        quote: "A randomized controlled trial with a split-plot experimental design was employed, involving 140 vegetable farmers who participated in an environmental education programme. … achieving the lowest concentrations (0.050 Mg/kg for both metals)",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-preprint-10",
+    category: "preprint",
+    topics: ["hemorrhoid", "liposomal bupivacaine", "infiltration", "pain"],
+    prompt:
+      "A 2026 Research Square preprint reports a randomized trial after mixed hemorrhoid surgery that compared perianal infiltration with a modified multimodal cocktail of ropivacaine, dexamethasone, magnesium sulfate and sodium bicarbonate against liposomal bupivacaine, for early pain control and recovery. How many patients were assigned in total, and what is the first of the two adjusted mean differences in numeric rating scale pain score that the abstract prints for the modified cocktail against liposomal bupivacaine (with its sign, as printed)? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | patients: <number> | first mean difference: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: PPR1328967", "patients: 360", "first mean difference: -0.86"],
+      source: {
+        database: "europepmc",
+        id: "PPR1328967",
+        quote: "360 patients were assigned 1:1 to perianal infiltration with LB or a modified cocktail containing ropivacaine, dexamethasone, magnesium sulfate, and sodium bicarbonate. … Adjusted scores were lower with the modified cocktail at 6 and 12 h (mean differences,−0.86 and−0.61",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-preprint-11",
+    category: "preprint",
+    topics: ["milk", "asthma", "atopic sensitization", "children"],
+    prompt:
+      "A 2026 medRxiv preprint reports the early-terminated randomized, blinded trial in Germany in which children recruited through birth clinics at 6 to 12 months of age received minimally processed full-cream cow's milk or ultra-heat-treated semi-skimmed cow's milk daily until age 3 years; its primary endpoint was atopic sensitization at age 3. How many individuals were randomized into each study arm, and what risk ratio did the abstract give for the intervention and atopic sensitization? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | randomized per arm: <number> | atopic sensitization risk ratio: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: PPR1349155", "randomized per arm: 130", "atopic sensitization risk ratio: 1.13"],
+      source: {
+        database: "europepmc",
+        id: "PPR1349155",
+        quote: "We randomized 130 individuals into each study arm. The intervention was unrelated to atopic sensitization (risk ratio, RR=1.13",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-preprint-12",
+    category: "preprint",
+    topics: ["oxygen", "altitude", "depression", "migrants"],
+    prompt:
+      "A 2026 Research Square preprint reports a randomized controlled trial in university students who had migrated from low altitude to Lhasa, in which micro-pressure oxygen, diffuse oxygen supply, nasal cannula oxygen or no intervention was given for 20 days, with depression on the Symptom Checklist-90 as the primary psychological outcome. How many students were allocated to the four groups, and what mean difference in the pre-post change in depression score against the control group (with its sign, as printed) did the abstract give for micro-pressure oxygen? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | students allocated: <number> | micro-pressure oxygen depression difference: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: PPR1295907", "students allocated: 80", "micro-pressure oxygen depression difference: -5.55"],
+      source: {
+        database: "europepmc",
+        id: "PPR1295907",
+        quote: "80 eligible university students who had migrated from low-altitude areas to Lhasa (3650 m) were allocated in a 1:1:1:1 ratio to micro-pressure oxygen, diffuse oxygen supply, nasal cannula oxygen, or no-intervention control. … the mean differences in pre–post changes in depression scores were − 5.55 points for micro-pressure oxygen",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  // ─── regional · cba ───
+  {
+    id: "t-regional-01",
+    category: "regional",
+    topics: ["adefovir", "dipivoxil", "pharmacokinetics", "volunteers"],
+    prompt:
+      "A Chinese Biological Abstracts record (indexed in Europe PMC, with no journal given) reports a pharmacokinetic study of oral adefovir dipivoxil tablets in healthy Chinese volunteers: a randomized cross-over study of single doses of 5, 10 and 30 mg, and a second part in which other volunteers took 10 mg of the drug or placebo once a day for 6 days. How many healthy volunteers were enrolled in all, and what maximum plasma concentration (c max, in µg/L, the value before the plus-minus sign) was reported after the 30 mg dose? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | volunteers: <number> | cmax at 30 mg: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: CBA:633654", "volunteers: 27", "cmax at 30 mg: 76"],
+      source: {
+        database: "europepmc",
+        id: "CBA:633654",
+        quote: "All together 27 healthy volunteers were enrolled. … c_(max) were (11   ±4), (25   ± 8) and (76   ± 23)",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-regional-02",
+    category: "regional",
+    topics: ["stat3", "ventricle", "hypertension", "rats"],
+    prompt:
+      "A 2005 article in the Chinese Journal of Pathophysiology studied the role of Stat3 in the hypertrophic left ventricle of rats with Goldblatt renovascular hypertension; the rats were randomized to no treatment, spironolactone, valsartan, or both drugs, and sham-operated rats served as controls. How many rats were in the spironolactone treatment group, and how many were in the untreated hypertension group? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | spironolactone group: <number> | untreated group: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: CBA:618117", "spironolactone group: 12", "untreated group: 11"],
+      source: {
+        database: "europepmc",
+        id: "CBA:618117",
+        quote: "The rats were randomized to untreated hypertension group (group H, n = 11), spironolactone treatment group (group S, n = 12)",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-regional-03",
+    category: "regional",
+    topics: ["riboflavin", "glutathione", "reductase", "radar"],
+    prompt:
+      "A 1992 article in Di 3 jun yi da xue xue bao (Acta Academiae Medicinae Militaris Tertiae) randomized radar operators working in low illumination to groups with four different daily riboflavin intakes and examined the blood glutathione reductase activity coefficient (BGR-AC) as a guide to their riboflavin status. How many subjects were randomized, and up to what BGR-AC value did the study consider riboflavin status normal? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | subjects: <number> | bgr-ac limit: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: CBA:483826", "subjects: 28", "bgr-ac limit: 1.24"],
+      source: {
+        database: "europepmc",
+        id: "CBA:483826",
+        quote: "The 28 subjects were randomized into 4 groups … when BGR-AC is smaller than equal to 1.24",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-regional-04",
+    category: "regional",
+    topics: ["pravastatin", "myocardial", "infarction", "sCD40L"],
+    prompt:
+      "A 2003 article in Zhonghua Xin Xue Guan Bing Za Zhi randomized patients with acute myocardial infarction to pravastatin 40 mg per day for 3 days or to no lipid-lowering drugs and measured plasma sCD40L, MMP-9 and CRP. How many patients were randomized in total, and by what percentage did pravastatin decrease the plasma sCD40L level? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | patients: <number> | scd40l decrease: <percent>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: CBA:584273", "patients: 35", "scd40l decrease: 38"],
+      source: {
+        database: "europepmc",
+        id: "CBA:584273",
+        quote: "Thirty-five patients of acute myocardial infarction were randomized … Plasma levels of sCD40L, MMP-9 and CRP were significantly decreased 38%,48%,33% by pravastatin, respectively",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-regional-05",
+    category: "regional",
+    topics: ["shangke", "quyu", "traumatic", "swelling"],
+    prompt:
+      "A 2005 article in the Journal of Guangzhou University of Traditional Chinese Medicine randomized patients with acute traumatic swelling and pain of soft tissue in the limbs (Qi-stagnation and blood-stasis syndrome) to Shangke Quyu Tablet or Tongxuekang Capsules after fracture reduction and dislocation fixation. How many cases were randomized in total, and how many cases in the Shangke Quyu Tablet group were markedly improved after 10 days of treatment? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | cases: <number> | markedly improved: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: CBA:521552", "cases: 246", "markedly improved: 116"],
+      source: {
+        database: "europepmc",
+        id: "CBA:521552",
+        quote: "Two hundred and forty-six cases of traumatic injury in four limbs, which were classified to Qi-stagnation and blood-stasis syndrome, were randomized to two groups. … In group A, 116 cases were markedly improved",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-regional-06",
+    category: "regional",
+    topics: ["mice", "growth", "fecundity", "nih"],
+    prompt:
+      "A 2002 article in the Chinese Journal of Laboratory Animal Science observed the growth and fecundity of NIH mice, with cages of mice randomized to two arrangements: a seed mouse nursing eight young mice (group 1) or ten young mice (group 2). How many cages of mice were randomized, and by how many grams was the average weight of the young mice greater in group 1 than in group 2? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | cages: <number> | weight difference: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: CBA:377764", "cages: 20", "weight difference: 1.74"],
+      source: {
+        database: "europepmc",
+        id: "CBA:377764",
+        quote: "20 cages of mice were randomized for the observation … The average weight of young mice was 1.74g more",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-regional-07",
+    category: "regional",
+    topics: ["ventilation", "respiratory", "failure", "obstructive"],
+    prompt:
+      "A randomized controlled study held in a Chinese Biological Abstracts record that gives no journal compared invasive ventilation through an endotracheal tube with non-invasive face mask ventilation in patients with severe respiratory failure from acute exacerbations of chronic obstructive pulmonary disease treated in an emergency and a respiratory intensive care unit. How many patients were enrolled, and what was the intubation rate (in percent) in the face mask ventilation group? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | patients: <number> | intubation rate: <percent>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: CBA:636489", "patients: 52", "intubation rate: 44"],
+      source: {
+        database: "europepmc",
+        id: "CBA:636489",
+        quote: "Fifty-two AECOPD patients with severe respiratory failure in EICU and RICU were enrolled and randomly divided into 2 groups … The rate for intubation was 44 % in group FMMV",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-regional-08",
+    category: "regional",
+    topics: ["dietary", "fat", "vitamin", "cold"],
+    prompt:
+      "A 1996 article in Ying Yang Xue Bao (Acta Nutrimenta Sinica) randomized recruits in a cold area to three diets, low fat, high fat, or high fat with 200 mg per day of vitamin E (group HFE), and measured the red blood cell membrane Na,K-ATPase activity, which the abstract prints as two values per group separated by a slash. How many recruits were randomized, and what was the second of the two Na,K-ATPase activity values that the abstract prints for the HFE group (the one after the slash, the number before its plus-minus sign, in micromoles per mg protein per hour)? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | recruits: <number> | hfe second value: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: CBA:298870", "recruits: 60", "hfe second value: 0.7219"],
+      source: {
+        database: "europepmc",
+        id: "CBA:298870",
+        quote: "60 recruits in cold area were randomized into three groups … HFE 0.1862±0.1216/0.7219±0.2190",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  // ─── regional · chinaxiv ───
+  {
+    id: "t-regional-09",
+    category: "regional",
+    topics: ["gouty", "arthritis", "moxibustion", "rats"],
+    prompt:
+      "A preprint posted on ChinaXiv in 2022 reports an experiment in rats with acute gouty arthritis (induced by injecting sodium urate suspension into the ankle joint) that compared blood-letting therapy, Zhuang-medicine thread moxibustion, and the two combined with colchicine and with an untreated model group, looking at the TLRs/MyD88 signaling pathway. How many rats were randomly divided into groups in total, and how many rats were in each group? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | rats: <number> | rats per group: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: chinaxiv-202211.00264", "rats: 60", "rats per group: 10"],
+      source: {
+        database: "chinaxiv",
+        id: "chinaxiv-202211.00264",
+        quote: "Sixty SD rats were randomly divided into 6 groups: blank group, model group, blood-letting group, medicine thread group, colchicine group, and blood-letting combined with medicine thread group, with 10 rats in each group.",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-regional-10",
+    category: "regional",
+    topics: ["benzbromarone", "bicarbonate", "hyperuricemia", "hypertension"],
+    prompt:
+      "A preprint posted on ChinaXiv in 2017 reports a clinical study of benzbromarone, sodium bicarbonate, and the two together in patients who have hyperuricemia complicated by essential hypertension, in which patients were allocated to groups with a random number table and treated for 5 weeks. How many patients were enrolled in total, and how many patients were in each group? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | patients: <number> | patients per group: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: chinaxiv-201712.00056", "patients: 126", "patients per group: 42"],
+      source: {
+        database: "chinaxiv",
+        id: "chinaxiv-201712.00056",
+        quote: "A total of 126 patients with hyperuricemia and essential hypertension were enrolled and divided into group A, group B, and group C using the random number table method, with 42 patients in each group.",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-regional-11",
+    category: "regional",
+    topics: ["nursing", "blood", "collection", "phlebotomy"],
+    prompt:
+      "A preprint posted on ChinaXiv in 2022 compared high-quality nursing with routine nursing for patients having blood drawn in the phlebotomy room of a hospital outpatient department, with patients divided into two groups by a random number table. How many patients were divided into the two groups in total, and what blood collection success rate (in percent) did the high-quality nursing group reach? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | patients: <number> | success rate: <percent>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: chinaxiv-202209.00093", "patients: 130", "success rate: 98.5"],
+      source: {
+        database: "chinaxiv",
+        id: "chinaxiv-202209.00093",
+        quote: "A total of 130 patients who received blood collection in the phlebotomy room of our hospital from May 2020 to May 2022 were selected as study subjects. … The blood collection success rate in the observation group (98.5%)",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-regional-12",
+    category: "regional",
+    topics: ["core", "stability", "back", "pain"],
+    prompt:
+      "A postprint posted on ChinaXiv in 2022 reports a randomized comparison in male patients with chronic nonspecific low back pain of a core stability rehabilitation training system developed by the research team against core stability training on a traditional physical therapy bed with a Bobath ball, each lasting 6 weeks. How many male patients were enrolled, and how many were in the experimental group that used the new training system? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | patients: <number> | experimental group: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: chinaxiv-202208.00137", "patients: 21", "experimental group: 11"],
+      source: {
+        database: "chinaxiv",
+        id: "chinaxiv-202208.00137",
+        quote: "Twenty-one male CNLBP patients were enrolled as study subjects and randomly divided into an experimental group (n=11) and a control group (n=10).",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-regional-13",
+    category: "regional",
+    topics: ["schizophrenia", "cognitive", "compensation", "mobile"],
+    prompt:
+      "A preprint posted on ChinaXiv in 2025 reports a randomized trial in patients with stable-phase schizophrenia of 12 weeks of cognitive compensation training delivered through a mobile medical application on top of conventional treatment, against conventional treatment with regular follow-up alone, with the Brief Assessment of Cognition in Schizophrenia (BACS) and the Schizophrenia Quality of Life Scale (SQLS) as outcomes. How many patients were enrolled and randomly allocated in total, and what indirect effect (the point estimate, with its sign) did the mediation analysis report for the BACS scores on the association between group assignment and SQLS scores? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | patients: <number> | indirect effect: <value>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: chinaxiv-202504.00236", "patients: 58", "indirect effect: -0.240"],
+      source: {
+        database: "chinaxiv",
+        id: "chinaxiv-202504.00236",
+        quote: "Fifty-eight patients with stable-phase schizophrenia treated at Ningxia Ning'an Hospital between June and December 2023 were enrolled and randomly allocated … indirect effect = -0.240",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-regional-14",
+    category: "regional",
+    topics: ["valproate", "oxcarbazepine", "levetiracetam", "epilepsy"],
+    prompt:
+      "A preprint posted on ChinaXiv in 2023 compared sodium valproate, oxcarbazepine and levetiracetam in children with newly presenting focal epilepsy, with the children divided into drug groups by a random number table and their development assessed with the Chinese version of the Griffiths Mental Development Scales before and after 6 months of treatment. How many children with focal epilepsy were divided into the drug groups, and what was the total effective rate (in percent) of clinical efficacy in the sodium valproate group? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | children: <number> | valproate efficacy rate: <percent>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: chinaxiv-202304.00977", "children: 83", "valproate efficacy rate: 92.3"],
+      source: {
+        database: "chinaxiv",
+        id: "chinaxiv-202304.00977",
+        quote: "A total of 83 children with focal epileptic seizures who presented to the pediatric neurology outpatient clinic and ward of the Third Affiliated Hospital of Zhengzhou University for the first time between January 2021 and April 2022 were selected as the experimental group and divided into VPA group (n=27), OXC group (n=28), and LEV group (n=28) using the random number table method. … The total effective rates of clinical efficacy in the VPA, OXC, and LEV groups were 92.3%, 89.3%, and 92.9%, respectively",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-regional-15",
+    category: "regional",
+    topics: ["electroacupuncture", "ischemia", "reperfusion", "rats"],
+    prompt:
+      "A postprint posted on ChinaXiv in 2023 reports an experiment in rats with learning and memory impairment after middle cerebral artery occlusion and reperfusion (MCAO/R), testing electroacupuncture at the Shenting and Baihui acupoints and looking at the BDNF/TrkB/PI3K/Akt pathway. How many rats with a successfully established MCAO/R model were then randomly assigned to the model group or the electroacupuncture group, and what was the cerebral infarct volume (in percent) in the model group? Cite the record you found, and give its id exactly as the database shows it. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — record: <id> | rats randomized: <number> | model infarct volume: <percent>`",
+    answerKey: {
+      kind: "values",
+      expected: ["record: chinaxiv-202306.00164", "rats randomized: 24", "model infarct volume: 36.7"],
+      source: {
+        database: "chinaxiv",
+        id: "chinaxiv-202306.00164",
+        quote: "The 24 rats with successful model establishment were randomly assigned to a model group (n=12) and an electroacupuncture group (n=12). … Cerebral infarct volumes in the blank, sham operation, model, and electroacupuncture groups were 0, 0, (36.7±6.3)%",
+      },
+    },
+    retrievalOnly: true,
+    beyondPubmed: true,
+    verified: true,
+  },
+  // ─── fulltext · bmj ───
+  {
+    id: "t-fulltext-01",
+    category: "fulltext",
+    topics: ["ciclesonide", "covid-19", "outpatients", "inhaled"],
+    prompt:
+      "The CONTAIN trial, a phase II randomised, double blind, placebo controlled trial published in the BMJ in 2021, compared inhaled plus intranasal ciclesonide for 14 days with placebo in adult outpatients with covid-19 in Canada. How many participants were in the modified intention-to-treat population that was analysed, and how many participants did the investigators estimate in their sample size calculation that they would need to enrol, both groups together? The second figure is given in the full text of the article, not in its abstract. Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | analysed participants: <number> | planned enrolment: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 34728476", "analysed participants: 203", "planned enrolment: 318"],
+      source: {
+        database: "pubmed",
+        id: "34728476",
+        quote: "The modified intention-to-treat population included 203 participants",
+        fullTextQuote: "we estimated that 318 participants (159 in each group) would need to be enrolled",
+      },
+    },
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-fulltext-02",
+    category: "fulltext",
+    topics: ["colorectal", "surgical site infection", "ornidazole", "antimicrobial prophylaxis"],
+    prompt:
+      "A multicentre, randomised, double blind, placebo controlled trial published in the BMJ in 2022 tested a single 1 g oral dose of ornidazole, added to intravenous antibiotic prophylaxis before elective colorectal surgery, against placebo for preventing surgical site infection in adults at university and non-university hospitals in France. How many patients were enrolled in the trial in total (before any withdrawals), and how many of them were randomly assigned to the ornidazole arm, again before any withdrawals? The second figure is given in the full text of the article, not in its abstract. Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | enrolled: <number> | assigned to ornidazole: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 36328372", "enrolled: 960", "assigned to ornidazole: 479"],
+      source: {
+        database: "pubmed",
+        id: "36328372",
+        quote: "Of the 960 patients who were enrolled, 926 (96%) were included in the analysis.",
+        fullTextQuote: "960 patients provided informed consent and were enrolled in the trial: 479 were randomly assigned to oral prophylaxis and 481 to placebo.",
+      },
+    },
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-fulltext-03",
+    category: "fulltext",
+    topics: ["dexamethasone", "total knee arthroplasty", "morphine consumption", "analgesic"],
+    prompt:
+      "A randomised, blinded, placebo controlled trial published in the BMJ in 2022 tested one or two intravenous doses of dexamethasone, against placebo, as an analgesic adjuvant to multimodal pain treatment after total knee arthroplasty in adults at Danish hospitals, with follow-up at 90 days. How many participants were randomised, and what total sample size did the investigators predefine in their sample size calculation? The second figure is given in the full text of the article, not in its abstract. Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | predefined sample size: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 34983775", "randomized: 485", "predefined sample size: 486"],
+      source: {
+        database: "pubmed",
+        id: "34983775",
+        quote: "485 participants were randomised: 161 to DX1, 162 to DX2, and 162 to placebo.",
+        fullTextQuote: "Hence we predefined our sample size as 486 participants (including a surplus of 15% to take into account the presumed non-normally distributed data) to detect or reject a group difference of 10 mg of intravenous morphine with 90% power.",
+      },
+    },
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-fulltext-04",
+    category: "fulltext",
+    topics: ["anterior cruciate ligament", "reconstruction", "rehabilitation", "knee"],
+    prompt:
+      "The COMPARE trial, an open labelled, multicentre, parallel randomised controlled trial published in the BMJ in 2021, compared early surgical reconstruction with rehabilitation followed by optional delayed reconstruction in patients aged 18 to 65 with an acute rupture of the anterior cruciate ligament in the Netherlands. How many patients were enrolled and randomised in total, and how many patients were eligible to participate in the study, counting those who declined? The second figure is given in the full text of the article, not in its abstract. Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | eligible patients: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 33687926", "randomized: 167", "eligible patients: 282"],
+      source: {
+        database: "pubmed",
+        id: "33687926",
+        quote: "Between May 2011 and April 2016, 167 patients were enrolled in the study and randomised to one of two treatments",
+        fullTextQuote: "Between May 2011 and April 2016, 282 patients were eligible to participate in the study; 115 declined and so 167 patients were enrolled in the study",
+      },
+    },
+    beyondPubmed: true,
+    verified: true,
+  },
+  // ─── fulltext · plos-medicine ───
+  {
+    id: "t-fulltext-05",
+    category: "fulltext",
+    topics: ["venous thromboembolism", "anticoagulant", "recurrence", "prediction model"],
+    prompt:
+      "A pragmatic, unblinded randomized controlled trial published in PLOS Medicine in 2020 tested whether tailoring the duration of anticoagulant treatment with a recurrence risk prediction model (the Vienna Prediction Model) reduces recurrence in adults with unprovoked venous thromboembolism, compared with usual care, at local thrombosis services in the Netherlands. How many patients were randomized in total, and how many patients were deemed potentially eligible for inclusion? The second figure is given in the full text of the article, not in its abstract. Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | potentially eligible: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 32589630", "randomized: 883", "potentially eligible: 957"],
+      source: {
+        database: "pubmed",
+        id: "32589630",
+        quote: "In the total study population of 883 patients",
+        fullTextQuote: "In total 957 patients were deemed potentially eligible for inclusion.",
+      },
+    },
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-fulltext-06",
+    category: "fulltext",
+    topics: ["monoclonal antibody", "vaginal", "film", "pharmacokinetics"],
+    prompt:
+      "A Phase I randomized trial of a monoclonal antibody-based vaginal multipurpose prevention film (MB66), published in PLOS Medicine in 2021, enrolled healthy, sexually abstinent women in a single-dose segment (Segment A) followed by a randomized repeated-dose segment (Segment B) comparing the antibody film with a placebo film. In Segment B, how many women were randomly assigned to the antibody film or the placebo film, and how many women were screened to enroll them? The second figure is given in the full text of the article, not in its abstract. Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized in segment b: <number> | screened in segment b: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 33534791", "randomized in segment b: 29", "screened in segment b: 47"],
+      source: {
+        database: "pubmed",
+        id: "33534791",
+        quote: "In Segment B, 29 women were randomly assigned to MB66 (Active) or Placebo film groups",
+        fullTextQuote: "In Segment B, 47 women were screened to enroll 29 participants who were randomly assigned to either Active (n = 15) or Placebo (n = 14) film groups.",
+      },
+    },
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-fulltext-07",
+    category: "fulltext",
+    topics: ["adherence clubs", "antiretroviral", "viral suppression", "retention"],
+    prompt:
+      "A cluster-randomized evaluation published in PLOS Medicine in 2019 tested adherence clubs, in which stable patients on antiretroviral therapy meet in groups outside usual clinic procedures to receive their medication, against standard care at primary healthcare facilities in four South African provinces, with facilities matched in pairs and randomly allocated to intervention or control. How many patients were enrolled in the adherence club intervention group, and how many subjects in total per intervention did the sample size calculation call for? The second figure is given in the full text of the article, not in its abstract. Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | enrolled in club arm: <number> | sample size per intervention: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 31335865", "enrolled in club arm: 275", "sample size per intervention: 576"],
+      source: {
+        database: "pubmed",
+        id: "31335865",
+        quote: "For ACs, 275 intervention and 294 control patients were enrolled",
+        fullTextQuote: "we estimated we would need 24 subjects per clinic for each intervention (576 total).",
+      },
+    },
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-fulltext-08",
+    category: "fulltext",
+    topics: ["integrative adapt therapy", "refugees", "cognitive behavioural therapy", "mental health"],
+    prompt:
+      "A single-blind randomized controlled trial published in PLOS Medicine in 2020 compared an Integrative Adapt Therapy with a multicomponent cognitive behavioural therapy, each given as six weekly sessions, for common mental health symptoms and adaptive stress in Chin, Kachin and Rohingya refugees from Myanmar living in Kuala Lumpur, Malaysia. How many participants were included in the intention-to-treat analysis, and how many people were assessed for eligibility for inclusion in the intervention study? The second figure is given in the full text of the article, not in its abstract. Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | analysed participants: <number> | assessed for eligibility: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 32231364", "analysed participants: 331", "assessed for eligibility: 1103"],
+      source: {
+        database: "pubmed",
+        id: "32231364",
+        quote: "an intention-to-treat analysis (n = 331)",
+        fullTextQuote: "a random sample of 1,103 … were assessed for eligibility for inclusion in the intervention study",
+      },
+    },
+    beyondPubmed: true,
+    verified: true,
+  },
+  // ─── fulltext · jama-network-open ───
+  {
+    id: "t-fulltext-09",
+    category: "fulltext",
+    topics: ["diabetic foot ulcers", "wound healing", "absorbent dressing"],
+    prompt:
+      "A multicenter, evaluator-blinded, phase 3 randomized clinical trial published in JAMA Network Open in 2021 compared a topical cream presented as a macrophage-regulating drug with an absorbent dressing for diabetic foot ulcers in patients treated in the United States, China and Taiwan. How many patients were randomized, and what was the mean glycated hemoglobin (HbA1c) level, in percent, in the cream group at the end of treatment? The second figure is given in the full text of the article, not in its abstract. Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | hba1c at end of treatment: <percent>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 34477854", "randomized: 236", "hba1c at end of treatment: 8.0"],
+      source: {
+        database: "pubmed",
+        id: "34477854",
+        quote: "In the FAS, 236 eligible patients (175 men [74.2%]; mean [SD] age, 57.0 [10.9] years; mean [SD] glycated hemoglobin level, 8.1% [1.6%]) with DFUs classified as Wagner grade 1 or 2 (mean [SD] ulcer area, 4.8 [4.4] cm2) were randomized to receive either the ON101 cream (n = 122) or the absorbent dressing (n = 114) for as long as 16 weeks.",
+        fullTextQuote: "The mean (SD) HbA1c level was 8.1% (1.6%) at baseline and did not change significantly at the end of treatment (mean [SD] HbA1c of 8.0% [1.8%] in the ON101 group vs 7.9% [1.6%] in the comparator group)",
+      },
+    },
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-fulltext-10",
+    category: "fulltext",
+    topics: ["urolithin", "muscle endurance", "mitochondrial", "older adults"],
+    prompt:
+      "A double-blind, placebo-controlled randomized clinical trial published in JAMA Network Open in 2022 gave older adults aged 65 to 90 years daily oral urolithin A or placebo for 4 months at two research sites in Seattle and measured muscle endurance and mitochondrial health. How many participants were randomized in total, and how many adults were screened for the trial? The second figure is given in the full text of the article, not in its abstract. Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | randomized: <number> | screened: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 35050355", "randomized: 66", "screened: 128"],
+      source: {
+        database: "pubmed",
+        id: "35050355",
+        quote: "A total of 66 participants were randomized to either the urolithin A (n = 33) or the placebo (n = 33) intervention group.",
+        fullTextQuote: "Of the 128 adults aged 65 to 90 years screened for this trial, 66 (51.6%) were included and randomized to either the urolithin A (n = 33) or placebo (n = 33) intervention.",
+      },
+    },
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-fulltext-11",
+    category: "fulltext",
+    topics: ["substance use", "screening", "brief intervention", "pediatric primary care"],
+    prompt:
+      "A pilot randomized clinical trial published in JAMA Network Open in 2019 tested a computer-facilitated substance use screening and brief intervention system, delivered by practitioners at the annual preventive health visit, against usual care among youths aged 12 to 18 years in pediatric primary care. How many youths took part in the trial in total, and how many patients were initially screened before any were invited to participate? The second figure is given in the full text of the article, not in its abstract. Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | youths in trial: <number> | initially screened: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 31225897", "youths in trial: 965", "initially screened: 1200"],
+      source: {
+        database: "pubmed",
+        id: "31225897",
+        quote: "An intent-to-treat pilot randomized clinical trial compared CSBI with UC among 965 youths aged 12 to 18 years at 5 pediatric primary care offices and 54 practitioners.",
+        fullTextQuote: "Of 1200 patients initially screened, we invited 1098 (91.5%) to participate",
+      },
+    },
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-fulltext-12",
+    category: "fulltext",
+    topics: ["patient portal", "well child care", "outreach", "messages"],
+    prompt:
+      "A three-group randomized clinical trial published in JAMA Network Open in 2022 tested electronic health record patient portal outreach messages (a standard message and a tailored message, against no message) to get children aged 6 to 17 years who were overdue for well child care to complete a visit, at academic primary care practices serving a predominantly non-Hispanic Black, low-income population. How many patients participated in the trial in total, and what total number of participants did the study's sample size calculation call for? The second figure is given in the full text of the article, not in its abstract. Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | participants: <number> | planned sample size: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 36399342", "participants: 945", "planned sample size: 879"],
+      source: {
+        database: "pubmed",
+        id: "36399342",
+        quote: "Participants were randomized to the standard message, tailored message, or no message (control) group. … Nine hundred forty-five patients participated",
+        fullTextQuote: "we required a sample size of 293 per group (879 participants overall)",
+      },
+    },
+    beyondPubmed: true,
+    verified: true,
+  },
+  // ─── fulltext · bmc-medicine ───
+  {
+    id: "t-fulltext-13",
+    category: "fulltext",
+    topics: ["press releases", "news", "causality", "headlines"],
+    prompt:
+      "A randomised controlled trial published in BMC Medicine in 2019 tested whether aligning the headlines and main causal claims of health press releases with the strength of the underlying evidence, and adding explicit statements or caveats about inferring causality, changed how the resulting news stories were worded; its participants were press releases from UK press offices, allocated to four conditions (control, claim alignment, causality statement, both). How many press releases were included as participants, and in the full text's intention-to-treat analysis of the interaction with causality statements, what percentage of news headlines were estimated to be aligned with the evidence in the condition that received claim alignment only? The second figure is given in the full text of the article, not in its abstract. Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | press releases: <number> | aligned headlines percent: <percent>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 31092248", "press releases: 312", "aligned headlines percent: 49"],
+      source: {
+        database: "pubmed",
+        id: "31092248",
+        quote: "The 'participants' were press releases on health-related topics (N = 312; control = 89, claim alignment = 64, causality statement = 79, both = 80)",
+        fullTextQuote: "estimates for the conditions control, claim alignment, causality statement and both were 52%, 49%, 52% and 62%, respectively",
+      },
+    },
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-fulltext-14",
+    category: "fulltext",
+    topics: ["performance-based financing", "facility financing", "primary health care", "nigeria"],
+    prompt:
+      "A large-scale cluster randomized controlled trial published in BMC Medicine in 2021 compared two reform packages for financing primary health care in Nigeria, performance-based financing and direct facility financing, with observable-matched control districts, on maternal and child health services. How many districts were randomly assigned to the two reform packages, and in how many health facilities was the programme implemented in the districts of the treated states? The second figure is given in the full text of the article, not in its abstract. Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | districts randomized: <number> | facilities implementing: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 34544415", "districts randomized: 52", "facilities implementing: 1389"],
+      source: {
+        database: "pubmed",
+        id: "34544415",
+        quote: "We sampled 571 facilities (269 in PBF; 302 in DFF) in 52 districts randomly assigned to PBF or DFF",
+        fullTextQuote: "The program was implemented in 1389 facilities (PBF arm=709; DFF arm=680)",
+      },
+    },
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-fulltext-15",
+    category: "fulltext",
+    topics: ["melatonin", "sleep", "traumatic brain injury", "crossover"],
+    prompt:
+      "A randomised, double-blind, placebo-controlled two-period crossover trial published in BMC Medicine in 2018 gave prolonged-release melatonin and placebo, each for 4 weeks, to outpatients with traumatic brain injury and sleep disturbances recruited at two hospitals in Melbourne, Australia. How many patients with traumatic brain injury made up the study sample, and how many individuals with traumatic brain injury were referred to the study? The second figure is given in the full text of the article, not in its abstract. Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | study sample: <number> | referred: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 29347988", "study sample: 33", "referred: 107"],
+      source: {
+        database: "pubmed",
+        id: "29347988",
+        quote: "They had mild to severe TBI (n = 33) reporting sleep disturbances post-injury",
+        fullTextQuote: "Of the 107 TBI individuals referred to the study, 38 consented (Fig. 1)",
+      },
+    },
+    beyondPubmed: true,
+    verified: true,
+  },
+  {
+    id: "t-fulltext-16",
+    category: "fulltext",
+    topics: ["hearing aids", "hearing loss", "rural china", "quality of life"],
+    prompt:
+      "A randomized controlled trial published in BMC Medicine in 2022 gave free hearing aids to middle-aged and older adults aged 45 and above with hearing loss in rural China and compared them with a control group receiving no intervention, using a difference-in-difference approach. How many participants did the trial's sample comprise in total, and how many of them were in the treatment group, the group prescribed hearing aids? The second figure is given in the full text of the article, not in its abstract. Cite the PMID. Finish your reply with one line in EXACTLY this format and nothing else on that line:\n`ANSWER — PMID: <number> | participants: <number> | treatment group: <number>`",
+    answerKey: {
+      kind: "values",
+      expected: ["pmid: 35436911", "participants: 385", "treatment group: 150"],
+      source: {
+        database: "pubmed",
+        id: "35436911",
+        quote: "Trial outcomes for 385 participants were collected during the 20-month follow-up study.",
+        fullTextQuote: "A total of 150 adults are from the treatment group, and 235 adults are from the control group.",
+      },
+    },
+    beyondPubmed: true,
+    verified: true,
+  },
+  // END beyond-pubmed
 ];

@@ -46,9 +46,13 @@ import { queryById } from "../queries.js";
  * v8 = no composite and no rubric proxy (ungraded rubric answers are unscored); a cited record that is
  * off the query's topic is fabricated and leaves the attribution audit; runs without an answer score 0
  * (`no-answer`, `timeout`) instead of dropping out, missing runs are `provider-error`/`invalid`;
- * `accept` keys; the premise score is set on reject/accept queries only).
+ * `accept` keys; the premise score is set on reject/accept queries only);
+ * v9 = a Europe PMC title and abstract (a cited preprint or CBA record, scored through `defaultRegionalLookup`) is
+ * read with the server's own `htmlToText`, not with `replace(/<[^>]+>/g, "")`, which deleted everything from a
+ * "<" to the next ">" ("P < 0.001 … effect sizes > 0.5" lost the text between): the off-topic and figure checks of
+ * an answer that cites such a record now read the whole abstract the server shows a model.
  */
-export const SCORER_VERSION = 8;
+export const SCORER_VERSION = 9;
 
 /** First scorer version without the rubric citation proxy. */
 const FIRST_VERSION_WITHOUT_PROXY = 8;
@@ -203,6 +207,7 @@ export function rowFromBreakdown(record: RunRecord, breakdown: ScoreBreakdown): 
     split: record.split ?? query?.split ?? "dev",
     key_kind: kind,
     retrieval_only: record.retrievalOnly ?? query?.retrievalOnly ?? false,
+    beyond_pubmed: record.beyondPubmed ?? query?.beyondPubmed ?? false,
     condition: record.condition,
     model: record.model,
     run: record.run,

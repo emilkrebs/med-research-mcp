@@ -10,6 +10,7 @@ export function scoreRow(over: Partial<ScoreRow> = {}): ScoreRow {
     split: "dev",
     key_kind: "values",
     retrieval_only: false,
+    beyond_pubmed: false,
     condition: "mcp",
     model: "m1",
     run: 1,

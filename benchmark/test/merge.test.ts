@@ -65,7 +65,7 @@ describe("legacy CSV parsing", () => {
 describe("current CSV format", () => {
   it("round-trips every column, keeping blanks as NaN", () => {
     const rows: ScoreRow[] = [
-      scoreRow({ query_id: "q", run: 2, split: "test", retrieval_only: true, pmids_fabricated: 2, pmids_off_topic: 1, other_citations: 4, citations_checked: 3, citations_misattributed: 1 }),
+      scoreRow({ query_id: "q", run: 2, split: "test", retrieval_only: true, beyond_pubmed: true, pmids_fabricated: 2, pmids_off_topic: 1, other_citations: 4, citations_checked: 3, citations_misattributed: 1 }),
       scoreRow({ query_id: "r", key_kind: "rubric", accuracy: 7.5, accuracy_source: "human", accuracy_graders: 2 }),
       scoreRow({ query_id: "u", key_kind: "rubric", accuracy: Number.NaN, accuracy_source: "ungraded" }),
       scoreRow({ query_id: "c", key_kind: "accept", category: "control", accuracy: 10, accuracy_source: "accept", bullshit_score: 1 }),
@@ -73,6 +73,40 @@ describe("current CSV format", () => {
       scoreRow({ query_id: "p", status: "provider-error", accuracy: Number.NaN, evidence_quality: Number.NaN }),
     ];
     expect(parseCsv(toCsv(rows)).map(toScoreRow)).toEqual(rows);
+  });
+});
+
+describe("the beyond_pubmed column", () => {
+  const header = toCsv([scoreRow()]).split("\n")[0]!;
+
+  it("is written right after retrieval_only and read back as a boolean", () => {
+    const cols = header.split(",");
+    expect(cols.indexOf("beyond_pubmed")).toBe(cols.indexOf("retrieval_only") + 1);
+    const rows = [scoreRow({ query_id: "a", beyond_pubmed: true }), scoreRow({ query_id: "b", beyond_pubmed: false })];
+    const back = parseCsv(toCsv(rows)).map(toScoreRow);
+    expect(back.map((r) => r.beyond_pubmed)).toEqual([true, false]);
+    expect(back).toEqual(rows);
+  });
+
+  it("an older CSV without the column reads as the catalog says: false for every query the catalog has", () => {
+    const old = header
+      .split(",")
+      .filter((c) => c !== "beyond_pubmed");
+    const cells = (id: string): string =>
+      old
+        .map((c) => ({ query_id: id, category: "factual", split: "dev", key_kind: "values", retrieval_only: "false", condition: "mcp", model: "m1", run: "1", status: "ok", accuracy: "10", accuracy_source: "deterministic", tools_used: "" })[c as string] ?? "1")
+        .join(",");
+    const [known, unknown] = parseCsv(`${old.join(",")}\n${cells(values.id)}\n${cells("t-retired-99")}\n`).map(toScoreRow);
+    expect(known!.beyond_pubmed).toBe(false);
+    expect(unknown!.beyond_pubmed).toBe(false);
+    expect(known!.accuracy).toBe(10);
+  });
+
+  it("a cell wins over the catalog, and an empty cell falls back to it", () => {
+    const base = parseCsv(toCsv([scoreRow({ query_id: values.id, beyond_pubmed: true })])).map((r) => r)[0]!;
+    expect(toScoreRow(base).beyond_pubmed).toBe(true);
+    expect(toScoreRow({ ...base, beyond_pubmed: "false" }).beyond_pubmed).toBe(false);
+    expect(toScoreRow({ ...base, beyond_pubmed: "" }).beyond_pubmed).toBe(false); // the catalog's query is not beyond PubMed
   });
 });
 

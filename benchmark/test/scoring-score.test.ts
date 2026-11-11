@@ -264,6 +264,24 @@ describe("rowFromBreakdown", () => {
     expect(fromRecord.split).toBe("test");
   });
 
+  it("takes beyond-PubMed from the record, then from the catalog (no catalog query has it yet)", async () => {
+    const { v } = verifier(["28202713"]);
+    const { breakdown } = await scoreRun(record(), query("factual-04"), v);
+    expect(rowFromBreakdown(record(), breakdown).beyond_pubmed).toBe(false);
+    expect(rowFromBreakdown(record({ beyondPubmed: true }), breakdown).beyond_pubmed).toBe(true);
+    // The record's flag is what the answer was generated under; it wins over the catalog's, as retrieval-only does.
+    const q = query("factual-04");
+    q.beyondPubmed = true;
+    try {
+      expect(rowFromBreakdown(record(), breakdown).beyond_pubmed).toBe(true);
+      expect(rowFromBreakdown(record({ beyondPubmed: false }), breakdown).beyond_pubmed).toBe(false);
+    } finally {
+      delete q.beyondPubmed;
+    }
+    // A breakdown stored in JSON gives the same row.
+    expect(rowFromBreakdown(record({ beyondPubmed: true }), JSON.parse(JSON.stringify(breakdown)) as ScoreBreakdown)).toEqual(rowFromBreakdown(record({ beyondPubmed: true }), breakdown));
+  });
+
   it("handles legacy v1 breakdowns (no status/scorerVersion/other, evidence-score kind, a composite)", () => {
     const legacy = {
       accuracy: { score: 7.5, kind: "evidence-score" },

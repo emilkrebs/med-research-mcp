@@ -46,7 +46,7 @@
  * NCBI's rate limits.
  */
 
-import { classifyArticle, fetchLiterature, NcbiClient, parseEuropePmc, PubMedAdapter, NullCache } from "../core.js";
+import { classifyArticle, fetchLiterature, htmlToText, NcbiClient, parseEuropePmc, PubMedAdapter, NullCache } from "../core.js";
 import type { Correction, StudyType } from "../core.js";
 import type { EvidenceDetail } from "../types.js";
 import { isOffTopic } from "./attribution.js";
@@ -419,8 +419,9 @@ export async function defaultRegionalLookup(item: RegionalId): Promise<PmidFacts
   // The adapter's parser reads the metadata the classification uses (publication types, MeSH, retraction links).
   const meta = parseEuropePmc({ resultList: { result: [r] } }).articles[0];
   return regionalFacts(item.id, "europepmc", {
-    title: str(r.title).replace(/\.$/, ""),
-    abstract: str(r.abstractText).replace(/<[^>]+>/g, ""),
+    // The server's own markup reader (src/core/text.ts): a bare "<" in the text ("P < 0.001 … > 0.5") stays.
+    title: htmlToText(str(r.title)).replace(/\.$/, ""),
+    abstract: htmlToText(str(r.abstractText)),
     authors: str(r.authorString).split(/[;,]/).map((x) => x.trim().replace(/\.$/, "")).filter(Boolean),
     pubDate: str(r.pubYear) || str(r.firstPublicationDate),
     journal: str(r.journalTitle),

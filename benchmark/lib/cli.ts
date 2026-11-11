@@ -9,7 +9,20 @@ import { CONDITIONS, DEFAULT_MODELS, DEFAULTS, MODELS, type ModelSpec } from "./
 import { QUERIES, queriesOf, queryById } from "./queries.js";
 import type { BenchmarkQuery, Category, ConditionId, Split } from "./types.js";
 
-export const CATEGORIES: Category[] = ["factual", "drill-down", "synthesis", "edge-case", "compound", "recent", "bullshit", "lookup", "control"];
+export const CATEGORIES: Category[] = [
+  "factual",
+  "drill-down",
+  "synthesis",
+  "edge-case",
+  "compound",
+  "recent",
+  "bullshit",
+  "lookup",
+  "control",
+  "preprint",
+  "regional",
+  "fulltext",
+];
 
 /** The set a run takes its queries from. */
 export type SplitChoice = Split | "all";

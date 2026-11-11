@@ -18,6 +18,7 @@ import { SKILL_TEXT, SYSTEM_PROMPT } from "../lib/config.js";
 import { QUERIES } from "../lib/queries.js";
 import { pubmedTools } from "../lib/tools/pubmed.js";
 import type { BenchmarkQuery } from "../lib/types.js";
+import { CITE_RECORD } from "../scripts/merge-heldout.js";
 
 const SKILLS_DIR = fileURLToPath(new URL("../../skills", import.meta.url));
 
@@ -138,6 +139,53 @@ describe("the leak guard itself", () => {
     expect(question(byId("drill-down-03"))).toBe(
       "The SUSTAIN-6 semaglutide cardiovascular outcomes trial: what was its primary composite endpoint, and what hazard ratio did it report for that endpoint?",
     );
+  });
+});
+
+describe("the leak guard covers the beyond-PubMed kinds", () => {
+  const TAIL = "Finish your reply with one line in EXACTLY this format and nothing else on that line:";
+  const make = (id: string, category: BenchmarkQuery["category"], source: NonNullable<Extract<BenchmarkQuery["answerKey"], { kind: "values" }>["source"]>, expected: string[], cite = CITE_RECORD): BenchmarkQuery => ({
+    id,
+    category,
+    prompt: `A 2026 report of a randomized trial of supervised exercise in frail older adults: how many were randomized, and how many had an event? ${cite} ${TAIL}\n\`ANSWER — ${category === "fulltext" ? "PMID: <number>" : "record: <id>"} | randomized: <number> | events: <number>\``,
+    answerKey: { kind: "values", expected, source },
+    beyondPubmed: true,
+    verified: true,
+  });
+  const preprint = make("t-preprint-01", "preprint", { database: "europepmc", id: "PPR1305370", quote: "60 patients were randomized" }, ["record: PPR1305370", "randomized: 60", "events: 14"]);
+  const cba = make("t-regional-01", "regional", { database: "europepmc", id: "CBA:633654", quote: "60 cases were randomized" }, ["record: CBA:633654", "randomized: 60", "events: 14"]);
+  const chinaxiv = make("t-regional-09", "regional", { database: "chinaxiv", id: "chinaxiv-202304.00908", quote: "60 cases were randomized" }, ["record: chinaxiv-202304.00908", "randomized: 60", "events: 14"]);
+  const fulltext = make(
+    "t-fulltext-01",
+    "fulltext",
+    { database: "pubmed", id: "34728476", quote: "1200 adults were randomized", fullTextQuote: "The median follow-up was 18 months." },
+    ["pmid: 34728476", "randomized: 1200", "follow-up months: 18"],
+    "Cite the PMID.",
+  );
+
+  it("reads the id of a preprint, a Chinese Biological Abstracts record, a ChinaXiv record and a full-text trial", () => {
+    expect(answerIds(preprint)).toEqual(["PPR1305370", "1305370"]);
+    expect(answerIds(cba)).toEqual(["CBA:633654", "633654"]);
+    expect(answerIds(chinaxiv)).toEqual(["chinaxiv-202304.00908", "202304.00908"]);
+    expect(answerIds(fulltext)).toEqual(["34728476"]);
+    expect(question(preprint)).toBe("A 2026 report of a randomized trial of supervised exercise in frail older adults: how many were randomized, and how many had an event?");
+    expect(question(fulltext)).toBe(question(preprint));
+  });
+
+  it("catches a text that names one of their records, by id or by link, or asks their question", () => {
+    expect(leaks("e.g. PPR1305370", [preprint]).join()).toContain("t-preprint-01: contains its record id PPR1305370");
+    expect(leaks("see https://europepmc.org/article/PPR/PPR1305370", [preprint]).length).toBeGreaterThan(0);
+    expect(leaks("records such as CBA:633654", [cba]).join()).toContain("t-regional-01: contains its record id CBA:633654");
+    expect(leaks("https://europepmc.org/article/CBA/633654", [cba])).toEqual(["t-regional-01: contains its record id 633654"]);
+    expect(leaks("for example chinaxiv-202304.00908", [chinaxiv]).join()).toContain("t-regional-09: contains its record id chinaxiv-202304.00908");
+    expect(leaks("PMID 34728476 is a trial", [fulltext])).toEqual(["t-fulltext-01: contains its record id 34728476"]);
+    expect(leaks(`Worked example: ${question(preprint)}`, [preprint, cba, fulltext]).join()).toContain("t-preprint-01: contains its question verbatim");
+    expect(leaks(`> "${question(fulltext)}"`, [fulltext]).join()).toContain("worked example");
+  });
+
+  it("does not fire on an id that is only a longer number, or on a different record of the same kind", () => {
+    expect(leaks("PPR13053701, and 21305370 trials", [preprint])).toEqual([]);
+    expect(leaks("e.g. PPR1305371 or CBA:633655 or chinaxiv-202304.00909", [preprint, cba, chinaxiv])).toEqual([]);
   });
 });
 

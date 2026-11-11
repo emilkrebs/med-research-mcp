@@ -8,6 +8,7 @@ export const CSV_COLUMNS: (keyof ScoreRow)[] = [
   "split",
   "key_kind",
   "retrieval_only",
+  "beyond_pubmed",
   "condition",
   "model",
   "run",

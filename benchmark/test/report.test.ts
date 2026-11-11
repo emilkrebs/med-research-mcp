@@ -8,10 +8,10 @@ const row = (over: Partial<ScoreRow> = {}): ScoreRow => scoreRow({ tools_used: "
 
 describe("toCsv", () => {
   it("writes NaN as an empty cell and has the columns a reader needs to filter on", () => {
-    const csv = toCsv([row({ accuracy: Number.NaN, key_kind: "rubric", accuracy_source: "ungraded", split: "test", retrieval_only: true })]);
+    const csv = toCsv([row({ accuracy: Number.NaN, key_kind: "rubric", accuracy_source: "ungraded", split: "test", retrieval_only: true, beyond_pubmed: true })]);
     const [header, line] = csv.trim().split("\n");
     const cols = header!.split(",");
-    for (const c of ["status", "split", "key_kind", "retrieval_only", "accuracy_source", "total_tokens", "pmids_off_topic", "other_citations"]) expect(cols).toContain(c);
+    for (const c of ["status", "split", "key_kind", "retrieval_only", "beyond_pubmed", "accuracy_source", "total_tokens", "pmids_off_topic", "other_citations"]) expect(cols).toContain(c);
     expect(cols).not.toContain("composite");
     expect(cols).toEqual(CSV_COLUMNS);
     expect(csv).not.toContain("NaN");
@@ -23,6 +23,7 @@ describe("toCsv", () => {
     expect(cells[cols.indexOf("split")]).toBe("test");
     expect(cells[cols.indexOf("key_kind")]).toBe("rubric");
     expect(cells[cols.indexOf("retrieval_only")]).toBe("true");
+    expect(cells[cols.indexOf("beyond_pubmed")]).toBe("true");
     expect(cells[cols.indexOf("total_tokens")]).toBe("150");
   });
 });

@@ -20,15 +20,21 @@ export {
   classifyArticle,
   DESIGN_TIER,
   parseEuropePmc,
+  parseChinaRXiv,
   STUDY_TYPES,
   NcbiClient,
   PubMedAdapter,
+  ChinaRXivAdapter,
   LRUBackend,
   NullCache,
   createCache,
 } from "../../src/core/index.js";
 
 export { envSetting } from "../../src/core/version.js";
+
+// The server's own reading of the markup in a Europe PMC title and abstract, so that the scorer and the
+// candidate writer see the text exactly as the server shows it to a model.
+export { htmlToText } from "../../src/core/text.js";
 
 export { createServer } from "../../src/mcp/server.js";
 

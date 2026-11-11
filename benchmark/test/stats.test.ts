@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bootstrapMeanCI, comparePaired, holm, median, wilcoxon } from "../lib/stats.js";
+import { bootstrapMeanCI, comparePaired, holm, median, roundP, wilcoxon } from "../lib/stats.js";
 
 // Darwin's Zea mays paired differences (cross- minus self-fertilized heights), n=15, no ties.
 // Reference: R `wilcox.test(cross, self, paired = TRUE)` → V = 96, p-value = 0.04126 (exact);
@@ -195,5 +195,23 @@ describe("holm", () => {
     expect(Number.isNaN(adj[0])).toBe(true);
     expect(adj[1]).toBeCloseTo(0.01, 10);
     expect(holm([])).toEqual([]);
+  });
+});
+
+describe("p-values are rounded to 6 decimals, but never to zero", () => {
+  it("roundP keeps a positive value that 6 decimals would turn into 0, and rounds the rest as before", () => {
+    expect(roundP(0.1234567891)).toBe(0.123457);
+    expect(roundP(1)).toBe(1);
+    expect(roundP(0)).toBe(0);
+    expect(roundP(2e-12)).toBe(2e-12);
+    expect(roundP(0.0000004)).toBe(0.0000004);
+    expect(roundP(0.0000006)).toBe(0.000001);
+  });
+
+  it("an exact test of 40 one-sided differences is 2 / 2^40, not 0", () => {
+    const r = wilcoxon(Array.from({ length: 40 }, (_, i) => i + 1));
+    expect(r.method).toBe("exact");
+    expect(r.p).toBeGreaterThan(0);
+    expect(r.p).toBeCloseTo(2 / 2 ** 40, 20);
   });
 });

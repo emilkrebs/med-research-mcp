@@ -134,7 +134,7 @@ The `med-research` skill's three worked examples and its query-syntax examples w
 - **The query-syntax examples** (zinc and the common cold) were run: `"Zinc"[mesh] AND "Common Cold"[mesh]` with `Hemilä H[au]` returns records.
 - **The example id in the `literature_fetch` description** (`CBA:644599`) resolves in Europe PMC. It replaces `CBA:521529`, the answer record of a benchmark query.
 
-The benchmark's held-out answer keys were written on the same day from the PubMed abstracts; each key quotes the passage it rests on, and `npm --prefix benchmark run verify-keys` checks every quote and number against the live record.
+The benchmark's held-out answer keys were written on the same day from PubMed abstracts, Europe PMC and ChinaXiv records and article full texts; each key quotes the passage it rests on, and `npm --prefix benchmark run verify-keys` checks every quote and number against the live record.
 
 ## Open items
 

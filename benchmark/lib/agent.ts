@@ -244,6 +244,7 @@ export async function runOne(
     category: query.category,
     split: query.split ?? "dev",
     ...(query.retrievalOnly ? { retrievalOnly: true } : {}),
+    ...(query.beyondPubmed ? { beyondPubmed: true } : {}),
     condition,
     model: model.label,
     provider: model.provider,

@@ -4,7 +4,12 @@
  * The query families. The development set uses the spec's six plus `recent`
  * (literature newer than the models' training data); the held-out set uses
  * `lookup` (a sampled trial to find and read), `bullshit` (a fabricated study)
- * and `control` (a real study asked about in the same form as a fabricated one).
+ * and `control` (a real study asked about in the same form as a fabricated one),
+ * and, from version 2, three kinds whose answer is in no PubMed abstract
+ * (`beyondPubmed`): `preprint` (a Europe PMC preprint without a PubMed record),
+ * `regional` (a Chinese Biological Abstracts record or a ChinaXiv preprint) and
+ * `fulltext` (a figure the full text of a PubMed-indexed trial states and its
+ * abstract does not).
  */
 export type Category =
   | "factual"
@@ -15,7 +20,10 @@ export type Category =
   | "bullshit"
   | "recent"
   | "lookup"
-  | "control";
+  | "control"
+  | "preprint"
+  | "regional"
+  | "fulltext";
 
 /**
  * Which set a query belongs to. `dev` queries were used while building the
@@ -37,10 +45,19 @@ export interface KeySource {
   id: string;
   /**
    * Verbatim passage of the record's abstract (or title) that states every
-   * expected number. `scripts/verify-keys.ts` fetches the record and checks that
-   * the passage is in it and that each expected number is in the passage.
+   * expected number (but the full-text figure of a `fulltext` key, see `fullTextQuote`).
+   * `scripts/verify-keys.ts` fetches the record and checks that the passage is in it
+   * and that each expected number is in the passage.
    */
   quote: string;
+  /**
+   * `fulltext` keys only: a verbatim passage of the record's FULL TEXT, as the library's own
+   * full-text function (`literature_fulltext`) returns it, that states the figure the abstract
+   * does not. `quote` then covers the number the abstract states, `fullTextQuote` the other one.
+   * `scripts/verify-keys.ts` fetches the full text and checks that the passage is in it and holds
+   * the number, and that the abstract does not contain that number at all.
+   */
+  fullTextQuote?: string;
 }
 
 /**
@@ -113,6 +130,13 @@ export interface BenchmarkQuery {
    * are decided before the run, so tests are also reported without them.
    */
   retrievalOnly?: boolean;
+  /**
+   * True when the answer is not stated in any PubMed abstract: a preprint without a PubMed record,
+   * a record only a regional database holds, or a figure only a full text states. The plain PubMed
+   * tools cannot reach such an answer by construction, so the report separates these queries
+   * (`accuracy_beyond_pubmed`) from the ones PubMed can answer (`accuracy_in_pubmed`).
+   */
+  beyondPubmed?: boolean;
   /** Clinical field of a held-out `lookup` query (its sampling stratum). */
   specialty?: string;
 }
@@ -185,6 +209,8 @@ export interface RunRecord {
   split?: Split;
   /** The query's `retrievalOnly` flag when it ran. Absent on older records. */
   retrievalOnly?: boolean;
+  /** The query's `beyondPubmed` flag when it ran. Absent on older records and when false. */
+  beyondPubmed?: boolean;
   condition: ConditionId;
   /** Model label from config (e.g. `deepseek-v4.1-flash`), not the raw provider id. */
   model: string;
@@ -237,6 +263,8 @@ export interface ScoreRow {
   key_kind: AnswerKey["kind"];
   /** The query's `retrievalOnly` flag. */
   retrieval_only: boolean;
+  /** The query's `beyondPubmed` flag: the answer is in no PubMed abstract. */
+  beyond_pubmed: boolean;
   condition: ConditionId;
   model: string;
   run: number;

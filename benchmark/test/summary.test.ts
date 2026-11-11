@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSummary, toMarkdown, type ConditionSummary, type Summary, type SummaryMeta, type SummaryTest } from "../lib/report/summary.js";
+import { buildSummary, fmtP, partitionByCatalog, toMarkdown, type ConditionSummary, type Summary, type SummaryMeta, type SummaryTest } from "../lib/report/summary.js";
 import type { ConditionId, ScoreRow, Split } from "../lib/types.js";
 import { scoreRow as row } from "./helpers.js";
 
@@ -344,5 +344,187 @@ describe("markdown", () => {
     const s = buildSummary(rows, meta());
     expect(s.splits.dev!.category_accuracy.m1!.factual!.mcp).toEqual({ mean: 8, queries: 1 });
     expect(toMarkdown(s)).toContain("| factual | 1 | 2.00 | 8.00 |");
+  });
+});
+
+describe("queries that left the catalog", () => {
+  // `gone` stands for a retired lookup: its rows are in a stored run, its query is not in the catalog any more.
+  const inCatalog = (id: string): boolean => !id.startsWith("gone");
+  const rows = [
+    row({ query_id: "keep1", condition: "closed-book", accuracy: 0 }),
+    row({ query_id: "keep1", condition: "mcp", accuracy: 10 }),
+    row({ query_id: "keep2", condition: "closed-book", accuracy: 0 }),
+    row({ query_id: "keep2", condition: "mcp", accuracy: 10 }),
+    row({ query_id: "gone1", category: "lookup", split: "test", condition: "closed-book", accuracy: 10 }),
+    row({ query_id: "gone1", category: "lookup", split: "test", condition: "mcp", accuracy: 0, status: "provider-error" }),
+    row({ query_id: "gone2", category: "lookup", split: "test", condition: "mcp", accuracy: 3 }),
+    row({ query_id: "gone2", category: "lookup", split: "test", condition: "closed-book", accuracy: 3 }),
+  ];
+  const s = buildSummary(rows, meta(["closed-book", "mcp"], { total_responses: rows.length }), { inCatalog });
+
+  it("partitions rows by the catalog", () => {
+    const { kept, retired } = partitionByCatalog(rows, inCatalog);
+    expect(kept.map((r) => r.query_id)).toEqual(["keep1", "keep1", "keep2", "keep2"]);
+    expect(retired).toHaveLength(4);
+  });
+
+  it("are left out of every number: queries, means, runs, missing runs, tests, categories", () => {
+    expect(Object.keys(s.splits)).toEqual(["dev"]); // the retired rows were the only held-out ones
+    expect(s.splits.dev!.queries).toBe(2);
+    const c = cond(s, "mcp");
+    expect(c.runs).toBe(2);
+    expect(c.runs_missing).toBe(0); // gone1's provider error is not a missing run of the report
+    expect(c.status_rates["provider-error"]).toBe(0);
+    expect(c.accuracy_keyed).toMatchObject({ mean: 10, queries: 2 });
+    expect(cond(s, "closed-book").accuracy_keyed).toMatchObject({ mean: 0, queries: 2 });
+    expect(tests(s)[0]).toMatchObject({ n: 2, queries_dropped: 0 });
+    expect(s.splits.dev!.category_accuracy.m1!.lookup).toBeUndefined();
+    expect(s._meta.total_responses).toBe(4);
+  });
+
+  it("are counted in the meta and in one warning line", () => {
+    expect(s._meta.retired_rows).toBe(4);
+    expect(s._meta.retired_queries).toBe(2);
+    const md = toMarkdown(s);
+    expect(md.match(/no longer in the catalog/g)).toHaveLength(1);
+    expect(md).toContain("4 rows of 2 queries that are no longer in the catalog were left out of every number below");
+    expect(md).toContain("4 responses ·");
+    expect(md).not.toContain("are missing");
+  });
+
+  it("change nothing when there are none, and without a catalog every row counts", () => {
+    const clean = buildSummary(rows.filter((r) => inCatalog(r.query_id)), meta(), { inCatalog });
+    expect(clean._meta.retired_rows).toBeUndefined();
+    expect(toMarkdown(clean)).not.toContain("no longer in the catalog");
+    const unfiltered = buildSummary(rows, meta());
+    expect(unfiltered._meta.retired_rows).toBeUndefined();
+    expect(unfiltered.splits.dev!.queries).toBe(2);
+    expect(unfiltered.splits.test!.queries).toBe(2);
+    expect(toMarkdown(unfiltered)).not.toContain("no longer in the catalog");
+  });
+});
+
+describe("queries whose answer is beyond PubMed", () => {
+  /** `inN` queries a PubMed abstract answers, `outN` beyond it; mcp reaches both, pubmed only the first kind. */
+  function mixed(inN: number, outN: number, conditions: ConditionId[] = ["mcp", "pubmed"]): ScoreRow[] {
+    const out: ScoreRow[] = [];
+    for (let i = 0; i < inN + outN; i++) {
+      const beyond = i >= inN;
+      const query_id = `${beyond ? "b" : "i"}${String(i).padStart(2, "0")}`;
+      for (const condition of conditions) {
+        const accuracy = condition === "pubmed" ? (beyond ? 0 : 10) : i % 5 === 0 ? 6.67 : 10;
+        out.push(row({ query_id, condition, beyond_pubmed: beyond, category: beyond ? "preprint" : "lookup", accuracy }));
+      }
+    }
+    return out;
+  }
+  const s = buildSummary(mixed(10, 10), meta(["mcp", "pubmed"]));
+
+  it("have their own accuracy estimates next to the keyed one", () => {
+    expect(cond(s, "pubmed").accuracy_keyed).toMatchObject({ mean: 5, queries: 20 });
+    expect(cond(s, "pubmed").accuracy_in_pubmed).toMatchObject({ mean: 10, queries: 10 });
+    expect(cond(s, "pubmed").accuracy_beyond_pubmed).toMatchObject({ mean: 0, queries: 10 });
+    // mcp: in-PubMed i00 and i05 score 6.67, the rest 10; beyond: i10 and i15 do.
+    expect(cond(s, "mcp").accuracy_in_pubmed.mean).toBeCloseTo((8 * 10 + 2 * 6.67) / 10, 3);
+    expect(cond(s, "mcp").accuracy_beyond_pubmed.mean).toBeCloseTo((8 * 10 + 2 * 6.67) / 10, 3);
+    expect(cond(s, "mcp").accuracy_in_pubmed.ci_95).not.toBeNull();
+  });
+
+  it("are left out of the in-PubMed estimate, rubric answers out of both", () => {
+    const rows = [...mixed(2, 2, ["mcp"]), row({ query_id: "r1", key_kind: "rubric", beyond_pubmed: true, accuracy: 9, accuracy_source: "human" })];
+    const c = cond(buildSummary(rows, meta(["mcp"])), "mcp");
+    expect(c.accuracy_beyond_pubmed.queries).toBe(2);
+    expect(c.accuracy_in_pubmed.queries).toBe(2);
+  });
+
+  it("show as two table columns when the split has both kinds, and only then", () => {
+    const md = toMarkdown(s);
+    expect(md).toContain("| Condition | Runs scored | Accuracy, keyed queries (0–10) | Accuracy, in PubMed (0–10) | Accuracy, beyond PubMed (0–10) | Fabricated studies rejected |");
+    expect(md).toContain("|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--|");
+    const columns = (md: string): number => md.split("\n").find((l) => l.startsWith("| mcp |"))!.split("|").length;
+    const header = (md: string): number => md.split("\n").find((l) => l.startsWith("| Condition | Runs scored"))!.split("|").length;
+    expect(columns(md)).toBe(header(md));
+    const one = toMarkdown(buildSummary(mixed(10, 0), meta(["mcp", "pubmed"])));
+    expect(one).not.toContain("beyond PubMed");
+    expect(one).toContain("| Condition | Runs scored | Accuracy, keyed queries (0–10) | Fabricated studies rejected |");
+    expect(one).toContain("|---|--:|--:|--:|--:|--:|--:|--:|--:|--|");
+    expect(toMarkdown(buildSummary(mixed(0, 10), meta(["mcp", "pubmed"])))).not.toContain("Accuracy, in PubMed");
+  });
+
+  it("add two subsets to mcp vs pubmed, in the same Holm family", () => {
+    const ts = tests(s);
+    expect(ts.map((t) => `${t.a}/${t.b}/${t.subset}`)).toEqual(["mcp/pubmed/keyed", "mcp/pubmed/keyed-in-pubmed", "mcp/pubmed/keyed-beyond-pubmed"]);
+    expect(ts[1]).toMatchObject({ n: 10 });
+    expect(ts[2]).toMatchObject({ n: 10 });
+    // Like for like, mcp is the one that lost points on two queries: pubmed scores 10 on all of them.
+    expect(ts[1]!.meanDiff).toBeLessThan(0);
+    expect(ts[2]!.meanDiff).toBeGreaterThan(9);
+    // One family: the smallest p is multiplied by the number of tests, three here.
+    const smallest = Math.min(...ts.map((t) => t.p_value));
+    expect(ts.find((t) => t.p_value === smallest)!.p_value_holm).toBeCloseTo(Math.min(1, 3 * smallest), 6);
+    const md = toMarkdown(s);
+    expect(md).toContain("**mcp vs pubmed**, keyed queries a PubMed abstract answers (like for like)");
+    expect(md).toContain("**mcp vs pubmed**, keyed queries beyond PubMed");
+  });
+
+  it("share the Holm family with the other pairs of the report", () => {
+    const rows = mixed(10, 10, ["mcp", "pubmed"]).concat(mixed(10, 10, ["closed-book"]));
+    const ts = tests(buildSummary(rows, meta(["closed-book", "mcp", "pubmed"])));
+    // mcp vs closed-book (keyed), then mcp vs pubmed with its two subsets: four tests in all.
+    expect(ts).toHaveLength(4);
+    const smallest = Math.min(...ts.map((t) => t.p_value));
+    expect(ts.find((t) => t.p_value === smallest)!.p_value_holm).toBeCloseTo(Math.min(1, 4 * smallest), 6);
+  });
+
+  it("say that plain PubMed tools cannot reach them, and only when the subsets exist", () => {
+    const md = toMarkdown(s);
+    expect(md).toContain("cannot reach them by construction");
+    expect(md).toContain("measures what the extra reach is worth, not answer quality");
+    expect(md).toContain("`keyed-in-pubmed` is the like-for-like comparison");
+    const plain = toMarkdown(buildSummary(mixed(10, 0), meta(["mcp", "pubmed"])));
+    expect(plain).not.toContain("cannot reach them by construction");
+    expect(tests(buildSummary(mixed(10, 0), meta(["mcp", "pubmed"]))).map((t) => t.subset)).toEqual(["keyed"]);
+  });
+
+  it("do not split other baselines, or a split whose pair has only one kind", () => {
+    const closed = buildSummary(mixed(10, 10, ["mcp", "closed-book"]), meta(["closed-book", "mcp"]));
+    expect(tests(closed).map((t) => t.subset)).toEqual(["keyed"]);
+    const web = buildSummary(mixed(10, 10, ["mcp", "web-search"]), meta(["web-search", "mcp"]));
+    expect(tests(web).map((t) => t.subset)).toEqual(["keyed"]);
+  });
+
+  it("the categories of the new kinds appear in the category table", () => {
+    const byCategory = s.splits.dev!.category_accuracy.m1!;
+    expect(Object.keys(byCategory)).toEqual(["lookup", "preprint"]);
+    expect(byCategory.preprint!.pubmed).toEqual({ mean: 0, queries: 10 });
+  });
+});
+
+describe("p-values in the report", () => {
+  // 40 queries where the first condition always wins: the exact two-sided p is 2 / 2^40, about 1.8e-12.
+  const rows = Array.from({ length: 40 }, (_, i) => [
+    row({ query_id: `w${String(i).padStart(2, "0")}`, condition: "closed-book", accuracy: i / 10 }),
+    row({ query_id: `w${String(i).padStart(2, "0")}`, condition: "mcp", accuracy: 10 }),
+  ]).flat();
+  const s = buildSummary(rows, meta());
+
+  it("one that four decimals cannot show prints as p<0.0001, and summary.json keeps its value", () => {
+    const t = tests(s)[0]!;
+    expect(t.p_value).toBeGreaterThan(0);
+    expect(t.p_value).toBeLessThan(1e-6);
+    expect(t.p_value_holm).toBeGreaterThan(0);
+    expect(JSON.parse(JSON.stringify(s)).splits.dev.tests.m1[0].p_value).toBe(t.p_value);
+    const md = toMarkdown(s);
+    expect(md).toContain("p<0.0001, p_holm<0.0001");
+    expect(md).not.toMatch(/p=0\.0[,)]|p_holm=0\.0[,)]/);
+  });
+
+  it("formats the others with two significant digits", () => {
+    expect(fmtP("p", 0.5)).toBe("p=0.50");
+    expect(fmtP("p", 1)).toBe("p=1.0");
+    expect(fmtP("p_holm", 0.00012)).toBe("p_holm=0.00012");
+    expect(fmtP("p", 0.0001)).toBe("p=0.00010");
+    expect(fmtP("p", 0.00009)).toBe("p<0.0001");
+    expect(fmtP("p_holm", 0)).toBe("p_holm<0.0001");
   });
 });
