@@ -204,6 +204,23 @@ describe("EuropePmcAdapter", () => {
     expect(urls[0]).toContain("FIRST_PDATE");
   });
 
+  it("puts the query in parentheses, so that a date or design clause filters all of an OR query", async () => {
+    const { http, urls } = recordingHttp(RESPONSE);
+    const adapter = new EuropePmcAdapter(http);
+    const sent = async (input: Parameters<EuropePmcAdapter["search"]>[0]) => {
+      await adapter.search(input);
+      return new URL(urls.at(-1)!).searchParams.get("query");
+    };
+    // Unparenthesized, Europe PMC counted 43,203 for this query in 2020, and 54,793 with parentheses (2026-11-11).
+    expect(await sent({ query: "creatine OR cognition", dateRange: { from: "2020" } })).toBe(
+      "(creatine OR cognition) AND (FIRST_PDATE:[2020-01-01 TO 3000-01-01])",
+    );
+    expect(await sent({ query: "creatine OR cognition", dateRange: { to: "2020-06" }, studyTypes: ["case-report"] })).toBe(
+      '(creatine OR cognition) AND (PUB_TYPE:"Case Reports") AND (FIRST_PDATE:[1900-01-01 TO 2020-06-30])',
+    );
+    expect(await sent({ query: "creatine OR cognition" })).toBe("creatine OR cognition");
+  });
+
   it("sorts by date as the merged results are, by first publication", async () => {
     const { http, urls } = recordingHttp(RESPONSE);
     await new EuropePmcAdapter(http).search({ query: "semaglutide", sort: "date" });

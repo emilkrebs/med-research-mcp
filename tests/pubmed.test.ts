@@ -446,6 +446,21 @@ describe("NcbiClient requests", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("sends both date bounds for a dateRange with one end open, as esearch ignores one sent alone", async () => {
+    const fetchMock = vi.fn(async () => esearchResponse(["1"]));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new NcbiClient({ email: "test@example.com" });
+    const dates = async (dateRange: { from?: string; to?: string }) => {
+      await client.esearch({ query: "creatine", dateRange });
+      const params = new URL(String((fetchMock.mock.calls.at(-1) as unknown[])[0])).searchParams;
+      return [params.get("datetype"), params.get("mindate"), params.get("maxdate")];
+    };
+    expect(await dates({ from: "2025-03" })).toEqual(["pdat", "2025/03", "3000"]);
+    expect(await dates({ to: "2005" })).toEqual(["pdat", "1000", "2005"]);
+    expect(await dates({ from: "2019-06-01", to: "2020-05-31" })).toEqual(["pdat", "2019/06/01", "2020/05/31"]);
+    expect(await dates({})).toEqual([null, null, null]);
+  });
+
   it("returns the same PMIDs for an identical search, as PubMed's relevance order varies between requests", async () => {
     const orders = [["1", "2"], ["2", "3"], ["4"], ["5"], ["6"]];
     const fetchMock = vi.fn(async () => esearchResponse(orders.shift()!));

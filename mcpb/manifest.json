@@ -3,7 +3,7 @@
   "manifest_version": "0.4",
   "name": "med-research-mcp",
   "display_name": "Med Research",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Evidence-graded scientific literature search for AI agents — multi-database (PubMed, Europe PMC, ChinaXiv, RussiaRxiv), built for medical, clinical and supplementation research.",
   "author": {
     "name": "Emil Krebs",
@@ -30,7 +30,7 @@
     },
     {
       "name": "literature_fulltext",
-      "description": "An article's full text as markdown via Unpaywall, an institutional proxy or the DOI, falling back to the abstract."
+      "description": "An article's full text as markdown via Europe PMC, Unpaywall, an institutional proxy or the DOI, falling back to the abstract for a PMID."
     }
   ],
   "server": {
