@@ -22,6 +22,13 @@ import type { Correction, CorrectionType, FetchInput, FetchOutput, GradedArticle
 const EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
 /** esearch serves only the first 9,999 PMIDs of a PubMed search ("'retstart' cannot be larger than 9998"). */
 const ESEARCH_LIMIT = 9_999;
+/**
+ * The bounds a dateRange with one end open is sent with. esearch applies mindate and maxdate only
+ * together: `creatine` counted 73,217 with no date, with mindate=2025 alone and with maxdate=2005
+ * alone, but 4,397 for 2025–3000 and 37,610 for 1000–2005 (2026-11-11).
+ */
+const OPEN_DATE_FROM = "1000";
+const OPEN_DATE_TO = "3000";
 /** PMIDs a relevance search takes per esearch request, so that its pages are cut from one list (see DEFAULT_SEARCH_TTL_MS). */
 const RELEVANCE_BLOCK = 500;
 /** Above this esearch count, refuse and ask the caller to narrow. */
@@ -238,8 +245,9 @@ export class NcbiClient {
     const params = new URLSearchParams({ db: "pubmed", term, retmode: "json" });
     if (input.dateRange?.from || input.dateRange?.to) {
       params.set("datetype", "pdat");
-      if (input.dateRange.from) params.set("mindate", input.dateRange.from.replace(/-/g, "/"));
-      if (input.dateRange.to) params.set("maxdate", input.dateRange.to.replace(/-/g, "/"));
+      // esearch ignores a mindate or maxdate sent alone, so an open end gets a bound every record is within.
+      params.set("mindate", (input.dateRange.from || OPEN_DATE_FROM).replace(/-/g, "/"));
+      params.set("maxdate", (input.dateRange.to || OPEN_DATE_TO).replace(/-/g, "/"));
     }
     const byDate = input.sort === "date";
     if (!byDate) params.set("sort", "relevance");

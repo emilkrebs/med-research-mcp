@@ -30,7 +30,7 @@ Params: `database`, `maxResults` (default 10, max 50 — per database and page, 
 
 ## Reading the design labels (`GradedArticle`)
 
-`studyType` comes **only** from NLM PublicationType tags — no text guessing. NLM now assigns them largely by automated indexing, so treat them as a strong prior: confirm in the abstract when it matters. The tags never name `cohort`, `case-control`, `cross-sectional` or `in-vitro`: those labels are for your own reading of an abstract (tagged observational studies come back as `observational`), so filtering on them returns nothing. `designTier` ranks the design for "does this intervention help?" by the OCEBM 2011 levels [1] — a prior, **not an appraisal**.
+`studyType` comes **only** from NLM PublicationType tags — no text guessing. NLM now assigns them by automated indexing, with human review of only some records, so treat them as a strong prior: confirm in the abstract when it matters. The tags never name `cohort`, `case-control`, `cross-sectional` or `in-vitro`: those labels are for your own reading of an abstract (tagged observational studies come back as `observational`), so filtering on them returns nothing. `designTier` ranks the design for "does this intervention help?" by the OCEBM 2011 levels [1] — a prior, **not an appraisal**.
 
 | designTier | studyType | Reading |
 |-----------|-----------|---------|

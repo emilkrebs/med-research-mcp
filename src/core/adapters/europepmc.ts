@@ -193,14 +193,14 @@ export class EuropePmcAdapter extends RestAdapter {
 
   private buildQuery(input: SearchInput, types: string[] | null): string {
     // PubMed field tags mean nothing here and would be searched as words.
-    let query = withoutPubMedTags(input.query);
-    if (types) query = `(${query}) AND (${types.map((t) => `PUB_TYPE:"${t}"`).join(" OR ")})`;
+    const query = withoutPubMedTags(input.query);
+    const clauses: string[] = [];
+    if (types) clauses.push(types.map((t) => `PUB_TYPE:"${t}"`).join(" OR "));
     const from = isoDateBound(input.dateRange?.from, "from");
     const to = isoDateBound(input.dateRange?.to, "to");
-    if (from || to) {
-      query += ` AND (FIRST_PDATE:[${from ?? "1900-01-01"} TO ${to ?? "3000-01-01"}])`;
-    }
-    return query;
+    if (from || to) clauses.push(`FIRST_PDATE:[${from ?? "1900-01-01"} TO ${to ?? "3000-01-01"}]`);
+    // In parentheses, so that a clause filters the whole query and not just the last operand of an OR in it.
+    return clauses.length > 0 ? [query, ...clauses].map((c) => `(${c})`).join(" AND ") : query;
   }
 
   private readonly paging = new LRUCache<string, QueryPaging>({ max: CURSOR_MEMO_MAX, ttl: CURSOR_MEMO_TTL_MS });

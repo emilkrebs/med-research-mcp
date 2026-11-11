@@ -125,6 +125,15 @@ describe("createServer", () => {
     const result = await client.callTool({ name: "literature_search", arguments: { query: "x", databases: "chinaxiv" } });
     expect(result.isError).toBe(true);
     expect((result.content as { text: string }[])[0]!.text).toContain("databases");
+    // The other two tools too: `DOI` for `doi` would otherwise read as "no DOI given".
+    for (const [name, args] of [
+      ["literature_fetch", { ids: ["1"], database: "pubmed", id: "1" }],
+      ["literature_fulltext", { id: "chinaxiv-202401.00027", DOI: "10.1000/x" }],
+    ] as const) {
+      const refused = await client.callTool({ name, arguments: args });
+      expect(refused.isError, name).toBe(true);
+      expect((refused.content as { text: string }[])[0]!.text, name).toMatch(/"(id|DOI)"/);
+    }
     await client.close();
     await server.close();
   });

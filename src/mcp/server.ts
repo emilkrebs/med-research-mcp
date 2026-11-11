@@ -134,8 +134,10 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .describe(
         "Search query: 2-5 keywords, not a sentence. Every space-separated word is required (ANDed), so each extra word " +
           "narrows the results and a long phrase finds nothing. If 0 results come back, retry with fewer keywords before " +
-          "concluding that no evidence exists. " +
-          "PubMed field tags ([tiab], [mesh], [au]) apply to the pubmed database; for other databases they are removed. " +
+          "concluding that no evidence exists. OR (upper case) joins alternatives on pubmed and europepmc; chinaxiv and " +
+          "russiarxiv read it as one more required word. " +
+          "PubMed field tags ([tiab], [mesh], [au]) apply to the pubmed database; for other databases they are removed, " +
+          "leaving their words to match anywhere. " +
           "The query is sent to third-party databases: never include names, dates of birth, record numbers or other details that " +
           "identify a person; describe the condition or intervention instead.",
       ),
@@ -146,8 +148,9 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .optional()
       .describe(
         'Database(s) to search: a single id, an array of ids, or "all". Default "pubmed". ' +
-          "Options: pubmed, europepmc (Europe + preprints), chinaxiv (Chinese preprints) and russiarxiv (Soviet-era " +
-          "papers), both via ChinaRxiv, a third-party service that machine-translates them into English.",
+          "Options: pubmed, europepmc (PubMed's records plus preprints and other sources), chinaxiv (Chinese preprints) " +
+          "and russiarxiv (Soviet-era papers), both via ChinaRxiv, a third-party service that machine-translates them " +
+          "into English.",
       ),
     maxResults: z.number().int().min(1).max(50).optional().describe("Results per database and page. Default 10, max 50."),
     page: z
@@ -160,7 +163,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         "Page of results, from 1 (default): page 2 holds each database's next maxResults records. Ask for the nextPage " +
           "a result gives to read past the first page, with the same maxResults (another one shifts the pages, repeating or " +
           "skipping records); each page is merged and sorted on its own. Paging reaches only " +
-          "the first 10,000 records of a search: narrow the query instead.",
+          "each database's first 10,000 records of a search, and a page starting past them is refused: narrow the query instead.",
       ),
     minDesignTier: z
       .number()
@@ -168,7 +171,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .max(5)
       .optional()
       .describe(
-        "Drop results below this design tier (0-5; 4 = RCTs). Results with designTier null — unclassified records and most " +
+        "Drop results below this design tier (0-5; 4 = RCTs). No design gets tier 3, and only network meta-analyses get 5, " +
+          "so 3 acts like 4 and 5 keeps little. Results with designTier null — unclassified records and all other " +
           "meta-analyses/systematic reviews — are left out too: the query is narrowed like studyTypes, so they are never " +
           "fetched, and a warning says so. To keep reviews and trials, use studyTypes instead.",
       ),
@@ -176,8 +180,9 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .array(z.enum(STUDY_TYPES))
       .optional()
       .describe(
-        "Keep only these study types. PubMed and Europe PMC are queried for them, so maxResults counts matching " +
-          "records; chinaxiv and russiarxiv, which have no design metadata, are skipped. cohort, case-control, " +
+        "Keep only these study types. PubMed and Europe PMC are queried for their publication types, so a page holds " +
+          "matching records, short only of those classified as another type (a meta-analysis also tagged as a trial); " +
+          "chinaxiv and russiarxiv, whose records are all unknown, are skipped unless unknown is asked for. cohort, case-control, " +
           "cross-sectional and in-vitro are never assigned from metadata (tagged observational studies come back as " +
           "observational), so filtering on them returns nothing. animal-study comes only from veterinary publication types; " +
           "laboratory animal studies are not labeled with it but flagged animals-not-humans.",
@@ -186,15 +191,17 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .object({ from: isoDate.optional(), to: isoDate.optional() })
       .optional()
       .describe(
-        "Publication date filter: YYYY-MM-DD, YYYY-MM or YYYY (a year or month covers all of it). It matches the electronic " +
-          "publication date too, so a record published online within the range can show a later pubDate; see its epubDate.",
+        "Publication date filter: YYYY-MM-DD, YYYY-MM or YYYY (a year or month covers all of it); from or to alone leaves " +
+          "the other end open. On pubmed and europepmc it matches the electronic publication date too, so a record " +
+          "published online within the range can show a later pubDate; see its epubDate.",
       ),
     sort: z
       .enum(["relevance", "date"])
       .optional()
       .describe(
-        'Default "relevance": each database\'s relevance order, re-sorted by design tier. "date": newest first by first ' +
-          "publication (the earlier of pubDate and epubDate), across databases.",
+        'Default "relevance": each database\'s relevance order, re-sorted by design tier, with null tiers after tier 2. ' +
+          '"date": newest first by first publication (the earlier of pubDate and epubDate). chinaxiv and russiarxiv ' +
+          "ignore it: they still return their most relevant records, which are only put in date order within the page.",
       ),
     language: z
       .string()
@@ -210,18 +217,18 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     {
       title: "Search scientific literature (multi-database)",
       description:
-        "Search one or more scientific databases and return results with their study design. " +
-        `Databases: ${DATABASES.join(", ")}, or "all" to fan out to every source. ` +
-        "studyType comes only from NLM PublicationType tags (PubMed, Europe PMC; assigned largely by NLM's automated " +
-        "indexing). Records without them are 'unknown' with designTier null: read the abstract to judge the design. " +
+        "Search one or more scientific databases (PubMed, Europe PMC, ChinaXiv, RussiaRxiv) and return results with " +
+        "their study design. " +
+        "studyType comes only from NLM PublicationType tags (PubMed, Europe PMC; assigned by NLM's automated indexing, " +
+        "with human review of some records). Records without one that names a design are 'unknown' with designTier null. " +
         "designTier (0-5) ranks the design for 'does this intervention help?' by the OCEBM 2011 levels; it is not an " +
-        "appraisal. A meta-analysis or systematic review ranks with the studies it pooled, which metadata rarely shows, " +
-        "so its designTier is usually null: read the abstract to see what it pooled. flags marks retracted, notice, " +
+        "appraisal. A meta-analysis or systematic review ranks with the studies it pooled, which the tags don't say, so " +
+        "its designTier is null unless it is tagged Network Meta-Analysis (5). For a null tier, read the abstract to judge " +
+        "the design, or to see what a review pooled. flags marks retracted, notice, " +
         "protocol and editorial records (designTier 0), and warns of an expression of concern, an erratum (corrected), " +
         "a newer version (updated), animals-not-humans indexing, preprints, letters, machine-translated text and " +
         "machine-generated abstracts (chinaxiv, russiarxiv: check originalUrl before relying on a number). Results are " +
-        'merged, de-duplicated by DOI, and sorted by design tier (or by date with sort: "date"). Results come in pages of ' +
-        "maxResults per database; when nextPage is set, pass it as page, with the same maxResults, for the next ones. " +
+        "merged, de-duplicated by DOI and sorted (see sort), a page at a time: when nextPage is set, more follow (see page). " +
         "Always cheap — no LLM calls. " +
         "Use literature_fetch to get full metadata for specific ids, and literature_fulltext for the article body.",
       // Strict, so a misnamed key (e.g. `databases`) errors instead of being stripped and silently searching PubMed.
@@ -254,8 +261,9 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .min(1)
       .max(50)
       .describe(
-        "Database-specific ids to fetch: PMIDs for pubmed; PMIDs or prefixed ids (e.g. CBA:644599, PPR… preprints) " +
-          "for europepmc; the ids literature_search returned for chinaxiv and russiarxiv.",
+        "Database-specific ids to fetch, as literature_search returns them in pmid (the database's own id, whichever " +
+          "the database): PMIDs for pubmed; PMIDs, PMCIDs or prefixed ids (e.g. CBA:644599, PPR… preprints) for europepmc; " +
+          "the ids literature_search returned for chinaxiv and russiarxiv.",
       ),
     database: z.enum(DATABASES).describe(`Which database the ids belong to: ${DATABASES.join(", ")}.`),
   };
@@ -266,10 +274,12 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       title: "Fetch scientific articles (multi-database)",
       description:
         "Fetch full metadata and abstracts for one or more ids from a specific database. " +
-        "Returns raw article objects with publication types, MeSH headings and retraction/correction links (plus " +
-        "database, url, and language fields for non-PubMed sources) — no classification. " +
+        "Returns raw article objects, with no classification: pubmed and europepmc records carry publication types, " +
+        "MeSH headings and retraction/correction links, and non-PubMed records database, url and language. Ids that " +
+        "could not be fetched are listed in missing. " +
         "Use after literature_search to drill into specific papers.",
-      inputSchema: literatureFetchShape,
+      // Strict, like literature_search: a misnamed key errors instead of being stripped.
+      inputSchema: z.object(literatureFetchShape).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
@@ -299,12 +309,15 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .string()
       .describe(
         "Article id — a PMID, a PMCID (PMC…, a record's pmcid), a Europe PMC preprint id (PPR…), or another database's " +
-          "id from literature_search. For any other id, a DOI is required below.",
+          "id from literature_search together with its doi.",
       ),
     doi: z
       .string()
       .optional()
-      .describe("DOI — database-agnostic. Required when the id is not a PMID, PMCID or PPR id; otherwise skips the id→DOI lookup."),
+      .describe(
+        "The record's doi, from any database. Required when the id is not a PMID, PMCID or PPR id. With a PMID it saves " +
+          "the id→DOI lookup; a PMCID or PPR id without it is tried at Europe PMC only.",
+      ),
     offset: z
       .number()
       .int()
@@ -324,14 +337,15 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     {
       title: "Fetch full text for a scientific article (multi-database)",
       description:
-        "Attempts to fetch an article's full text as markdown via Europe PMC (records with a PMCID), Unpaywall (open " +
-        "access), institutional proxy (if configured), and direct DOI access; falls back to the abstract, with a " +
-        "warning saying what each location answered. DOI resolution is database-agnostic: for non-PubMed articles, " +
-        "pass the DOI from the literature_search result. Records with neither DOI nor PMCID (all chinaxiv and " +
-        "russiarxiv records) can't be resolved; their url links the record. A long text comes in parts: when truncated " +
-        "is true, call again with offset set to nextOffset to read on (totalChars is the whole length). Use when the " +
-        "abstract isn't enough (verify dosage, sample sizes, methods).",
-      inputSchema: literatureFulltextShape,
+        "Attempts to fetch an article's full text as markdown (plain text when format is pdf) via Europe PMC (records " +
+        "with a PMCID, and PPR preprints), Unpaywall (open access), institutional proxy (if configured), and direct DOI " +
+        "access. When none of them has it, a warning says what each location answered, and for a PMID the abstract is " +
+        "returned instead. Records with neither DOI nor PMCID (all chinaxiv and russiarxiv records) can't be " +
+        "resolved; their url links the record. A long text comes in parts: truncated says that more follows (see " +
+        "offset), totalChars how long the whole text is. Use when the abstract isn't enough (verify dosage, sample " +
+        "sizes, methods).",
+      // Strict, like literature_search: a misnamed key errors instead of being stripped.
+      inputSchema: z.object(literatureFulltextShape).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
