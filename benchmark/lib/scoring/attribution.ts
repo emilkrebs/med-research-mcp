@@ -1,15 +1,17 @@
 /**
  * Citation attribution check — deterministic, no LLM.
  *
- * The fabrication check only asks whether a cited id exists. The more common
- * failure of an answer written from memory is a real paper cited for something
- * it doesn't say: the PMID resolves, but it is a different paper, or the year,
- * first author, design or numbers stated next to it don't match the record.
- * This module compares the text around each resolved citation with the cited
- * record (PubMed metadata + abstract, or the regional record):
+ * A cited id that exists is not yet a sound citation. PMIDs are consecutive
+ * numbers, so one typed from memory almost always lands on some record: a
+ * different paper. Two checks cover that:
  *
- *  - topic   — the record (title, abstract, MeSH) mentions one of the query's
- *              `topics`. Catches "real PMID, unrelated paper".
+ *  1. `isOffTopic` — the record (title, abstract, MeSH) mentions none of the
+ *     query's `topics`. The citation audit (verify.ts) counts such a citation
+ *     as fabricated, like one that doesn't exist.
+ *  2. `checkAttribution` — for the citations that are on topic, compares the
+ *     text around each one with the cited record (PubMed metadata + abstract,
+ *     or the regional record):
+ *
  *  - year    — a single year stated next to the citation is within ±1 of the
  *              record's (±1 absorbs epub-vs-print dates).
  *  - author  — "Surname et al." / "Surname and colleagues" names one of the
@@ -29,17 +31,24 @@
  * "Next to the citation" means: the sentence (or line) holding it. When a
  * sentence holds several citations, each one gets the clause before it plus the
  * rest of its own parenthetical or trailing descriptor ("(PMID 1, Smith 2019)",
- * "PMID 1 for 2008 and …"); citations grouped together ("PMIDs 1, 2, 3") only get
- * the topic check, because the clause can't be split between them. A citation
+ * "PMID 1 for 2008 and …"); citations grouped together ("PMIDs 1, 2, 3") get no
+ * check, because the clause can't be split between them. A citation
  * that opens its line ("PMID 123 — Smith 2019 …") gets the text after it instead.
  *
- * Known limits (each makes the check miss things, never flag more):
+ * Known limits of `checkAttribution` (each makes it miss things, never flag more):
  *  - Abstract-only: a number reported only in the full text can't be matched,
  *    which is why the numbers check needs two figures with none found.
  *  - Lexical: unit conversions ("3 g" vs "3000 mg") and derived figures don't
  *    match; approximate figures ("~30%", "about 200") are skipped.
  *  - Sentence splitting is heuristic; a reference-list entry broken into
- *    fragments usually leaves only the topic check.
+ *    fragments usually leaves no applicable check.
+ *
+ * Known limit of `isOffTopic` (it can flag a sound citation): `topics` are a
+ * short word list, so an on-topic paper that uses none of the words reads as
+ * off-topic. In the stored runs this happened once in 841 citations made with
+ * the MCP's tools: a Soviet study of leuzea, for a query whose topics named
+ * other adaptogens. Keep the lists broad; every flagged id is kept in
+ * `_scoring.bullshit.offTopicPmids` with its title, for review.
  */
 
 import type { AttributionDetail, AttributionIssue } from "../types.js";
@@ -173,13 +182,17 @@ function attach(text: string, ids: string[]): Attached[] {
 
 // ─── The checks ──────────────────────────────────────────────────────────────
 
-function checkTopic(f: PmidFacts, topics: string[] | undefined): Verdict {
-  if (!topics || topics.length === 0) return null;
+/**
+ * True when a resolved record is about something else: its title, abstract and
+ * MeSH headings mention none of the query's `topics` (matched at a word start,
+ * accents folded). False when the query has no topics, and for a record without
+ * an abstract, which is judged on its title alone: too thin to call it off-topic.
+ */
+export function isOffTopic(f: Pick<PmidFacts, "title" | "abstract" | "meshHeadings">, topics: readonly string[] | undefined): boolean {
+  if (!topics || topics.length === 0) return false;
   const hay = fold(`${f.title} ${f.abstract} ${(f.meshHeadings ?? []).join(" ")}`);
-  if (topics.some((t) => new RegExp(`\\b${escapeRe(fold(t))}`).test(hay))) return { ok: true };
-  // A record without an abstract is judged on its title alone: too thin to call it off-topic.
-  if (f.abstract.trim() === "") return null;
-  return { ok: false, claimed: `query topic: ${topics.join(" / ")}`, actual: f.title };
+  if (topics.some((t) => new RegExp(`\\b${escapeRe(fold(t))}`).test(hay))) return false;
+  return f.abstract.trim() !== "";
 }
 
 const YEAR_RE = /\b(19[5-9]\d|20[0-4]\d)\b/g;
@@ -310,10 +323,15 @@ export function claimedNumbers(seg: string): string[] {
 const ONES = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"];
 const TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
 
-/** Every number in an abstract, including spelled-out ones ("Sixty-three", "Fortyfour", "One hundred and one"). */
+/**
+ * Every number in an abstract, including spelled-out ones ("Sixty-three", "Fortyfour", "One hundred and one").
+ * The Lancet journals print the decimal point as a raised dot ("0·79"); it is read as a decimal point.
+ */
 export function abstractNumbers(text: string): Set<string> {
   const out = new Set<string>();
-  const t = fold(text).replace(/(\d)[  ,](\d{3})\b/g, "$1$2");
+  const t = fold(text)
+    .replace(/(\d)·(?=\d)/g, "$1.")
+    .replace(/(\d)[  ,](\d{3})\b/g, "$1$2");
   for (const m of t.matchAll(/[-−]?\d+(?:\.\d+)?/g)) out.add(canon(m[0]));
   const below100 = `(?:(${TENS.slice(2).join("|")})[\\s-]?(${ONES.slice(1, 10).join("|")})?|(${ONES.join("|")}))`;
   const re = new RegExp(`\\b(?:(${ONES.slice(1, 10).join("|")})\\s+hundred(?:\\s+(?:and\\s+)?${below100})?|${below100})\\b`, "g");
@@ -339,11 +357,11 @@ function checkNumbers(f: PmidFacts, seg: string): Verdict {
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 /**
- * Audit every resolved citation in `text`. `valid` are the resolved records;
- * `allIds` every cited id (valid, fabricated, echoed) so clause boundaries see
- * all citations, not just the resolved ones.
+ * Audit every valid citation in `text`. `valid` are the resolved, on-topic
+ * records; `allIds` every cited id (valid, fabricated, echoed) so clause
+ * boundaries see all citations, not just the valid ones.
  */
-export function checkAttribution(text: string, valid: PmidFacts[], allIds: string[], topics?: string[]): AttributionDetail {
+export function checkAttribution(text: string, valid: PmidFacts[], allIds: string[]): AttributionDetail {
   const clean = text.replace(/\*\*|__|`/g, "");
   const attached = attach(clean, [...allIds, ...valid.map((f) => f.pmid)]);
   const issues: AttributionIssue[] = [];
@@ -351,7 +369,7 @@ export function checkAttribution(text: string, valid: PmidFacts[], allIds: strin
   let misattributed = 0;
 
   for (const f of valid) {
-    const verdicts: [Check, Verdict][] = [["topic", checkTopic(f, topics)]];
+    const verdicts: [Check, Verdict][] = [];
     for (const a of attached.filter((x) => x.ids.includes(f.pmid))) {
       if (a.ids.length > 1) continue; // a shared clause can't be pinned on one citation
       verdicts.push(["year", checkYear(f, a.segment)]);

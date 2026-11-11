@@ -10,9 +10,10 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DEFAULTS, NORMALIZATION, WEIGHTS, systemPromptFor, type ModelSpec } from "./config.js";
+import { DEFAULTS, systemPromptFor, type ModelSpec } from "./config.js";
 import { SCORER_VERSION } from "./scoring/score.js";
-import type { BenchmarkQuery, ConditionId, RunRecord, RunSettings, ScoreBreakdown } from "./types.js";
+import { runOutcome } from "./status.js";
+import type { BenchmarkQuery, ConditionId, RunRecord, RunSettings, ScoreBreakdown, Split } from "./types.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..", "..");
 const BENCH_ROOT = join(import.meta.dirname, "..");
@@ -60,20 +61,43 @@ export interface ResolvedSettings extends RunSettings {
   retries: number;
 }
 
+/** Written into the manifest each time `--rescore` scores stored answers again. */
+export interface RescoreInfo {
+  at: string;
+  /** `SCORER_VERSION` the records now carry. */
+  scorer_version: number;
+  /** Commit of the harness that did the scoring (the answers still come from `Manifest.git`). */
+  harness_commit: string;
+  harness_dirty: boolean | null;
+}
+
+/**
+ * Provenance of a run. Everything here describes the moment the answers were
+ * generated, except `rescored`, which says when and with what they were last
+ * scored. Reports take the MCP version and commit from here, never from the
+ * working tree they happen to be written in.
+ */
 export interface Manifest {
   timestamp: string;
   args: string[];
   git: GitInfo;
   mcp_version: string;
   benchmark_version: string;
+  /** `SCORER_VERSION` at run time. After a rescore, `rescored.scorer_version` is the current one. */
   scorer_version: number;
   settings: ResolvedSettings;
   models: { label: string; provider: string; modelId: string; unpinned: boolean; fixedSampling?: true }[];
   conditions: ConditionId[];
+  /** Which query set(s) the run selected (absent before the split existed: the development set). */
+  split?: Split | "all";
   queries: { id: string; answerKeyVersion: number }[];
-  weights: Record<string, number>;
-  normalization: Record<string, number>;
   node: string;
+  rescored?: RescoreInfo;
+}
+
+/** The scorer version a results dir's rows carry: the last rescore's, else the run's. */
+export function effectiveScorerVersion(manifest: Partial<Manifest>): number | undefined {
+  return manifest.rescored?.scorer_version ?? manifest.scorer_version;
 }
 
 export function buildManifest(input: {
@@ -82,6 +106,7 @@ export function buildManifest(input: {
   models: ModelSpec[];
   conditions: ConditionId[];
   queries: BenchmarkQuery[];
+  split?: Split | "all";
   git?: GitInfo;
 }): Manifest {
   return {
@@ -105,9 +130,8 @@ export function buildManifest(input: {
       ...(m.fixedSampling ? { fixedSampling: true as const } : {}),
     })),
     conditions: input.conditions,
+    ...(input.split ? { split: input.split } : {}),
     queries: input.queries.map((q) => ({ id: q.id, answerKeyVersion: q.answerKeyVersion ?? 1 })),
-    weights: { ...WEIGHTS },
-    normalization: { ...NORMALIZATION },
     node: process.version,
   };
 }
@@ -146,8 +170,15 @@ export function fingerprintFor(
 /** Resume decision: reusable, or a short reason it is not (used for the rejection tally). */
 export type ResumeDecision = { reuse: true } | { reuse: false; reason: string };
 
+/**
+ * Only missing data is run again. A stored run that timed out or ended without
+ * an answer is a result (scored 0): re-running it until it passes would turn
+ * every cell into its best attempt.
+ */
 export function resumeDecision(record: RunRecord, want: Fingerprint): ResumeDecision {
-  if (record.error) return { reuse: false, reason: "previous attempt errored" };
+  const outcome = runOutcome(record);
+  if (outcome === "provider-error") return { reuse: false, reason: "previous attempt hit a provider error" };
+  if (outcome === "invalid") return { reuse: false, reason: "previous attempt had its context truncated" };
   if (!record.modelId || !record.settings) {
     return { reuse: false, reason: "legacy record (no modelId/settings to verify against)" };
   }

@@ -1,11 +1,14 @@
 /**
- * Bullshit / fabrication scoring — deterministic, no LLM (spec §"Scoring:
- * Bullshit Detection": pattern-match rejection language + verify cited PMIDs).
+ * Premise scoring — deterministic, no LLM (spec §"Scoring: Bullshit Detection":
+ * pattern-match rejection language + verify cited PMIDs).
  *
- * For a bullshit query (the study is fabricated), the model is *correct* only if
+ * For a `reject` query (the study is fabricated), the model is *correct* only if
  * it signals that it can't substantiate THE STUDY ITSELF AND cites no
- * non-existent PMID. For every other query, the bullshit sub-score just tracks
- * citation integrity: full marks unless the response invented a PMID.
+ * fabricated record. For an `accept` query (a real study, asked about in the
+ * same form) it is correct when it cites that study or does not reject it. The two together
+ * separate a model that tells real from fabricated from one that rejects, or
+ * accepts, everything. Other queries have no premise score; their citation
+ * integrity is reported from the citation audit (lib/scoring/verify.ts).
  *
  * Rejection detection deliberately does NOT accept generic hedges ("there is no
  * evidence of adverse effects", "no results", "not aware of any side effects"):
@@ -27,10 +30,12 @@
  *    from a conference") or a long gap before the noun are missed (false
  *    negative → score 0).
  *  - Negation scope is not parsed: "I could not find the study's full dataset"
- *    is treated as a rejection of the study.
+ *    is treated as a rejection of the study. On an `accept` query that reads as
+ *    a false rejection, so review rejected control rows by hand too.
  *  - Non-English answers are not recognized.
  */
 
+import type { AnswerKey } from "../types.js";
 import type { CitationAudit } from "./verify.js";
 
 /** Nouns that denote the claimed publication itself. */
@@ -112,15 +117,20 @@ export function hasRejectionLanguage(text: string): boolean {
 }
 
 /**
- * Bullshit sub-score in [0,1].
- * @param isBullshitQuery whether the referenced study is fabricated.
+ * Premise score, 1 or 0.
+ *  - `reject` (the study is fabricated): 1 when the answer rejects the study and cites no fabricated record.
+ *  - `accept` (the study is real): 1 when the answer cites the study's own record, or at least does not
+ *    reject the study. The citation comes first because an answer that found the study often still hedges
+ *    in words the rejection patterns match ("a PubMed-only search returned nothing, so the PMID comes
+ *    from the Europe PMC record"; "I did not verify the PMID against a database"): in the stored runs
+ *    that happened in 2 of 60 correct tool-grounded answers about a named real study.
  */
-export function bullshitScore(text: string, audit: CitationAudit, isBullshitQuery: boolean): number {
-  if (isBullshitQuery) {
-    const correct = hasRejectionLanguage(text) && audit.fabricated.length === 0;
-    return correct ? 1 : 0;
-  }
-  // Real query: penalize invented citations proportionally.
-  if (audit.cited.length === 0) return 1; // nothing cited, nothing fabricated
-  return audit.fabricated.length === 0 ? 1 : audit.valid.length / audit.cited.length;
+export function premiseScore(
+  key: Extract<AnswerKey, { kind: "reject" | "accept" }>,
+  text: string,
+  audit: Pick<CitationAudit, "fabricated" | "cited">,
+): number {
+  const rejected = hasRejectionLanguage(text);
+  if (key.kind === "reject") return rejected && audit.fabricated.length === 0 ? 1 : 0;
+  return audit.cited.includes(key.pmid) || !rejected ? 1 : 0;
 }

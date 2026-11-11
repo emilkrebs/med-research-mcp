@@ -27,7 +27,6 @@ import { MODELS, missingKeyFor } from "./lib/config.js";
 import { resolveModel } from "./lib/providers.js";
 import { queryById } from "./lib/queries.js";
 import { comparePaired } from "./lib/stats.js";
-import { compositeForCategory } from "./lib/scoring/composite.js";
 import { fetchLiterature, LRUBackend, NcbiClient, PubMedAdapter } from "./lib/core.js";
 import { buildView, loadRawItems, skipReason, type GradeView, type RawFile } from "./grade.js";
 import type { BenchmarkQuery } from "./lib/types.js";
@@ -54,14 +53,19 @@ const MAX_ABSTRACTS = 8;
 export const JUDGE_SYSTEM =
   "You grade answers to biomedical research questions for a benchmark. Grade strictly against the rubric, " +
   "on a 0–10 scale (decimals allowed). Use the cited records and their abstracts to check whether the answer's " +
-  "claims are supported; a claim the abstracts don't support counts against the answer unless it is common, " +
-  "correct background knowledge. Fabricated citations (marked FABRICATED) are a serious error. Do not reward " +
-  "length or confident tone. Reply with JSON only: {\"score\": <number 0-10>, \"reason\": \"<one or two sentences>\"}.";
+  "claims are supported; a claim the abstracts contradict counts against the answer. You see abstracts only: " +
+  "when the answer says a figure comes from an article's full text and the abstract neither states nor contradicts it, " +
+  "you cannot check it, so do not count it against the answer; say in your reason that it was unchecked. A claim " +
+  "without any source counts against the answer unless it is common, correct background knowledge. " +
+  "Fabricated citations (marked FABRICATED: the record does not exist, or exists but is about something else) " +
+  "are a serious error. Do not reward length or confident tone. " +
+  "Reply with JSON only: {\"score\": <number 0-10>, \"reason\": \"<one or two sentences>\"}.";
 
 /** The user message for one answer. Pure, so the exact judge input is testable. */
 export function buildJudgePrompt(view: GradeView, abstracts: ReadonlyMap<string, string>): string {
   const cited = view.pmids.slice(0, 20).map((p, i) => {
-    const head = `[${i + 1}] PMID ${p.pmid} — ${p.valid ? "VALID" : "FABRICATED"} | ${p.studyType} | ${p.title}`;
+    const verdict = p.valid ? "VALID" : p.offTopic ? "FABRICATED (exists, but off-topic)" : "FABRICATED (no such record)";
+    const head = `[${i + 1}] PMID ${p.pmid} — ${verdict} | ${p.studyType} | ${p.title}`;
     const abstract = i < MAX_ABSTRACTS ? abstracts.get(p.pmid) : undefined;
     return abstract ? `${head}\nAbstract: ${abstract.slice(0, ABSTRACT_CHARS)}` : head;
   });
@@ -124,27 +128,17 @@ function report(grades: JudgeGrade[], items: { record: RawFile; query: Benchmark
   const out: string[] = [`# LLM-judge grades (${judge})`, "", "Blind, rubric-based 0–10 grades of the rubric answers. Indicative only — not human grades.", ""];
   const byKey = new Map(grades.map((g) => [g.itemId, g] as const));
   const conditions = [...new Set(grades.map((g) => g.condition))];
-  out.push("| Condition | Answers judged | Judge score | Proxy score (same answers) | Composite with judge accuracy |", "|---|--:|--:|--:|--:|");
+  out.push("| Condition | Answers judged | Judge score (0–10) |", "|---|--:|--:|");
   const perQuery = new Map<string, Map<string, number[]>>();
   for (const condition of conditions) {
-    const rows = items.filter((it) => it.record.condition === condition && byKey.has(buildView(it.record, it.query, false).itemId));
-    const judged = rows.map((it) => byKey.get(buildView(it.record, it.query, false).itemId)!);
-    const proxy = rows.map((it) => it.record._scoring?.accuracy?.score).filter((x): x is number => typeof x === "number" && Number.isFinite(x));
-    const composites = rows
-      .map((it, i) => {
-        const s = it.record._scoring;
-        if (!s) return Number.NaN;
-        return compositeForCategory(it.record.category, {
-          accuracy: judged[i]!.score,
-          evidenceQuality: s.evidenceQuality?.score ?? Number.NaN,
-          bullshitScore: s.bullshit?.score ?? Number.NaN,
-          speedS: it.record.speedS,
-          totalTokens: it.record.usage?.totalTokens ?? 0,
-        });
-      })
-      .filter(Number.isFinite);
-    const mean = (xs: number[]): string => (xs.length ? (xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(2) : "—");
-    out.push(`| ${condition} | ${judged.length} | ${mean(judged.map((g) => g.score))} | ${mean(proxy)} | ${mean(composites)} |`);
+    const judged = items
+      .filter((it) => it.record.condition === condition)
+      .flatMap((it) => {
+        const g = byKey.get(buildView(it.record, it.query, false).itemId);
+        return g ? [g] : [];
+      });
+    const scores = judged.map((g) => g.score);
+    out.push(`| ${condition} | ${judged.length} | ${scores.length ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(2) : "—"} |`);
     for (const g of judged) {
       const q = perQuery.get(g.queryId) ?? new Map<string, number[]>();
       q.set(condition, [...(q.get(condition) ?? []), g.score]);
@@ -165,7 +159,8 @@ function report(grades: JudgeGrade[], items: { record: RawFile; query: Benchmark
     }
     const t = comparePaired(a, b);
     out.push("", t
-      ? `Paired on query (judge score, runs averaged): mcp-skill ${t.meanA} vs mcp ${t.meanB}, Δ = ${t.meanDiff}, ${t.test}, n = ${t.n}, p = ${t.p_value}.`
+      ? `Paired on query (judge score, runs averaged): mcp-skill ${t.meanA} vs mcp ${t.meanB}, Δ = ${t.meanDiff}` +
+        `${t.ci_95 ? ` [${t.ci_95[0]}, ${t.ci_95[1]}]` : ""}, Wilcoxon signed-rank (${t.p_method}), n = ${t.n}, p = ${t.p_value}.`
       : "Paired on query: not enough paired data.");
   }
   out.push("", "| Query | " + conditions.join(" | ") + " |", "|---|" + conditions.map(() => "--:|").join(""));

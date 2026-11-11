@@ -21,7 +21,7 @@ function harness(opts: { concurrency?: number; quiet?: boolean; tokenBudget?: nu
 const info = { index: 1, queryId: "synthesis-02", condition: "mcp", model: "m", run: 1 };
 
 const row = (over: Partial<ScoreRow> = {}): ScoreRow =>
-  ({ status: "ok", composite: 8.5, accuracy: 9, evidence_quality: 4.5, bullshit_score: 1, ...over }) as ScoreRow;
+  ({ status: "ok", accuracy: 9, pmids_cited: 4, pmids_fabricated: 0, ...over }) as ScoreRow;
 
 const record = (over: Partial<RunRecord> = {}): RunRecord =>
   ({ speedS: 38, usage: { inputTokens: 15000, outputTokens: 1800, totalTokens: 16800 }, stepCount: 2, toolCallCount: 1, ...over }) as RunRecord;
@@ -64,7 +64,7 @@ describe("JobProgress", () => {
       "  │ step 1 done · 1.4k in / 210 out · 1 tool call · tool-calls",
       "  │ step 2 · answer only, tools removed (step limit, 1.6k tok so far)…",
       "  │ scoring · verifying citations against PubMed…",
-      "✔ [1/4] synthesis-02 · mcp · composite 8.50 (acc 9.0 · ev 4.5 · bs 1.00) · 38s · 17k tok · 2 steps · 1 tool call",
+      "✔ [1/4] synthesis-02 · mcp · accuracy 9.0 (4 cited · 0 fabricated) · 38s · 17k tok · 2 steps · 1 tool call",
       "  ⏱ 1/4 done · elapsed 0s · 17k tok used",
     ]);
   });
@@ -101,9 +101,17 @@ describe("JobProgress", () => {
     const jp = reporter.job(info);
     jp.start();
     jp.event({ type: "step-start", step: 0, tokensSoFar: 0 });
-    jp.finished(row({ status: "truncated" }), record(), { reused: false, reason: "no final answer" });
+    jp.finished(row({ status: "no-answer" }), record(), { reused: false, reason: "no final answer — scored 0" });
     expect(lines.map((l) => l.slice(0, 2))).toEqual(["▶ ", "✖ ", "  "]);
-    expect(lines[1]).toContain("TRUNCATED: no final answer");
+    expect(lines[1]).toContain("NO-ANSWER: no final answer — scored 0");
+  });
+
+  it("shows an ungraded rubric answer as ungraded, not as a score", () => {
+    const { lines, reporter } = harness({ quiet: true });
+    const jp = reporter.job(info);
+    jp.start();
+    jp.finished(row({ accuracy: Number.NaN, pmids_cited: 7, pmids_fabricated: 2 }), record(), { reused: false });
+    expect(lines[1]).toBe("✔ [1/4] synthesis-02 · mcp · ungraded (7 cited · 2 fabricated) · 38s · 17k tok · 2 steps · 1 tool call");
   });
 
   it("forecasts ETA and the runs left in the token budget from executed runs only", () => {

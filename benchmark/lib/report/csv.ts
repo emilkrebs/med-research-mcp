@@ -2,17 +2,22 @@
 
 import type { ScoreRow } from "../types.js";
 
-const COLUMNS: (keyof ScoreRow)[] = [
+export const CSV_COLUMNS: (keyof ScoreRow)[] = [
   "query_id",
   "category",
+  "split",
+  "key_kind",
+  "retrieval_only",
+  "beyond_pubmed",
   "condition",
   "model",
   "run",
   "status",
   "accuracy",
   "accuracy_source",
-  "evidence_quality",
+  "accuracy_graders",
   "bullshit_score",
+  "evidence_quality",
   "speed_s",
   "input_tokens",
   "output_tokens",
@@ -22,10 +27,10 @@ const COLUMNS: (keyof ScoreRow)[] = [
   "pmids_cited",
   "pmids_valid",
   "pmids_fabricated",
+  "pmids_off_topic",
   "other_citations",
   "citations_checked",
   "citations_misattributed",
-  "composite",
 ];
 
 /** NaN (an unscored value) is written as an empty cell so R/pandas read NA, not the string "NaN". */
@@ -36,7 +41,7 @@ function cell(value: unknown): string {
 }
 
 export function toCsv(rows: ScoreRow[]): string {
-  const header = COLUMNS.join(",");
-  const body = rows.map((row) => COLUMNS.map((c) => cell(row[c])).join(","));
+  const header = CSV_COLUMNS.join(",");
+  const body = rows.map((row) => CSV_COLUMNS.map((c) => cell(row[c])).join(","));
   return [header, ...body].join("\n") + "\n";
 }

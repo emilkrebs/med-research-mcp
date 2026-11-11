@@ -1,12 +1,15 @@
 /**
- * Self-contained statistics for the paper tables: descriptive stats, paired
- * t-test (exact Student-t p via the regularized incomplete beta), Wilcoxon
- * signed-rank (exact for small untied samples, tie-corrected normal otherwise) as the non-normal fallback, Cohen's d, and
- * 95% confidence intervals. No numeric-library dependency.
+ * Self-contained statistics for the report tables: descriptive stats, a seeded
+ * bootstrap confidence interval for a mean, the Wilcoxon signed-rank test, and
+ * Holm's correction. No numeric-library dependency.
  *
- * Test choice (spec §"Statistical tests: paired t-test or Wilcoxon depending on
- * normality"): a lightweight skewness/size heuristic on the paired differences
- * picks paired-t for roughly-normal, well-sized samples and Wilcoxon otherwise.
+ * Every paired comparison uses one procedure, fixed in advance rather than
+ * chosen from the data: the Wilcoxon signed-rank test on the per-query
+ * differences, with a percentile-bootstrap interval for the mean difference.
+ * Scores here are bounded and heavily tied (an accuracy is often exactly 0 or
+ * 10), which rules out a t-test and the usual normal approximation, so the
+ * p-value comes from the exact null distribution of the rank sum given the
+ * observed ranks, ties included.
  */
 
 export function mean(xs: number[]): number {
@@ -20,84 +23,63 @@ export function sd(xs: number[]): number {
   return Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / (xs.length - 1));
 }
 
-// ─── Special functions ──────────────────────────────────────────
-
-function gammln(x: number): number {
-  const cof = [
-    76.18009172947146, -86.50532032941677, 24.01409824083091, -1.231739572450155, 0.1208650973866179e-2,
-    -0.5395239384953e-5,
-  ];
-  let y = x;
-  const tmp = x + 5.5 - (x + 0.5) * Math.log(x + 5.5);
-  let ser = 1.000000000190015;
-  for (const c of cof) ser += c / ++y;
-  return -tmp + Math.log((2.5066282746310005 * ser) / x);
+/** Median (mean of the two middle values for an even count). NaN for an empty list. */
+export function median(xs: number[]): number {
+  if (xs.length === 0) return Number.NaN;
+  const sorted = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 }
 
-function betacf(a: number, b: number, x: number): number {
-  const EPS = 3e-12;
-  const FPMIN = 1e-300;
-  const qab = a + b;
-  const qap = a + 1;
-  const qam = a - 1;
-  let c = 1;
-  let d = 1 - (qab * x) / qap;
-  if (Math.abs(d) < FPMIN) d = FPMIN;
-  d = 1 / d;
-  let h = d;
-  for (let m = 1; m <= 200; m++) {
-    const m2 = 2 * m;
-    let aa = (m * (b - m) * x) / ((qam + m2) * (a + m2));
-    d = 1 + aa * d;
-    if (Math.abs(d) < FPMIN) d = FPMIN;
-    c = 1 + aa / c;
-    if (Math.abs(c) < FPMIN) c = FPMIN;
-    d = 1 / d;
-    h *= d * c;
-    aa = (-(a + m) * (qab + m) * x) / ((a + m2) * (qap + m2));
-    d = 1 + aa * d;
-    if (Math.abs(d) < FPMIN) d = FPMIN;
-    c = 1 + aa / c;
-    if (Math.abs(c) < FPMIN) c = FPMIN;
-    d = 1 / d;
-    const del = d * c;
-    h *= del;
-    if (Math.abs(del - 1) < EPS) break;
+// ─── Bootstrap ──────────────────────────────────────────────────
+
+/** mulberry32: tiny seeded PRNG returning floats in [0, 1). */
+export function seededRandom(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Fixed so that a report is a function of its rows alone: the same scores give the same intervals. */
+export const BOOTSTRAP_SEED = 20261109;
+
+export interface BootstrapOptions {
+  resamples?: number;
+  seed?: number;
+  /** Two-sided confidence level. Default 0.95. */
+  confidence?: number;
+}
+
+/**
+ * Percentile-bootstrap confidence interval for the mean of `xs` (the units are
+ * resampled with replacement; here a unit is a query). Null for fewer than two
+ * values, where there is no spread to resample. With few units (under about
+ * ten) the interval is too narrow; read it as a rough guide.
+ */
+export function bootstrapMeanCI(xs: number[], opts: BootstrapOptions = {}): [number, number] | null {
+  const n = xs.length;
+  if (n < 2) return null;
+  const resamples = opts.resamples ?? 10_000;
+  const alpha = 1 - (opts.confidence ?? 0.95);
+  const random = seededRandom(opts.seed ?? BOOTSTRAP_SEED);
+  const means = new Float64Array(resamples);
+  for (let b = 0; b < resamples; b++) {
+    let sum = 0;
+    for (let i = 0; i < n; i++) sum += xs[Math.floor(random() * n)]!;
+    means[b] = sum / n;
   }
-  return h;
+  means.sort();
+  const lo = means[Math.floor((alpha / 2) * resamples)]!;
+  const hi = means[Math.min(resamples - 1, Math.ceil((1 - alpha / 2) * resamples) - 1)]!;
+  return [round(lo), round(hi)];
 }
 
-/** Regularized incomplete beta I_x(a,b). */
-function betai(a: number, b: number, x: number): number {
-  if (x <= 0) return 0;
-  if (x >= 1) return 1;
-  const bt = Math.exp(gammln(a + b) - gammln(a) - gammln(b) + a * Math.log(x) + b * Math.log(1 - x));
-  return x < (a + 1) / (a + b + 2) ? (bt * betacf(a, b, x)) / a : 1 - (bt * betacf(b, a, 1 - x)) / b;
-}
-
-/** Student-t CDF, P(T ≤ t) with `df` degrees of freedom. */
-function tCDF(t: number, df: number): number {
-  const ib = 0.5 * betai(df / 2, 0.5, df / (df + t * t));
-  return t > 0 ? 1 - ib : ib;
-}
-
-/** Two-tailed p-value for a t statistic. */
-export function tTwoTailedP(t: number, df: number): number {
-  return betai(df / 2, 0.5, df / (df + t * t));
-}
-
-/** Critical t for a two-tailed CI at the given confidence, via bisection on the CDF. */
-function tCritical(confidence: number, df: number): number {
-  const target = 1 - (1 - confidence) / 2; // e.g. 0.975 for 95%
-  let lo = 0;
-  let hi = 1000;
-  for (let i = 0; i < 200; i++) {
-    const mid = (lo + hi) / 2;
-    if (tCDF(mid, df) < target) lo = mid;
-    else hi = mid;
-  }
-  return (lo + hi) / 2;
-}
+// ─── Wilcoxon signed-rank ───────────────────────────────────────
 
 /** Standard normal CDF via erf. */
 function normalCDF(z: number): number {
@@ -112,123 +94,82 @@ function erf(x: number): number {
   return x >= 0 ? y : -y;
 }
 
-// ─── Normality heuristic ────────────────────────────────────────
-
-/** Rough normality flag: enough data and not badly skewed. */
-function looksNormal(xs: number[]): boolean {
-  const n = xs.length;
-  if (n < 8) return false;
-  const m = mean(xs);
-  const s = Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / n); // population sd
-  if (s === 0) return true;
-  const g1 = xs.reduce((a, b) => a + ((b - m) / s) ** 3, 0) / n;
-  return Math.abs(g1) < 1;
-}
-
-// ─── Paired comparison ──────────────────────────────────────────
-
-export interface PairedResult {
-  n: number;
-  meanA: number;
-  meanB: number;
-  /** mean(A − B); positive means A scores higher. */
-  meanDiff: number;
-  test: "paired-t" | "wilcoxon";
-  /** How p_value was computed: Student-t, exact signed-rank distribution, or normal approximation. */
-  p_method: "t" | "exact" | "normal";
-  /** t (paired-t) or z (wilcoxon). */
-  statistic: number;
-  p_value: number;
-  /** Signed Cohen's dz for paired-t; signed matched-pairs rank-biserial r (−1..1) for wilcoxon. */
-  effect_size: number;
-  ci_95: [number, number];
-  /** What ci_95 is: always the t-based CI of the mean difference (also for Wilcoxon). */
-  ci_method: "t-mean-diff";
-  test_reason: string;
-}
-
-/** Paired t-test on aligned samples a[i], b[i]. */
-export function pairedT(diffs: number[]): { statistic: number; p: number; dz: number; ci: [number, number] } {
-  const n = diffs.length;
-  const md = mean(diffs);
-  const s = sd(diffs);
-  const se = s / Math.sqrt(n);
-  const df = n - 1;
-  const t = se === 0 ? 0 : md / se;
-  const p = se === 0 ? 1 : tTwoTailedP(t, df);
-  const dz = s === 0 ? 0 : md / s;
-  const tc = tCritical(0.95, df);
-  const ci: [number, number] = [round(md - tc * se), round(md + tc * se)];
-  return { statistic: round(t), p: round(p, 6), dz: round(dz), ci };
-}
-
 /**
- * Exact two-sided Wilcoxon p-value for n untied pairs: DP over the number of
- * ways each rank sum 0..n(n+1)/2 can arise (each rank 1..n is in W+ or not).
+ * Exact two-sided p-value of the signed-rank statistic, given the observed
+ * ranks. Under the null each rank is in W+ or not with probability ½, so the
+ * distribution of W+ is built rank by rank over the reachable sums. Ranks are
+ * passed doubled, which turns the midranks of tied values (x.5) into integers.
  */
-function wilcoxonExactP(n: number, wPlus: number): number {
-  const max = (n * (n + 1)) / 2;
-  const counts = new Array<number>(max + 1).fill(0);
-  counts[0] = 1;
-  for (let rank = 1; rank <= n; rank++) {
-    for (let s = max; s >= rank; s--) counts[s]! += counts[s - rank]!;
+function wilcoxonExactP(doubledRanks: number[], doubledWPlus: number): number {
+  const max = doubledRanks.reduce((a, b) => a + b, 0);
+  const prob = new Float64Array(max + 1);
+  prob[0] = 1;
+  for (const rank of doubledRanks) {
+    for (let s = max; s >= 0; s--) prob[s] = 0.5 * prob[s]! + (s >= rank ? 0.5 * prob[s - rank]! : 0);
   }
-  const total = 2 ** n;
-  let lower = 0; // P(W+ ≤ wPlus)
-  let upper = 0; // P(W+ ≥ wPlus)
+  let lower = 0; // P(W+ ≤ observed)
+  let upper = 0; // P(W+ ≥ observed)
   for (let s = 0; s <= max; s++) {
-    if (s <= wPlus) lower += counts[s]!;
-    if (s >= wPlus) upper += counts[s]!;
+    if (s <= doubledWPlus) lower += prob[s]!;
+    if (s >= doubledWPlus) upper += prob[s]!;
   }
-  return Math.min(1, (2 * Math.min(lower, upper)) / total);
+  return Math.min(1, 2 * Math.min(lower, upper));
 }
 
-/** Largest n for which the exact (untied) null distribution is used. */
-const WILCOXON_EXACT_MAX_N = 25;
+/** Largest number of non-zero differences for which the exact distribution is built (its size grows with n²). */
+const WILCOXON_EXACT_MAX_N = 300;
+
+export interface WilcoxonResult {
+  /** Non-zero differences the test ran on. */
+  n: number;
+  /** W+ (R's `V`): the sum of the ranks of the positive differences. */
+  statistic: number;
+  p: number;
+  /** Signed matched-pairs rank-biserial r = (W+ − W−)/(W+ + W−), −1..1. */
+  r: number;
+  method: "exact" | "normal";
+}
 
 /**
- * Wilcoxon signed-rank test. Zero differences are dropped. With no ties and
- * n ≤ 25 the p-value is exact; otherwise a normal approximation with
- * continuity correction and the tie correction Σ(t³−t)/48 in the variance.
- * Effect size is the signed matched-pairs rank-biserial r = (W+ − W−)/(W+ + W−).
+ * Wilcoxon signed-rank test. Zero differences are dropped (Wilcoxon's rule) and
+ * tied absolute differences share their mean rank. The p-value is exact for up
+ * to 300 non-zero differences, with or without ties; beyond that it is the
+ * normal approximation with a continuity correction and the tie correction
+ * Σ(t³−t)/48 in the variance.
  */
-export function wilcoxon(diffs: number[]): { statistic: number; p: number; r: number; method: "exact" | "normal" } {
+export function wilcoxon(diffs: number[]): WilcoxonResult {
   const nonzero = diffs.filter((d) => d !== 0);
   const n = nonzero.length;
-  if (n === 0) return { statistic: 0, p: 1, r: 0, method: "exact" };
+  if (n === 0) return { n: 0, statistic: 0, p: 1, r: 0, method: "exact" };
 
   const ranked = nonzero
     .map((d) => ({ abs: Math.abs(d), sign: Math.sign(d) }))
     .sort((x, y) => x.abs - y.abs);
-  // Average ranks for ties; collect tie-group sizes for the variance correction.
-  const ranks = new Array<number>(n);
+  // Doubled mean ranks for ties (integers); tie-group sizes for the variance correction.
+  const doubled = new Array<number>(n);
   let tieTerm = 0;
   for (let i = 0; i < n; ) {
     let j = i;
     while (j < n && ranked[j]!.abs === ranked[i]!.abs) j++;
-    const avg = (i + 1 + j) / 2; // ranks are 1-based: mean of i+1..j
-    for (let k = i; k < j; k++) ranks[k] = avg;
+    for (let k = i; k < j; k++) doubled[k] = i + 1 + j; // 2 × mean of the 1-based ranks i+1..j
     tieTerm += (j - i) ** 3 - (j - i);
     i = j;
   }
-  const hasTies = tieTerm > 0;
-  let wPlus = 0;
-  for (let i = 0; i < n; i++) if (ranked[i]!.sign > 0) wPlus += ranks[i]!;
+  let doubledWPlus = 0;
+  for (let i = 0; i < n; i++) if (ranked[i]!.sign > 0) doubledWPlus += doubled[i]!;
+  const wPlus = doubledWPlus / 2;
   const total = (n * (n + 1)) / 2;
-  const wMinus = total - wPlus;
-  const r = (wPlus - wMinus) / total;
+  const r = (wPlus - (total - wPlus)) / total;
 
+  if (n <= WILCOXON_EXACT_MAX_N) {
+    return { n, statistic: wPlus, p: roundP(wilcoxonExactP(doubled, doubledWPlus)), r: round(r), method: "exact" };
+  }
   const meanW = total / 2;
-  const varW = (n * (n + 1) * (2 * n + 1)) / 24 - tieTerm / 48;
-  const sdW = Math.sqrt(varW);
+  const sdW = Math.sqrt((n * (n + 1) * (2 * n + 1)) / 24 - tieTerm / 48);
   const cc = Math.sign(wPlus - meanW) * 0.5; // continuity correction
   const z = sdW === 0 ? 0 : (wPlus - meanW - cc) / sdW;
-
-  if (!hasTies && n <= WILCOXON_EXACT_MAX_N) {
-    return { statistic: round(z), p: round(wilcoxonExactP(n, wPlus), 6), r: round(r), method: "exact" };
-  }
   const p = sdW === 0 ? 1 : 2 * (1 - normalCDF(Math.abs(z)));
-  return { statistic: round(z), p: round(Math.min(1, p), 6), r: round(r), method: "normal" };
+  return { n, statistic: wPlus, p: roundP(Math.min(1, p)), r: round(r), method: "normal" };
 }
 
 /**
@@ -247,55 +188,68 @@ export function holm(pValues: number[]): number[] {
   return out;
 }
 
+// ─── Paired comparison ──────────────────────────────────────────
+
+export interface PairedResult {
+  /** Pairs compared. */
+  n: number;
+  /** Pairs whose difference is not zero: the ones the test ranks. */
+  n_nonzero: number;
+  meanA: number;
+  meanB: number;
+  /** mean(A − B); positive means A scores higher. */
+  meanDiff: number;
+  test: "wilcoxon";
+  /** How p_value was computed: the exact signed-rank distribution, or (over 300 non-zero pairs) the normal approximation. */
+  p_method: "exact" | "normal";
+  /** W+, the sum of the ranks of the positive differences. */
+  statistic: number;
+  p_value: number;
+  /** Signed matched-pairs rank-biserial r (−1..1). */
+  effect_size: number;
+  /** 95% interval of the mean difference; null when it can't be computed. */
+  ci_95: [number, number] | null;
+  ci_method: "bootstrap-percentile";
+}
+
 /**
- * Compare two aligned paired samples (A vs B). Picks paired-t or Wilcoxon by a
- * normality heuristic on the differences. Returns null when fewer than 2 pairs.
+ * Compare two aligned paired samples (A vs B): Wilcoxon signed-rank test on the
+ * differences and a percentile-bootstrap 95% interval for their mean. Returns
+ * null with fewer than 2 pairs.
  */
-export function comparePaired(a: number[], b: number[]): PairedResult | null {
+export function comparePaired(a: number[], b: number[], opts: BootstrapOptions = {}): PairedResult | null {
   const n = Math.min(a.length, b.length);
   if (n < 2) return null;
   const diffs: number[] = [];
   for (let i = 0; i < n; i++) diffs.push(a[i]! - b[i]!);
-
-  const normal = looksNormal(diffs);
-  if (normal) {
-    const { statistic, p, dz, ci } = pairedT(diffs);
-    return {
-      n,
-      meanA: round(mean(a.slice(0, n))),
-      meanB: round(mean(b.slice(0, n))),
-      meanDiff: round(mean(diffs)),
-      test: "paired-t",
-      p_method: "t",
-      statistic,
-      p_value: p,
-      effect_size: dz,
-      ci_95: ci,
-      ci_method: "t-mean-diff",
-      test_reason: `n=${n}, differences ~normal (|skew|<1)`,
-    };
-  }
-  const { statistic, p, r, method } = wilcoxon(diffs);
-  // CI on the mean difference is still reported (t-based) as a convenience;
-  // it is NOT a CI for the Wilcoxon pseudo-median (see ci_method).
-  const { ci } = pairedT(diffs);
+  const w = wilcoxon(diffs);
   return {
     n,
+    n_nonzero: w.n,
     meanA: round(mean(a.slice(0, n))),
     meanB: round(mean(b.slice(0, n))),
     meanDiff: round(mean(diffs)),
     test: "wilcoxon",
-    p_method: method,
-    statistic,
-    p_value: p,
-    effect_size: r,
-    ci_95: ci,
-    ci_method: "t-mean-diff",
-    test_reason: n < 8 ? `n=${n} < 8` : "differences non-normal (|skew|≥1)",
+    p_method: w.method,
+    statistic: w.statistic,
+    p_value: w.p,
+    effect_size: w.r,
+    ci_95: bootstrapMeanCI(diffs, opts),
+    ci_method: "bootstrap-percentile",
   };
 }
 
 function round(x: number, dp = 4): number {
   const f = 10 ** dp;
   return Math.round(x * f) / f;
+}
+
+/**
+ * A p-value rounded to 6 decimals, except that a positive one that would round to 0 is kept as it is:
+ * rounding turned the exact p of 86 differing queries (about 1e-23) into 0, and "p=0" is not a p-value.
+ * Every other p-value is stored as before.
+ */
+export function roundP(p: number): number {
+  const r = round(p, 6);
+  return r === 0 && p > 0 ? p : r;
 }

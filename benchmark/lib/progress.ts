@@ -12,7 +12,7 @@
  *     │ ⋯ waiting for the model · step 2 · 20s (timeout 300s)
  *     │ step 2 done · 14.2k in / 980 out · stop
  *     │ scoring · verifying citations against PubMed…
- *   ✔ [5/24] edge-case-01 · mcp · composite 5.10 (acc 4.0 · ev 2.0 · bs 1.00) · 38s · 16.8k tok · 2 steps · 1 tool call
+ *   ✔ [5/24] factual-04 · mcp · accuracy 10.0 (1 cited · 0 fabricated) · 38s · 16.8k tok · 2 steps · 1 tool call
  *     ⏱ 5/24 done · elapsed 6m02s · ETA ~23m · 312k tok used · budget 850k (538k left, ~4 runs)
  *
  * With `--concurrency > 1` the event lines of different runs interleave, so each
@@ -21,7 +21,8 @@
  * Colors (on by default — see `lib/color.ts`) carry meaning, the text never
  * depends on them: cyan = tool calls, green = results/success, red = errors and
  * failed runs, yellow = waiting, forced answers, skips and low budget, dim =
- * routine bookkeeping. The composite score is green ≥ 7, yellow ≥ 4, red below.
+ * routine bookkeeping. An accuracy is green ≥ 7, yellow ≥ 4, red below; a
+ * rubric answer has none until a human grades it and shows as "ungraded".
  */
 
 import type { RunEvent } from "./agent.js";
@@ -198,7 +199,7 @@ export class JobProgress {
 
   /** Condition names in the same hues as the charts (closed-book amber, web blue, mcp green). */
   private condition(name: string): string {
-    return name === "mcp" || name === "mcp-skill" ? this.c.green(name) : name === "web-search" ? this.c.blue(name) : name === "closed-book" ? this.c.yellow(name) : name;
+    return name === "mcp" || name === "mcp-skill" ? this.c.green(name) : name === "web-search" || name === "pubmed" ? this.c.blue(name) : name === "closed-book" ? this.c.yellow(name) : name;
   }
 
   private get label(): string {
@@ -309,10 +310,11 @@ export class JobProgress {
     this.stop();
     const { c } = this;
     const ok = row.status === "ok";
-    const tint = row.composite >= 7 ? c.green : row.composite >= 4 ? c.yellow : c.red;
-    const score = ok
-      ? `composite ${c.bold(tint(row.composite.toFixed(2)))} ${c.dim(`(acc ${row.accuracy.toFixed(1)} · ev ${row.evidence_quality.toFixed(1)} · bs ${row.bullshit_score.toFixed(2)})`)}`
-      : c.red(`${row.status.toUpperCase()}: ${detail.reason ?? ""}`.trim());
+    const tint = row.accuracy >= 7 ? c.green : row.accuracy >= 4 ? c.yellow : c.red;
+    const accuracy = Number.isFinite(row.accuracy) ? `accuracy ${c.bold(tint(row.accuracy.toFixed(1)))}` : c.dim("ungraded");
+    const fabricated = `${row.pmids_fabricated} fabricated`;
+    const citations = `${c.dim(`(${row.pmids_cited} cited ·`)} ${row.pmids_fabricated > 0 ? c.red(fabricated) : c.dim(fabricated)}${c.dim(")")}`;
+    const score = ok ? `${accuracy} ${citations}` : c.red(`${row.status.toUpperCase()}: ${detail.reason ?? ""}`.trim());
     const facts = detail.reused
       ? ["reused from --resume"]
       : [

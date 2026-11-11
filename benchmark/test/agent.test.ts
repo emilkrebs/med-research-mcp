@@ -47,6 +47,18 @@ const stubTools = {
 };
 
 describe("runOne", () => {
+  it("carries the query's retrieval-only and beyond-PubMed flags on the record, and nothing when they are not set", async () => {
+    const llm = () => new MockLanguageModelV4({ doGenerate: async () => textResult("final answer") });
+    const plain = await runOne(query, "closed-book", spec, 0, { languageModel: llm() });
+    expect("beyondPubmed" in plain).toBe(false);
+    expect("retrievalOnly" in plain).toBe(false);
+    const flagged = await runOne({ ...query, beyondPubmed: true, retrievalOnly: true }, "closed-book", spec, 0, { languageModel: llm() });
+    expect(flagged.beyondPubmed).toBe(true);
+    expect(flagged.retrievalOnly).toBe(true);
+    const inPubmed = await runOne({ ...query, beyondPubmed: false }, "closed-book", spec, 0, { languageModel: llm() });
+    expect("beyondPubmed" in inPubmed).toBe(false);
+  });
+
   it("removes the tools (not just toolChoice) on the forced last step, for providers that ignore toolChoice", async () => {
     const llm = new MockLanguageModelV4({
       doGenerate: async (options) => (options.tools?.length ? toolCallResult("c") : textResult("final answer")),

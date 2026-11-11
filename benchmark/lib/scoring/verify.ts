@@ -2,14 +2,17 @@
  * Citation extraction and live verification against PubMed.
  *
  * The scorer trusts nothing the model claims about a citation: every cited PMID
- * is fetched from PubMed. A PMID that doesn't resolve is a fabrication; one that
- * does has its design classified from NLM metadata (PublicationType tags, retraction
- * links) by the library's classifier, so "evidence quality" is the mean design
- * tier on the 0–5 scale the MCP reports. Records whose tier is unknown — no
- * design metadata, or a review/meta-analysis whose pooled designs aren't
- * indexed — are left out of that mean; when every valid citation is unrated the
- * mean is NaN (unscored), not 0. Results are cached so the same PMID is fetched
- * once per process.
+ * is fetched from PubMed. A citation is fabricated when the PMID doesn't
+ * resolve, or when it resolves to a record that mentions none of the query's
+ * `topics`: PMIDs are consecutive numbers, so one made up or misremembered
+ * almost always lands on some unrelated paper, and existence alone proves
+ * nothing. A valid citation has its design classified from NLM metadata
+ * (PublicationType tags, retraction links) by the library's classifier; the
+ * mean design tier of the valid, rated citations is reported as a description
+ * of what was cited ("evidence quality"), never as a score of the answer.
+ * Records whose tier is unknown — no design metadata, or a review/meta-analysis
+ * whose pooled designs aren't indexed — are left out of that mean. Results are
+ * cached so the same PMID is fetched once per process.
  *
  * What counts as a citation:
  *  - PMIDs, only when anchored ("PMID 123", "PubMed ID: 123", a PubMed URL).
@@ -43,9 +46,10 @@
  * NCBI's rate limits.
  */
 
-import { classifyArticle, fetchLiterature, NcbiClient, parseEuropePmc, PubMedAdapter, NullCache } from "../core.js";
+import { classifyArticle, fetchLiterature, htmlToText, NcbiClient, parseEuropePmc, PubMedAdapter, NullCache } from "../core.js";
 import type { Correction, StudyType } from "../core.js";
 import type { EvidenceDetail } from "../types.js";
+import { isOffTopic } from "./attribution.js";
 
 export interface PmidFacts {
   /** PMID, or the regional id for a non-PubMed record (`CBA:521529`, `chinaxiv-…`). */
@@ -415,8 +419,9 @@ export async function defaultRegionalLookup(item: RegionalId): Promise<PmidFacts
   // The adapter's parser reads the metadata the classification uses (publication types, MeSH, retraction links).
   const meta = parseEuropePmc({ resultList: { result: [r] } }).articles[0];
   return regionalFacts(item.id, "europepmc", {
-    title: str(r.title).replace(/\.$/, ""),
-    abstract: str(r.abstractText).replace(/<[^>]+>/g, ""),
+    // The server's own markup reader (src/core/text.ts): a bare "<" in the text ("P < 0.001 … > 0.5") stays.
+    title: htmlToText(str(r.title)).replace(/\.$/, ""),
+    abstract: htmlToText(str(r.abstractText)),
     authors: str(r.authorString).split(/[;,]/).map((x) => x.trim().replace(/\.$/, "")).filter(Boolean),
     pubDate: str(r.pubYear) || str(r.firstPublicationDate),
     journal: str(r.journalTitle),
@@ -437,11 +442,17 @@ async function defaultResolve(item: IdToResolve, ncbi: NcbiClient): Promise<stri
 export interface CitationAudit {
   /** PMIDs cited (directly or via a resolved DOI/PMCID) plus resolved regional ids, excluding those echoed from the prompt. */
   cited: string[];
+  /** Cited records that exist and are on the query's topic (or can't be judged: no topics, no abstract). */
   valid: PmidFacts[];
+  /** Ids of fabricated citations: `unresolved` plus the ids of `offTopic`. */
   fabricated: string[];
+  /** PMIDs that PubMed doesn't have. */
+  unresolved: string[];
+  /** Records that exist but mention none of the query's topics: a different paper than the answer claims. */
+  offTopic: PmidFacts[];
   /**
-   * Mean design tier over valid citations whose tier is known; 0 when no citation
-   * is valid; NaN (unscored) when citations are valid but none has a known tier.
+   * Mean design tier over valid citations whose tier is known; NaN when there
+   * is none to average (nothing valid cited, or only unrated records). Descriptive.
    */
   evidenceQuality: number;
   /** Non-PubMed / unresolvable identifiers: counted, never graded, never fabricated. */
@@ -454,10 +465,12 @@ export interface CitationAudit {
  * Extract, resolve, and verify every citation in `text`. PMIDs that appear in
  * `prompt` are echoes, not citations ("I could not find PMID 99999999"): they are
  * excluded from cited/valid/fabricated and evidence quality, and listed in
- * `echoedFromPrompt`. Throws if NCBI is unreachable (callers map that to a
- * `scoring-error`), never reports a transient failure as fabrication.
+ * `echoedFromPrompt`. A resolved record that mentions none of `topics` is
+ * fabricated too (see `isOffTopic`); without topics only existence is checked.
+ * Throws if NCBI is unreachable (callers map that to a `scoring-error`), never
+ * reports a transient failure as fabrication.
  */
-export async function auditCitations(text: string, prompt: string, verifier: Verifier): Promise<CitationAudit> {
+export async function auditCitations(text: string, prompt: string, verifier: Verifier, topics?: readonly string[]): Promise<CitationAudit> {
   const extracted = extractCitations(text);
   const cited = new Set(extracted.pmids);
   const other = new Map(extracted.other.map((o) => [o.id.toLowerCase(), o]));
@@ -480,11 +493,17 @@ export async function auditCitations(text: string, prompt: string, verifier: Ver
 
   const facts = await verifier.verify(counted);
   const valid: PmidFacts[] = [];
-  const fabricated: string[] = [];
+  const unresolved: string[] = [];
+  const offTopic: PmidFacts[] = [];
+  /** A record that exists is valid only if it is about the query's subject. */
+  const place = (f: PmidFacts): void => {
+    if (isOffTopic(f, topics)) offTopic.push(f);
+    else valid.push(f);
+  };
   for (const pmid of counted) {
     const f = facts.get(pmid);
-    if (f?.exists) valid.push(f);
-    else fabricated.push(pmid);
+    if (f?.exists) place(f);
+    else unresolved.push(pmid);
   }
 
   // Regional records count like PMIDs when their database has them; otherwise they
@@ -494,15 +513,15 @@ export async function auditCitations(text: string, prompt: string, verifier: Ver
     const f = regional.get(`${item.database}:${item.id}`);
     if (f) {
       counted.push(f.pmid);
-      valid.push(f);
+      place(f);
     } else {
       other.set(item.id.toLowerCase(), { id: item.id, kind: item.database === "chinaxiv" ? "arxiv-like" : "europepmc" });
     }
   }
   // Unrated records (no design metadata, syntheses of unindexed designs) are neither
-  // good nor bad evidence, so they stay out of the mean; citing only those leaves it unscored.
+  // good nor bad evidence, so they stay out of the mean.
   const tiers = valid.flatMap((f) => (f.designTier == null ? [] : [f.designTier]));
-  const evidenceQuality =
-    tiers.length > 0 ? tiers.reduce((s, t) => s + t, 0) / tiers.length : valid.length > 0 ? Number.NaN : 0;
-  return { cited: counted, valid, fabricated, evidenceQuality, other: [...other.values()], echoedFromPrompt };
+  const evidenceQuality = tiers.length > 0 ? tiers.reduce((s, t) => s + t, 0) / tiers.length : Number.NaN;
+  const fabricated = [...unresolved, ...offTopic.map((f) => f.pmid)];
+  return { cited: counted, valid, fabricated, unresolved, offTopic, evidenceQuality, other: [...other.values()], echoedFromPrompt };
 }

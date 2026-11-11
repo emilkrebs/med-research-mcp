@@ -1,0 +1,1808 @@
+{
+  "version": 2,
+  "history": [
+    {
+      "version": 1,
+      "date": "2026-11-10",
+      "note": "drawn: 24 lookup strata (12 specialties x established/recent), up to 3 lookups each, 71 lookups, 12 controls, 12 fabricated twins"
+    },
+    {
+      "version": 2,
+      "date": "2026-11-10",
+      "note": "cut to one lookup per stratum after the first run showed both tool conditions at the ceiling, and beyond-PubMed frames added (preprint, regional, fulltext); nothing in the server or the scorer was changed because of that run"
+    }
+  ],
+  "seed": 20261110,
+  "drawn_at": "2026-11-10",
+  "recent_window": {
+    "from": "2026/09/01",
+    "to": "2026/10/31"
+  },
+  "established_years": {
+    "from": 2015,
+    "to": 2022
+  },
+  "established_journals": [
+    "N Engl J Med",
+    "Lancet",
+    "JAMA",
+    "BMJ"
+  ],
+  "preprint_window": {
+    "from": "2026-05-01",
+    "to": "2026-10-31"
+  },
+  "fulltext_years": {
+    "from": 2018,
+    "to": 2022
+  },
+  "fulltext_journals": [
+    "BMJ",
+    "PLoS Med",
+    "JAMA Netw Open",
+    "BMC Med"
+  ],
+  "strata": [
+    {
+      "frame": "lookup",
+      "specialty": "cardiology",
+      "period": "established",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Cardiovascular Diseases\"[majr] AND 2015:2022[dp]",
+      "matched": 654,
+      "candidates": [
+        {
+          "pmid": "26321103",
+          "used": "t-lookup-01"
+        },
+        {
+          "pmid": "33197395",
+          "retired": "t-lookup-02"
+        },
+        {
+          "pmid": "32966714",
+          "retired": "t-lookup-03"
+        },
+        {
+          "pmid": "27040451",
+          "skipped": "not-primary",
+          "note": "two-year follow-up of a trial first reported at one year"
+        },
+        {
+          "pmid": "33189178",
+          "used": "t-control-01"
+        },
+        {
+          "pmid": "36027559"
+        },
+        {
+          "pmid": "31067369"
+        },
+        {
+          "pmid": "29900874"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "cardiology",
+      "period": "recent",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Cardiovascular Diseases\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 218,
+      "candidates": [
+        {
+          "pmid": "42827913",
+          "skipped": "not-primary",
+          "note": "pooled analysis of a cohort study and a randomized trial, not a randomized comparison"
+        },
+        {
+          "pmid": "42743421",
+          "used": "t-lookup-04"
+        },
+        {
+          "pmid": "42678121",
+          "skipped": "not-primary",
+          "note": "responder versus non-responder analysis of a crossover trial"
+        },
+        {
+          "pmid": "42847369",
+          "skipped": "predates-window",
+          "note": "issue dated 2026 Jan 7 with no online date"
+        },
+        {
+          "pmid": "42743423",
+          "retired": "t-lookup-05"
+        },
+        {
+          "pmid": "42677894",
+          "retired": "t-lookup-06"
+        },
+        {
+          "pmid": "42717033"
+        },
+        {
+          "pmid": "42806496"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "oncology",
+      "period": "established",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Neoplasms\"[majr] AND 2015:2022[dp]",
+      "matched": 438,
+      "candidates": [
+        {
+          "pmid": "28146658",
+          "used": "t-lookup-07"
+        },
+        {
+          "pmid": "35660812",
+          "retired": "t-lookup-08"
+        },
+        {
+          "pmid": "27626365",
+          "skipped": "no-numbers",
+          "note": "patient-reported outcomes are described in words; no result is given as a number"
+        },
+        {
+          "pmid": "29800179",
+          "retired": "t-lookup-09"
+        },
+        {
+          "pmid": "31229240",
+          "used": "t-control-02"
+        },
+        {
+          "pmid": "30782343"
+        },
+        {
+          "pmid": "36214590"
+        },
+        {
+          "pmid": "27509100"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "oncology",
+      "period": "recent",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Neoplasms\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 253,
+      "candidates": [
+        {
+          "pmid": "42923857",
+          "used": "t-lookup-10"
+        },
+        {
+          "pmid": "42801141",
+          "retired": "t-lookup-11"
+        },
+        {
+          "pmid": "42847397",
+          "skipped": "not-primary",
+          "note": "mediation analysis of an earlier trial's effects"
+        },
+        {
+          "pmid": "42727513",
+          "skipped": "no-numbers",
+          "note": "results are given in words and P values only"
+        },
+        {
+          "pmid": "42871149",
+          "retired": "t-lookup-12"
+        },
+        {
+          "pmid": "42801438"
+        },
+        {
+          "pmid": "42720799"
+        },
+        {
+          "pmid": "42747116"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "infectious-disease",
+      "period": "established",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Infections\"[majr] AND 2015:2022[dp]",
+      "matched": 462,
+      "candidates": [
+        {
+          "pmid": "30032978",
+          "used": "t-lookup-13"
+        },
+        {
+          "pmid": "29113968",
+          "retired": "t-lookup-14"
+        },
+        {
+          "pmid": "33308429",
+          "retired": "t-lookup-15"
+        },
+        {
+          "pmid": "33620405",
+          "used": "t-control-03"
+        },
+        {
+          "pmid": "36269852"
+        },
+        {
+          "pmid": "30786187"
+        },
+        {
+          "pmid": "34407339"
+        },
+        {
+          "pmid": "36546625"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "infectious-disease",
+      "period": "recent",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Infections\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 140,
+      "candidates": [
+        {
+          "pmid": "42753710",
+          "skipped": "no-numbers",
+          "note": "the abstract reports no result as a number"
+        },
+        {
+          "pmid": "42959175",
+          "skipped": "not-primary",
+          "note": "exploratory immunology analysis of a subset of a trial's participants"
+        },
+        {
+          "pmid": "42858264",
+          "used": "t-lookup-16"
+        },
+        {
+          "pmid": "42843284",
+          "skipped": "not-primary",
+          "note": "prospective controlled study without randomization"
+        },
+        {
+          "pmid": "42690008",
+          "skipped": "predates-window",
+          "note": "issue dated 2026 May 1 with no online date"
+        },
+        {
+          "pmid": "42731309",
+          "retired": "t-lookup-17"
+        },
+        {
+          "pmid": "42958676",
+          "retired": "t-lookup-18"
+        },
+        {
+          "pmid": "42721898"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "neurology",
+      "period": "established",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Nervous System Diseases\"[majr] AND 2015:2022[dp]",
+      "matched": 298,
+      "candidates": [
+        {
+          "pmid": "31291515",
+          "used": "t-lookup-19"
+        },
+        {
+          "pmid": "25883095",
+          "retired": "t-lookup-20"
+        },
+        {
+          "pmid": "36063821",
+          "retired": "t-lookup-21"
+        },
+        {
+          "pmid": "36007534",
+          "used": "t-control-04"
+        },
+        {
+          "pmid": "28636854"
+        },
+        {
+          "pmid": "36341753"
+        },
+        {
+          "pmid": "30874766"
+        },
+        {
+          "pmid": "29029896"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "neurology",
+      "period": "recent",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Nervous System Diseases\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 283,
+      "candidates": [
+        {
+          "pmid": "42685256",
+          "skipped": "not-primary",
+          "note": "secondary analysis of the SPRINTT trial"
+        },
+        {
+          "pmid": "42958224",
+          "skipped": "predates-window",
+          "note": "published online 2026 Jul 31"
+        },
+        {
+          "pmid": "42714024",
+          "used": "t-lookup-22"
+        },
+        {
+          "pmid": "42841486",
+          "skipped": "in-development-set",
+          "note": "the subject of development query recent-04"
+        },
+        {
+          "pmid": "42775498",
+          "retired": "t-lookup-23"
+        },
+        {
+          "pmid": "42781890",
+          "skipped": "not-primary",
+          "note": "genetic subgroup analysis of an earlier aspirin trial"
+        },
+        {
+          "pmid": "42751984",
+          "retired": "t-lookup-24"
+        },
+        {
+          "pmid": "42920874"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "psychiatry",
+      "period": "established",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Mental Disorders\"[majr] AND 2015:2022[dp]",
+      "matched": 118,
+      "candidates": [
+        {
+          "pmid": "28657871",
+          "used": "t-lookup-25"
+        },
+        {
+          "pmid": "33170240",
+          "retired": "t-lookup-26"
+        },
+        {
+          "pmid": "26837684",
+          "retired": "t-lookup-27"
+        },
+        {
+          "pmid": "30778597",
+          "used": "t-control-05"
+        },
+        {
+          "pmid": "34932079"
+        },
+        {
+          "pmid": "36244383"
+        },
+        {
+          "pmid": "33620407"
+        },
+        {
+          "pmid": "33974020"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "psychiatry",
+      "period": "recent",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Mental Disorders\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 228,
+      "candidates": [
+        {
+          "pmid": "42686878",
+          "used": "t-lookup-28"
+        },
+        {
+          "pmid": "42896141",
+          "skipped": "not-primary",
+          "note": "secondary analysis of app engagement in an earlier trial"
+        },
+        {
+          "pmid": "42810153",
+          "skipped": "not-primary",
+          "note": "secondary analysis of the EUFEST trial"
+        },
+        {
+          "pmid": "42679601",
+          "retired": "t-lookup-29"
+        },
+        {
+          "pmid": "42830293",
+          "retired": "t-lookup-30"
+        },
+        {
+          "pmid": "42714936"
+        },
+        {
+          "pmid": "42803945"
+        },
+        {
+          "pmid": "42747202"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "endocrinology",
+      "period": "established",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND (\"Endocrine System Diseases\"[majr] OR \"Nutritional and Metabolic Diseases\"[majr]) AND 2015:2022[dp]",
+      "matched": 305,
+      "candidates": [
+        {
+          "pmid": "30808512",
+          "used": "t-lookup-31"
+        },
+        {
+          "pmid": "26144908",
+          "skipped": "not-primary",
+          "note": "preplanned extension of the earlier DATA trial"
+        },
+        {
+          "pmid": "30857647",
+          "retired": "t-lookup-32"
+        },
+        {
+          "pmid": "35368052",
+          "retired": "t-lookup-33"
+        },
+        {
+          "pmid": "33567185",
+          "used": "t-control-06"
+        },
+        {
+          "pmid": "30575490"
+        },
+        {
+          "pmid": "26352813"
+        },
+        {
+          "pmid": "33196153"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "endocrinology",
+      "period": "recent",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"Endocrine System Diseases\"[majr] OR \"Nutritional and Metabolic Diseases\"[majr]) AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 209,
+      "candidates": [
+        {
+          "pmid": "42679726",
+          "skipped": "not-primary",
+          "note": "post hoc analysis of an earlier randomized trial"
+        },
+        {
+          "pmid": "42893989",
+          "skipped": "predates-window",
+          "note": "published online 2026 Jul 23"
+        },
+        {
+          "pmid": "42755121",
+          "used": "t-lookup-34"
+        },
+        {
+          "pmid": "42745596",
+          "retired": "t-lookup-35"
+        },
+        {
+          "pmid": "42961875",
+          "skipped": "no-numbers",
+          "note": "gives two results but not how many took part"
+        },
+        {
+          "pmid": "42847405",
+          "skipped": "predates-window",
+          "note": "issue dated 2026 Jan 7 with no online date"
+        },
+        {
+          "pmid": "42816092",
+          "retired": "t-lookup-36"
+        },
+        {
+          "pmid": "42919190"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "pulmonology",
+      "period": "established",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Respiratory Tract Diseases\"[majr] AND 2015:2022[dp]",
+      "matched": 360,
+      "candidates": [
+        {
+          "pmid": "34996756",
+          "used": "t-lookup-37"
+        },
+        {
+          "pmid": "25230595",
+          "retired": "t-lookup-38"
+        },
+        {
+          "pmid": "33275134",
+          "retired": "t-lookup-39"
+        },
+        {
+          "pmid": "27598678",
+          "used": "t-control-07"
+        },
+        {
+          "pmid": "28029926"
+        },
+        {
+          "pmid": "32023372"
+        },
+        {
+          "pmid": "34097856"
+        },
+        {
+          "pmid": "35544369"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "pulmonology",
+      "period": "recent",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Respiratory Tract Diseases\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 120,
+      "candidates": [
+        {
+          "pmid": "42683528",
+          "used": "t-lookup-40"
+        },
+        {
+          "pmid": "42822118",
+          "retired": "t-lookup-41"
+        },
+        {
+          "pmid": "42803181",
+          "retired": "t-lookup-42"
+        },
+        {
+          "pmid": "42961876"
+        },
+        {
+          "pmid": "42717034"
+        },
+        {
+          "pmid": "42734213"
+        },
+        {
+          "pmid": "42932386"
+        },
+        {
+          "pmid": "42847356"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "gastroenterology",
+      "period": "established",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Digestive System Diseases\"[majr] AND 2015:2022[dp]",
+      "matched": 184,
+      "candidates": [
+        {
+          "pmid": "29800214",
+          "skipped": "not-primary",
+          "note": "cohort analysis of participants in a screening trial, not a randomized comparison"
+        },
+        {
+          "pmid": "27131100",
+          "used": "t-lookup-43"
+        },
+        {
+          "pmid": "31727409",
+          "retired": "t-lookup-44"
+        },
+        {
+          "pmid": "31135850",
+          "retired": "t-lookup-45"
+        },
+        {
+          "pmid": "33185364",
+          "used": "t-control-08"
+        },
+        {
+          "pmid": "32521132"
+        },
+        {
+          "pmid": "33657294"
+        },
+        {
+          "pmid": "36346079"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "gastroenterology",
+      "period": "recent",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Digestive System Diseases\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 115,
+      "candidates": [
+        {
+          "pmid": "42782492",
+          "used": "t-lookup-46"
+        },
+        {
+          "pmid": "42685302",
+          "retired": "t-lookup-47"
+        },
+        {
+          "pmid": "42927765",
+          "skipped": "not-primary",
+          "note": "prespecified interim analysis of event-free survival; the primary endpoint was reported earlier"
+        },
+        {
+          "pmid": "42839852",
+          "skipped": "not-primary",
+          "note": "secondary analysis of an earlier randomized trial"
+        },
+        {
+          "pmid": "42716074",
+          "skipped": "not-primary",
+          "note": "final overall-survival report of a trial whose primary results were published earlier"
+        },
+        {
+          "pmid": "42929021",
+          "skipped": "not-primary",
+          "note": "five-year outcomes of a trial reported earlier"
+        },
+        {
+          "pmid": "42830449",
+          "retired": "t-lookup-48"
+        },
+        {
+          "pmid": "42691897"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "nephrology-urology",
+      "period": "established",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Urologic Diseases\"[majr] AND 2015:2022[dp]",
+      "matched": 121,
+      "candidates": [
+        {
+          "pmid": "32668114",
+          "used": "t-lookup-49"
+        },
+        {
+          "pmid": "26969090",
+          "retired": "t-lookup-50"
+        },
+        {
+          "pmid": "26325557",
+          "retired": "t-lookup-51"
+        },
+        {
+          "pmid": "29105594",
+          "used": "t-control-09"
+        },
+        {
+          "pmid": "36331190"
+        },
+        {
+          "pmid": "28763548"
+        },
+        {
+          "pmid": "31340094"
+        },
+        {
+          "pmid": "35579642"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "nephrology-urology",
+      "period": "recent",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Urologic Diseases\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 44,
+      "candidates": [
+        {
+          "pmid": "42873070",
+          "used": "t-lookup-52"
+        },
+        {
+          "pmid": "42847350",
+          "skipped": "predates-window",
+          "note": "issue dated 2026 Jan 7 with no online date"
+        },
+        {
+          "pmid": "42845083",
+          "skipped": "predates-window",
+          "note": "issue dated 2026 Jul with no online date"
+        },
+        {
+          "pmid": "42932910",
+          "retired": "t-lookup-53"
+        },
+        {
+          "pmid": "42683856",
+          "skipped": "not-primary",
+          "note": "extended follow-up and molecular analysis of a trial reported earlier"
+        },
+        {
+          "pmid": "42894134",
+          "skipped": "predates-window",
+          "note": "published online 2026 Jul 22"
+        },
+        {
+          "pmid": "42716009",
+          "retired": "t-lookup-54"
+        },
+        {
+          "pmid": "42697907"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "musculoskeletal",
+      "period": "established",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Musculoskeletal Diseases\"[majr] AND 2015:2022[dp]",
+      "matched": 126,
+      "candidates": [
+        {
+          "pmid": "26488691",
+          "used": "t-lookup-55"
+        },
+        {
+          "pmid": "25308290",
+          "retired": "t-lookup-56"
+        },
+        {
+          "pmid": "28215362",
+          "retired": "t-lookup-57"
+        },
+        {
+          "pmid": "36495881",
+          "used": "t-control-10"
+        },
+        {
+          "pmid": "27287832"
+        },
+        {
+          "pmid": "32386593"
+        },
+        {
+          "pmid": "27959716"
+        },
+        {
+          "pmid": "28892457"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "musculoskeletal",
+      "period": "recent",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Musculoskeletal Diseases\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 100,
+      "candidates": [
+        {
+          "pmid": "42877103",
+          "skipped": "not-primary",
+          "note": "target trial emulation in a records database, not a randomized trial"
+        },
+        {
+          "pmid": "42759032",
+          "skipped": "not-primary",
+          "note": "trial protocol; no results yet"
+        },
+        {
+          "pmid": "42832303",
+          "used": "t-lookup-58"
+        },
+        {
+          "pmid": "42942962",
+          "retired": "t-lookup-59"
+        },
+        {
+          "pmid": "42825853",
+          "skipped": "no-numbers",
+          "note": "only the number of participants is stated; results are P values"
+        },
+        {
+          "pmid": "42750164",
+          "retired": "t-lookup-60"
+        },
+        {
+          "pmid": "42804313"
+        },
+        {
+          "pmid": "42715467"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "obstetrics",
+      "period": "established",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Pregnancy Complications\"[majr] AND 2015:2022[dp]",
+      "matched": 72,
+      "candidates": [
+        {
+          "pmid": "30177236",
+          "used": "t-lookup-61"
+        },
+        {
+          "pmid": "31378394",
+          "retired": "t-lookup-62"
+        },
+        {
+          "pmid": "33952438",
+          "retired": "t-lookup-63"
+        },
+        {
+          "pmid": "31509674",
+          "used": "t-control-11"
+        },
+        {
+          "pmid": "29234808"
+        },
+        {
+          "pmid": "28619476"
+        },
+        {
+          "pmid": "31097213"
+        },
+        {
+          "pmid": "30120476"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "obstetrics",
+      "period": "recent",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Pregnancy Complications\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 29,
+      "extended": {
+        "at": "2026-11-10",
+        "matched": 29,
+        "added": 8
+      },
+      "candidates": [
+        {
+          "pmid": "42904460",
+          "used": "t-lookup-64"
+        },
+        {
+          "pmid": "42946978",
+          "skipped": "not-primary",
+          "note": "six-year follow-up of a cluster randomized trial"
+        },
+        {
+          "pmid": "42937386",
+          "skipped": "no-numbers",
+          "note": "no participant count and no result is given as a number"
+        },
+        {
+          "pmid": "42964126",
+          "skipped": "not-primary",
+          "note": "post hoc analysis of two randomized trials"
+        },
+        {
+          "pmid": "42870746",
+          "skipped": "no-numbers",
+          "note": "only the number of women is stated; results are P values"
+        },
+        {
+          "pmid": "42862085",
+          "skipped": "not-primary",
+          "note": "long-term outcome after three earlier trials"
+        },
+        {
+          "pmid": "42695336",
+          "skipped": "not-primary",
+          "note": "prespecified secondary analysis of a randomized trial"
+        },
+        {
+          "pmid": "42919408",
+          "skipped": "not-primary",
+          "note": "trial protocol; no results"
+        },
+        {
+          "pmid": "42875917",
+          "skipped": "not-primary",
+          "note": "cross-sectional sub-study of a randomized trial, three to four years after the intervention"
+        },
+        {
+          "pmid": "42685847",
+          "skipped": "not-primary",
+          "note": "design and methods of a trial that has not reported"
+        },
+        {
+          "pmid": "42720400",
+          "skipped": "not-primary",
+          "note": "nested case-control study within a trial"
+        },
+        {
+          "pmid": "42726505",
+          "skipped": "not-primary",
+          "note": "pharmacokinetic modelling of a phase 2 trial to choose a phase 3 dose"
+        },
+        {
+          "pmid": "42765886",
+          "skipped": "not-primary",
+          "note": "secondary analysis of a randomised trial"
+        },
+        {
+          "pmid": "42678899",
+          "retired": "t-lookup-65"
+        },
+        {
+          "pmid": "42848825",
+          "skipped": "not-primary",
+          "note": "post hoc secondary analysis of a randomized trial"
+        },
+        {
+          "pmid": "42888210",
+          "skipped": "not-primary",
+          "note": "observational follow-up of infants born to women in a randomized trial"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "ophthalmology",
+      "period": "established",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND (\"N Engl J Med\"[ta] OR \"Lancet\"[ta] OR \"JAMA\"[ta] OR \"BMJ\"[ta]) AND \"Eye Diseases\"[majr] AND 2015:2022[dp]",
+      "matched": 40,
+      "candidates": [
+        {
+          "pmid": "27602665",
+          "used": "t-lookup-66"
+        },
+        {
+          "pmid": "31971679",
+          "retired": "t-lookup-67"
+        },
+        {
+          "pmid": "28712537",
+          "retired": "t-lookup-68"
+        },
+        {
+          "pmid": "28494920",
+          "used": "t-control-12"
+        },
+        {
+          "pmid": "31495497"
+        },
+        {
+          "pmid": "28423305"
+        },
+        {
+          "pmid": "30357297"
+        },
+        {
+          "pmid": "34551229"
+        }
+      ]
+    },
+    {
+      "frame": "lookup",
+      "specialty": "ophthalmology",
+      "period": "recent",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"Eye Diseases\"[majr] AND (\"2026/09/01\"[edat] : \"2026/10/31\"[edat])",
+      "matched": 33,
+      "candidates": [
+        {
+          "pmid": "42717542",
+          "skipped": "not-primary",
+          "note": "post hoc sub-analysis of the COMET trial"
+        },
+        {
+          "pmid": "42893472",
+          "used": "t-lookup-69"
+        },
+        {
+          "pmid": "42681266",
+          "skipped": "not-primary",
+          "note": "four-year follow-up of a trial reported earlier"
+        },
+        {
+          "pmid": "42867309",
+          "retired": "t-lookup-70"
+        },
+        {
+          "pmid": "42761589",
+          "retired": "t-lookup-71"
+        },
+        {
+          "pmid": "42717267"
+        },
+        {
+          "pmid": "42864450"
+        },
+        {
+          "pmid": "42742213"
+        }
+      ]
+    },
+    {
+      "frame": "preprint",
+      "part": "europepmc",
+      "database": "europepmc",
+      "query": "SRC:PPR AND HAS_ABSTRACT:y AND HAS_PUBLISHED_VERSION:n AND FIRST_PDATE:[2026-05-01 TO 2026-10-31] AND (TITLE_ABS:\"randomized controlled trial\" OR TITLE_ABS:\"randomised controlled trial\" OR TITLE_ABS:\"randomized clinical trial\" OR TITLE_ABS:\"randomised clinical trial\" OR TITLE_ABS:\"randomized trial\" OR TITLE_ABS:\"randomised trial\")",
+      "matched": 1097,
+      "extended": {
+        "at": "2026-11-11",
+        "matched": 1097,
+        "added": 32
+      },
+      "candidates": [
+        {
+          "id": "PPR1305370",
+          "skipped": "not-primary",
+          "note": "narrative review of nutrition in acute severe ulcerative colitis; reports no trial of its own"
+        },
+        {
+          "id": "PPR1282579",
+          "used": "t-preprint-01"
+        },
+        {
+          "id": "PPR1261422",
+          "used": "t-preprint-02"
+        },
+        {
+          "id": "PPR1238912",
+          "skipped": "not-primary",
+          "note": "protocol of a cluster non-randomized controlled trial; no results"
+        },
+        {
+          "id": "PPR1264846",
+          "skipped": "not-primary",
+          "note": "two single-arm pilot trials; no randomization and no comparison group"
+        },
+        {
+          "id": "PPR1256294",
+          "skipped": "not-primary",
+          "note": "exploratory secondary analysis of the PPKAY randomized trial (age as moderator)"
+        },
+        {
+          "id": "PPR1185294",
+          "used": "t-preprint-03"
+        },
+        {
+          "id": "PPR1188792",
+          "skipped": "not-primary",
+          "note": "protocol of a randomized trial (\"We will conduct\"); no results"
+        },
+        {
+          "id": "PPR1317957",
+          "skipped": "not-primary",
+          "note": "patient and public involvement programme (survey, forums, focus groups) for a proposed trial; not a randomized comparison"
+        },
+        {
+          "id": "PPR1340838",
+          "skipped": "not-primary",
+          "note": "umbrella review and meta-meta-analysis of reviews"
+        },
+        {
+          "id": "PPR1318359",
+          "skipped": "in-pubmed",
+          "note": "published as PMID 42818965 (same title with 12-Month Pilot RCT, same abstract text) which states 68 randomized and attrition 15.2% in the PRR group; found by searching PubMed for the keywords and for NCT04029623 (exact-title search failed on the curly apostrophe)"
+        },
+        {
+          "id": "PPR1325366",
+          "skipped": "not-primary",
+          "note": "secondary mathematical (neutrosophic) analysis of a previously published randomized trial"
+        },
+        {
+          "id": "PPR1287151",
+          "used": "t-preprint-04"
+        },
+        {
+          "id": "PPR1340798",
+          "used": "t-preprint-05"
+        },
+        {
+          "id": "PPR1353509",
+          "skipped": "not-primary",
+          "note": "systematic review; it states that no randomized trial with patient outcomes was included"
+        },
+        {
+          "id": "PPR1327994",
+          "skipped": "no-numbers",
+          "note": "abstract states 119 enrolled but gives no result as a value and no second count (82% women is a baseline demographic, six sessions and two weeks are design); the results are in words only"
+        },
+        {
+          "id": "PPR1326644",
+          "skipped": "not-primary",
+          "note": "extended analysis of a prior RCT (jail and healthcare costs, exploratory predictors); not the trial report"
+        },
+        {
+          "id": "PPR1184893",
+          "skipped": "not-primary",
+          "note": "longitudinal mixed-methods implementation study nested within a randomized trial; not a randomized comparison"
+        },
+        {
+          "id": "PPR1341477",
+          "used": "t-preprint-06"
+        },
+        {
+          "id": "PPR1280163",
+          "skipped": "not-primary",
+          "note": "multi-omics analysis in 309 dyads of the MISAME-III trial (mechanistic secondary analysis), not the trial report"
+        },
+        {
+          "id": "PPR1343181",
+          "skipped": "not-primary",
+          "note": "commentary and case report on research subject protections; not a randomized comparison"
+        },
+        {
+          "id": "PPR1264837",
+          "skipped": "not-primary",
+          "note": "design and methodology (protocol) of a randomized trial; no results"
+        },
+        {
+          "id": "PPR1254907",
+          "skipped": "no-numbers",
+          "note": "abstract gives no participant count and its results are cut off at p-values; no value or second count to ask for"
+        },
+        {
+          "id": "PPR1242591",
+          "skipped": "no-numbers",
+          "note": "abstract gives no participant count; the only figure is a -2.5% non-inferiority margin, and results are stated in words"
+        },
+        {
+          "id": "PPR1255362",
+          "skipped": "not-primary",
+          "note": "protocol of a randomized trial; no results"
+        },
+        {
+          "id": "PPR1298270",
+          "skipped": "not-primary",
+          "note": "qualitative focus-group study nested within a cluster randomized trial; not a randomized comparison"
+        },
+        {
+          "id": "PPR1253449",
+          "skipped": "not-primary",
+          "note": "consensus guideline with systematic evidence review; not a trial"
+        },
+        {
+          "id": "PPR1338706",
+          "skipped": "not-primary",
+          "note": "narrative review of psilocybin-assisted therapy"
+        },
+        {
+          "id": "PPR1323175",
+          "used": "t-preprint-07"
+        },
+        {
+          "id": "PPR1253213",
+          "skipped": "not-primary",
+          "note": "further analysis of an earlier cluster-randomized typhoid vaccine trial (herd protection by coverage quartile), not the trial report"
+        },
+        {
+          "id": "PPR1236290",
+          "skipped": "not-primary",
+          "note": "single-centre cross-sectional feasibility and pilot study; no randomization"
+        },
+        {
+          "id": "PPR1275485",
+          "skipped": "not-primary",
+          "note": "systematic review"
+        },
+        {
+          "id": "PPR1288399",
+          "used": "t-preprint-08"
+        },
+        {
+          "id": "PPR1261452",
+          "used": "t-preprint-09"
+        },
+        {
+          "id": "PPR1313099",
+          "skipped": "no-numbers",
+          "note": "144 randomly assigned to four conditions, but the abstract states no result as a value and no second count (a group's size, number analysed); the three interventions, four conditions, 8 minutes and follow-up weeks are design"
+        },
+        {
+          "id": "PPR1323547",
+          "skipped": "not-primary",
+          "note": "conceptual framework for medical AI; no trial"
+        },
+        {
+          "id": "PPR1328967",
+          "used": "t-preprint-10"
+        },
+        {
+          "id": "PPR1355100",
+          "skipped": "not-primary",
+          "note": "methodological paper with a Monte Carlo simulation of oncology trials; no participants randomized"
+        },
+        {
+          "id": "PPR1304721",
+          "skipped": "not-primary",
+          "note": "systematic review of 24 studies"
+        },
+        {
+          "id": "PPR1349155",
+          "used": "t-preprint-11"
+        },
+        {
+          "id": "PPR1254478",
+          "skipped": "not-primary",
+          "note": "perspective review of orthobiologic injectables; no trial"
+        },
+        {
+          "id": "PPR1327256",
+          "skipped": "not-primary",
+          "note": "protocol of the ReFit randomised trial; no results"
+        },
+        {
+          "id": "PPR1326411",
+          "skipped": "not-primary",
+          "note": "systematic review of 10 studies"
+        },
+        {
+          "id": "PPR1318927",
+          "skipped": "no-numbers",
+          "note": "40 athletes randomized into two groups, but the results are in words and p thresholds only and no group size or second count is stated (12 sessions, 3 per week, 4 weeks are design)"
+        },
+        {
+          "id": "PPR1331042",
+          "skipped": "not-primary",
+          "note": "protocol of a randomized trial; target sample, no results"
+        },
+        {
+          "id": "PPR1316373",
+          "skipped": "in-pubmed",
+          "note": "PMID 42818923 (Res Sq 2026, same title) states n = 420 and the beta of 0.274 for prior AI exposure and confidence"
+        },
+        {
+          "id": "PPR1249745",
+          "skipped": "not-primary",
+          "note": "post-hoc analysis of the ASPREE trial"
+        },
+        {
+          "id": "PPR1295907",
+          "used": "t-preprint-12"
+        }
+      ]
+    },
+    {
+      "frame": "regional",
+      "part": "cba",
+      "database": "europepmc",
+      "query": "SRC:CBA AND HAS_ABSTRACT:y AND (TITLE_ABS:randomized OR TITLE_ABS:randomised)",
+      "matched": 462,
+      "candidates": [
+        {
+          "id": "CBA:633654",
+          "used": "t-regional-01"
+        },
+        {
+          "id": "CBA:618117",
+          "used": "t-regional-02"
+        },
+        {
+          "id": "CBA:535012",
+          "skipped": "no-numbers",
+          "note": "field plot experiment (randomized block design) of phosphorus application; the abstract states only 'Twenty plots', no group size and no result value, so there is no second figure to ask for"
+        },
+        {
+          "id": "CBA:483826",
+          "used": "t-regional-03"
+        },
+        {
+          "id": "CBA:617619",
+          "skipped": "no-numbers",
+          "note": "beef steers divided into six nutrition-pattern groups in a randomized complete block design; the abstract gives the total (30) but no group size and no result value, so there is no second figure to ask for"
+        },
+        {
+          "id": "CBA:584273",
+          "used": "t-regional-04"
+        },
+        {
+          "id": "CBA:521552",
+          "used": "t-regional-05"
+        },
+        {
+          "id": "CBA:377764",
+          "used": "t-regional-06"
+        },
+        {
+          "id": "CBA:636489",
+          "used": "t-regional-07"
+        },
+        {
+          "id": "CBA:298870",
+          "used": "t-regional-08"
+        },
+        {
+          "id": "CBA:301114"
+        },
+        {
+          "id": "CBA:530970"
+        },
+        {
+          "id": "CBA:584288"
+        },
+        {
+          "id": "CBA:594147"
+        },
+        {
+          "id": "CBA:626597"
+        },
+        {
+          "id": "CBA:289494"
+        }
+      ]
+    },
+    {
+      "frame": "regional",
+      "part": "chinaxiv",
+      "database": "chinaxiv",
+      "query": "randomized patients",
+      "filter": "records with an abstract that the source wrote (abstract_source other than machine_generated); the ChinaXiv corpus only, never RussiaRxiv",
+      "matched": 277,
+      "extended": {
+        "at": "2026-11-10",
+        "matched": 277,
+        "added": 16
+      },
+      "candidates": [
+        {
+          "id": "chinaxiv-202304.00908",
+          "skipped": "not-identifiable",
+          "note": "sibling ChinaXiv record chinaxiv-202304.00868 (same title wording, posted the same day 2023-04-03) reports the same trial with the same figures (84 randomized, 42 per group, 41 completed per group); nothing in the description tells them apart"
+        },
+        {
+          "id": "chinaxiv-202211.00264",
+          "used": "t-regional-09"
+        },
+        {
+          "id": "chinaxiv-201712.00056",
+          "used": "t-regional-10"
+        },
+        {
+          "id": "chinaxiv-202409.00006",
+          "skipped": "not-identifiable",
+          "note": "sibling ChinaXiv record chinaxiv-202408.00163 (same title, posted 2024-08-16 against 2024-08-30) reports the same trial with the same figures (80 allocated, n=40 each, response rate 95.00% vs 80.00%); a year-only description cannot tell them apart"
+        },
+        {
+          "id": "chinaxiv-202412.00173",
+          "skipped": "not-primary",
+          "note": "cross-sectional survey of older adults with stratified random sampling, not a randomized comparison"
+        },
+        {
+          "id": "chinaxiv-202409.00066",
+          "skipped": "not-primary",
+          "note": "radiomics prediction-model study; the random 7:3 split into training and validation sets is not a randomized comparison"
+        },
+        {
+          "id": "chinaxiv-202607.00001",
+          "skipped": "not-primary",
+          "note": "cross-sectional questionnaire survey with multistage stratified random sampling, not a randomized comparison"
+        },
+        {
+          "id": "chinaxiv-201806.00182",
+          "skipped": "in-pubmed",
+          "note": "published as PMID 29292259 (Nan Fang Yi Ke Da Xue Xue Bao 2017, same authors); its English abstract states the same figures (80 patients randomized, n=40 per group, safe apnea 469.5 s and 63.6 s)"
+        },
+        {
+          "id": "chinaxiv-202209.00093",
+          "used": "t-regional-11"
+        },
+        {
+          "id": "chinaxiv-202208.00137",
+          "used": "t-regional-12"
+        },
+        {
+          "id": "chinaxiv-202310.03327",
+          "skipped": "no-numbers",
+          "note": "the total (48 selected) is contradicted by the abstract's own groups (19 cases each); no other clean pair of figures"
+        },
+        {
+          "id": "chinaxiv-202511.00026",
+          "skipped": "not-primary",
+          "note": "systematic review and meta-analysis of 16 randomized trials, not a primary report"
+        },
+        {
+          "id": "chinaxiv-202504.00236",
+          "used": "t-regional-13"
+        },
+        {
+          "id": "chinaxiv-202210.00085",
+          "skipped": "not-primary",
+          "note": "systematic review and network meta-analysis of 22 trials, not a primary report"
+        },
+        {
+          "id": "chinaxiv-202505.00170",
+          "skipped": "not-primary",
+          "note": "Mendelian randomization and network pharmacology study, no randomized comparison of participants"
+        },
+        {
+          "id": "chinaxiv-202210.00115",
+          "skipped": "not-primary",
+          "note": "network meta-analysis of 44 randomized trials, not a primary report"
+        },
+        {
+          "id": "chinaxiv-202410.00126",
+          "skipped": "not-primary",
+          "note": "retrospective analysis of sepsis patients; the random split into development and validation cohorts is not a randomized comparison"
+        },
+        {
+          "id": "chinaxiv-202601.00086",
+          "skipped": "not-primary",
+          "note": "network meta-analysis of 45 randomized trials, not a primary report"
+        },
+        {
+          "id": "chinaxiv-202506.00018",
+          "skipped": "not-primary",
+          "note": "questionnaire survey of community health centers and general practitioners (simple random sampling), not a randomized comparison"
+        },
+        {
+          "id": "chinaxiv-202604.00193",
+          "skipped": "not-primary",
+          "note": "urinary proteomics comparison of thalassemia patients with healthy controls, observational, no randomized groups"
+        },
+        {
+          "id": "chinaxiv-202607.00153",
+          "skipped": "not-primary",
+          "note": "evidence summary of guidelines, consensus statements and trials, a secondary synthesis"
+        },
+        {
+          "id": "chinaxiv-202503.00175",
+          "skipped": "not-primary",
+          "note": "cross-sectional survey of primary care physicians with multi-stage random sampling, not a randomized comparison"
+        },
+        {
+          "id": "chinaxiv-202307.00694",
+          "skipped": "not-primary",
+          "note": "cross-sectional EQ-5D-5L survey with stratified cluster sampling, not a randomized comparison"
+        },
+        {
+          "id": "chinaxiv-202504.00171",
+          "skipped": "not-primary",
+          "note": "observational examination cohort and prediction model; the random 1:1 split into training and test sets is not a randomized comparison"
+        },
+        {
+          "id": "chinaxiv-202304.00977",
+          "used": "t-regional-14"
+        },
+        {
+          "id": "chinaxiv-202605.00050",
+          "skipped": "not-primary",
+          "note": "cross-sectional questionnaire survey (stratified random sampling) analysed with structural equation modelling, not a randomized comparison"
+        },
+        {
+          "id": "chinaxiv-202308.00754",
+          "skipped": "not-primary",
+          "note": "review of outcome measures used in randomized trials, not itself a randomized comparison"
+        },
+        {
+          "id": "chinaxiv-202409.00110",
+          "skipped": "not-primary",
+          "note": "meta-analysis of fruquintinib trials, not a primary report"
+        },
+        {
+          "id": "chinaxiv-202404.00006",
+          "skipped": "not-primary",
+          "note": "cross-sectional survey of hypertensive patients with cluster sampling, not a randomized comparison"
+        },
+        {
+          "id": "chinaxiv-202605.00053",
+          "skipped": "not-primary",
+          "note": "best-evidence summary of guidelines, consensus statements and trials, a secondary synthesis"
+        },
+        {
+          "id": "chinaxiv-202510.00217",
+          "skipped": "not-primary",
+          "note": "policy analysis plus a quasi-experimental study of three non-randomly selected hospitals, not a randomized comparison"
+        },
+        {
+          "id": "chinaxiv-202306.00164",
+          "used": "t-regional-15"
+        }
+      ]
+    },
+    {
+      "frame": "fulltext",
+      "part": "bmj",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"BMJ\"[ta] AND 2018:2022[dp] AND free full text[sb]",
+      "matched": 123,
+      "candidates": [
+        {
+          "pmid": "34728476",
+          "used": "t-fulltext-01"
+        },
+        {
+          "pmid": "36328372",
+          "used": "t-fulltext-02"
+        },
+        {
+          "pmid": "34983775",
+          "used": "t-fulltext-03"
+        },
+        {
+          "pmid": "33687926",
+          "used": "t-fulltext-04"
+        },
+        {
+          "pmid": "30181143"
+        },
+        {
+          "pmid": "34289996"
+        },
+        {
+          "pmid": "33055247"
+        },
+        {
+          "pmid": "36316046"
+        },
+        {
+          "pmid": "31615781"
+        },
+        {
+          "pmid": "34880055"
+        },
+        {
+          "pmid": "30733197"
+        },
+        {
+          "pmid": "32699176"
+        },
+        {
+          "pmid": "30381374"
+        },
+        {
+          "pmid": "32409561"
+        },
+        {
+          "pmid": "31335316"
+        },
+        {
+          "pmid": "34649864"
+        }
+      ]
+    },
+    {
+      "frame": "fulltext",
+      "part": "plos-medicine",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"PLoS Med\"[ta] AND 2018:2022[dp] AND free full text[sb]",
+      "matched": 215,
+      "candidates": [
+        {
+          "pmid": "30897095",
+          "skipped": "not-primary",
+          "note": "substudy of the SHINE cluster-randomized trial reporting child development outcomes in a subset of children; the trial's primary outcomes were reported earlier"
+        },
+        {
+          "pmid": "32589630",
+          "used": "t-fulltext-05"
+        },
+        {
+          "pmid": "33534791",
+          "used": "t-fulltext-06"
+        },
+        {
+          "pmid": "31335865",
+          "used": "t-fulltext-07"
+        },
+        {
+          "pmid": "32231364",
+          "used": "t-fulltext-08"
+        },
+        {
+          "pmid": "36260627"
+        },
+        {
+          "pmid": "34228735"
+        },
+        {
+          "pmid": "36306283"
+        },
+        {
+          "pmid": "31237871"
+        },
+        {
+          "pmid": "35727800"
+        },
+        {
+          "pmid": "35015777"
+        },
+        {
+          "pmid": "36074760"
+        },
+        {
+          "pmid": "33170863"
+        },
+        {
+          "pmid": "36215323"
+        },
+        {
+          "pmid": "31584944"
+        },
+        {
+          "pmid": "29601570"
+        }
+      ]
+    },
+    {
+      "frame": "fulltext",
+      "part": "jama-network-open",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"JAMA Netw Open\"[ta] AND 2018:2022[dp] AND free full text[sb]",
+      "matched": 555,
+      "candidates": [
+        {
+          "pmid": "34477854",
+          "used": "t-fulltext-09"
+        },
+        {
+          "pmid": "35050355",
+          "used": "t-fulltext-10"
+        },
+        {
+          "pmid": "31225897",
+          "used": "t-fulltext-11"
+        },
+        {
+          "pmid": "36399342",
+          "used": "t-fulltext-12"
+        },
+        {
+          "pmid": "35412627"
+        },
+        {
+          "pmid": "34259850"
+        },
+        {
+          "pmid": "34448866"
+        },
+        {
+          "pmid": "32940679"
+        },
+        {
+          "pmid": "35616942"
+        },
+        {
+          "pmid": "36525272"
+        },
+        {
+          "pmid": "33587135"
+        },
+        {
+          "pmid": "35881397"
+        },
+        {
+          "pmid": "33057642"
+        },
+        {
+          "pmid": "36469320"
+        },
+        {
+          "pmid": "34309668"
+        },
+        {
+          "pmid": "35930287"
+        }
+      ]
+    },
+    {
+      "frame": "fulltext",
+      "part": "bmc-medicine",
+      "database": "pubmed",
+      "query": "\"Randomized Controlled Trial\"[pt] AND hasabstract AND english[la] AND \"BMC Med\"[ta] AND 2018:2022[dp] AND free full text[sb]",
+      "matched": 111,
+      "candidates": [
+        {
+          "pmid": "31092248",
+          "used": "t-fulltext-13"
+        },
+        {
+          "pmid": "30352583",
+          "skipped": "not-primary",
+          "note": "ancillary analysis of the earlier-reported LIFE trial (1298 of the 1635 randomized participants with IL-6 data), not the trial's primary report"
+        },
+        {
+          "pmid": "34544415",
+          "used": "t-fulltext-14"
+        },
+        {
+          "pmid": "33357217",
+          "skipped": "not-primary",
+          "note": "post hoc analysis of 20,867 participants of the ENGAGE AF-TIMI 48 trial by frailty status"
+        },
+        {
+          "pmid": "29347988",
+          "used": "t-fulltext-15"
+        },
+        {
+          "pmid": "30103784",
+          "skipped": "not-primary",
+          "note": "Mendelian randomisation study of genetic data (cases and controls), not a randomized trial"
+        },
+        {
+          "pmid": "36280851",
+          "skipped": "not-primary",
+          "note": "cost-effectiveness analysis alongside the CSPPT, not the trial's primary report"
+        },
+        {
+          "pmid": "35436911",
+          "used": "t-fulltext-16"
+        },
+        {
+          "pmid": "31747948"
+        },
+        {
+          "pmid": "36175997"
+        },
+        {
+          "pmid": "32957971"
+        },
+        {
+          "pmid": "31221165"
+        },
+        {
+          "pmid": "35241087"
+        },
+        {
+          "pmid": "35039035"
+        },
+        {
+          "pmid": "31262317"
+        },
+        {
+          "pmid": "31948461"
+        }
+      ]
+    }
+  ]
+}

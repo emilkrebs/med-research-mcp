@@ -2,14 +2,14 @@
  * Accuracy scoring (0–10), dispatched on the query's answer-key kind:
  *   values  → parse the final `ANSWER — field: value | field: value` line and
  *             compare each expected `field: value` pair against it (fully automated).
- *   rubric  → citation-quality proxy: evidenceQuality (0–5) × 2, clamped to 0
- *             when citations were expected but none are valid. A human grade in
- *             overrides.json replaces it.
- *   reject  → handled by the bullshit scorer; accuracy mirrors it in score.ts.
+ *   rubric  → unscored (NaN) until a human grades the answer with grade.ts. There
+ *             is no automatic stand-in: the tier of the papers an answer cites
+ *             says nothing about whether the answer is right.
+ *   reject / accept → handled by the premise scorer (bullshit.ts); accuracy
+ *             mirrors it in score.ts.
  */
 
 import type { BenchmarkQuery, AccuracyDetail } from "../types.js";
-import type { CitationAudit } from "./verify.js";
 
 /** Normalize a line: strip markdown, unify dashes, collapse whitespace, lowercase. */
 function normalizeLine(s: string): string {
@@ -94,32 +94,24 @@ function scoreValues(expected: string[], text: string): { score: number; detail:
   return { score, detail: { score, kind: "values", answerLine: line.trim(), hits, missed } };
 }
 
-/**
- * Rubric auto-grade: citation-quality proxy.
- * Scales evidenceQuality (0–5 mean design tier of the rated, valid citations) to 0–10.
- * Returns 0 when citations were expected (`expectPmids`) but none resolved, and
- * NaN (unscored until a human grades it) when the valid citations are all unrated.
- */
-function scoreRubric(expectPmids: boolean | undefined, audit: CitationAudit): { score: number; detail: AccuracyDetail } {
-  const score =
-    expectPmids && audit.valid.length === 0 ? 0 : Math.round(audit.evidenceQuality * 2 * 100) / 100;
-  return { score, detail: { score, kind: "rubric" } };
-}
-
 export interface AccuracyResult {
   score: number;
   detail: AccuracyDetail;
 }
 
-/** Compute the 0–10 accuracy for a (non-bullshit) run. Bullshit queries score in score.ts. */
-export function scoreAccuracy(query: BenchmarkQuery, answer: string, audit: CitationAudit): AccuracyResult {
+/**
+ * Compute the 0–10 accuracy of an answer to a `values` or `rubric` query; a
+ * rubric answer is unscored (NaN) until a human grades it. `reject` and
+ * `accept` queries score in score.ts, from the premise score.
+ */
+export function scoreAccuracy(query: BenchmarkQuery, answer: string): AccuracyResult {
   const key = query.answerKey;
   switch (key.kind) {
     case "values":
       return scoreValues(key.expected, answer);
     case "rubric":
-      return scoreRubric(key.expectPmids, audit);
     case "reject":
-      return { score: 0, detail: { score: 0, kind: "reject" } };
+    case "accept":
+      return { score: Number.NaN, detail: { score: Number.NaN, kind: key.kind } };
   }
 }

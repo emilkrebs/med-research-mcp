@@ -1,18 +1,20 @@
 #!/usr/bin/env -S npx tsx
 /**
- * CLI to human-grade rubric benchmark answers, bypassing the citation-quality proxy.
- * Writes scores to <results-dir>/overrides.json (or a shared file via --overrides).
+ * CLI to human-grade rubric benchmark answers: the only way an open-ended answer
+ * gets an accuracy. Writes scores to <results-dir>/overrides.json (or a shared
+ * file via --overrides).
  *
  * Grading is BLIND and RANDOMIZED by default: the grader sees an opaque item id,
  * the prompt, the rubric, the answer text and the cited PMIDs' validity / study
- * type / evidence grade (condition-neutral facts) — but not the condition, model,
- * run, or the provisional proxy score, and items come in a seeded shuffled order
- * rather than grouped by query and condition. Known limitation: the answer text
+ * type / design tier (condition-neutral facts) — but not the condition, model
+ * or run, and items come in a seeded shuffled order rather than grouped by
+ * query and condition. Known limitation: the answer text
  * itself can still reveal the condition (e.g. "I searched PubMed…" or an
  * ungrounded closed-book style), so blinding is partial.
  *
- * Several graders may grade the same run (each with their own --grader id); the
- * scorer averages their grades and `--agreement` reports inter-rater reliability.
+ * Have at least two people grade every answer (each with their own --grader
+ * id): the scorer averages their grades, the summary says how many graders each
+ * answer had, and `--agreement` reports inter-rater reliability.
  *
  * Usage:
  *   npx tsx benchmark/grade.ts <results-dir> [options]
@@ -22,7 +24,7 @@
  *   --seed <n>         Shuffle seed (default: derived from the grader id, so
  *                      different graders see different orders). Always printed.
  *   --overrides <path> Write to/read from this file instead of <dir>/overrides.json
- *   --unblind          Show condition, model, run and the proxy score (debugging)
+ *   --unblind          Show condition, model and run (debugging)
  *   --agreement        Print inter-rater agreement and exit without prompting
  *
  * Controls:
@@ -40,6 +42,7 @@ import { stdin, stdout } from "node:process";
 import { queryById } from "./lib/queries.js";
 import { loadOverrides } from "./lib/overrides.js";
 import { collectRatings, computeAgreement, formatAgreement, itemIdFor } from "./lib/agreement.js";
+import { normalizeStatus, runOutcome } from "./lib/status.js";
 import type { BenchmarkQuery, OverridesFile, RunRecord, ScoreBreakdown, ScoreOverride } from "./lib/types.js";
 
 /** A raw/*.json file: the RunRecord plus the `_scoring` breakdown run.ts embeds. */
@@ -129,17 +132,16 @@ export async function loadRawItems(rawDir: string): Promise<RawItem[]> {
 }
 
 /**
- * Why a response is not worth grading, or null if it is. Uses the scorer's
- * `_scoring.status` when present; legacy breakdowns without a status count as
- * ok unless the record has an `error` or empty text. Non-ok rows are excluded
- * from aggregation anyway, so a grade would never be used.
+ * Why a response is not worth grading, or null if it is: its status when that
+ * is not `ok`. A run without an answer scores 0 by rule and a missing run has
+ * nothing to grade, so a grade would never be used. Breakdowns from before
+ * scorer v8 (no status, or `truncated`) are read off the record.
  */
 export function skipReason(record: RawFile): string | null {
-  const status = record._scoring?.status;
-  if (status !== undefined) return status === "ok" ? null : status;
-  if (record.error) return "provider-error";
-  if (!record.text || record.text.trim() === "") return "truncated";
-  return null;
+  const stored = record._scoring?.status as string | undefined;
+  const status =
+    stored === undefined || stored === "truncated" ? (runOutcome(record) ?? (stored === "truncated" ? "no-answer" : "ok")) : normalizeStatus(stored);
+  return status === "ok" ? null : status;
 }
 
 /** Opaque id for an item (same hash `--agreement` prints). */
@@ -249,12 +251,12 @@ export interface GradeView {
   prompt: string;
   rubric: string;
   answer: string;
-  pmids: { pmid: string; valid: boolean; studyType: string; designTier?: number | null; title: string }[];
+  pmids: { pmid: string; valid: boolean; offTopic?: boolean; studyType: string; designTier?: number | null; title: string }[];
   /** Only present with --unblind. */
-  unblinded?: { condition: string; model: string; run: number; proxy?: number };
+  unblinded?: { condition: string; model: string; run: number };
 }
 
-/** Build the view for a response; `unblind` adds the identifying details and proxy score. */
+/** Build the view for a response; `unblind` adds the identifying details. */
 export function buildView(record: RawFile, query: BenchmarkQuery, unblind: boolean): GradeView {
   const rubric = query.answerKey.kind === "rubric" ? query.answerKey.rubric : "(no rubric — should not happen)";
   let answer: string;
@@ -270,18 +272,14 @@ export function buildView(record: RawFile, query: BenchmarkQuery, unblind: boole
     pmids: (record._scoring?.evidenceQuality?.pmids ?? []).map((p) => ({
       pmid: p.pmid,
       valid: p.valid,
+      ...(p.offTopic ? { offTopic: true } : {}),
       studyType: p.studyType ?? "unknown",
       designTier: p.designTier,
       title: p.title ?? "(no title)",
     })),
   };
   if (unblind) {
-    view.unblinded = {
-      condition: record.condition,
-      model: record.model,
-      run: record.run,
-      proxy: record._scoring?.accuracy?.score,
-    };
+    view.unblinded = { condition: record.condition, model: record.model, run: record.run };
   }
   return view;
 }
@@ -302,12 +300,9 @@ export function renderView(view: GradeView, index: number, total: number): strin
   if (view.pmids.length === 0) out.push("  (no citations)");
   for (const p of view.pmids) {
     const tier = p.designTier != null ? `${p.designTier}/5` : "n/a";
-    out.push(`  PMID ${p.pmid} — ${p.valid ? "VALID" : "FABRICATED"} | ${p.studyType} | design tier ${tier} | "${p.title}"`);
-  }
-  if (u) {
-    out.push(
-      `\nAuto-score (PROVISIONAL citation-quality proxy — NOT correctness): ${u.proxy !== undefined ? u.proxy.toFixed(2) : "n/a"} / 10`,
-    );
+    // A record that exists but is about something else is a fabricated citation too; its title shows what it really is.
+    const verdict = p.valid ? "VALID" : p.offTopic ? "FABRICATED (exists, but off-topic)" : "FABRICATED (no such record)";
+    out.push(`  PMID ${p.pmid} — ${verdict} | ${p.studyType} | design tier ${tier} | "${p.title}"`);
   }
   out.push(RULE);
   return out.join("\n");

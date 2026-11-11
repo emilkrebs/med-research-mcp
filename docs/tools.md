@@ -63,7 +63,7 @@ Because the query is narrowed, `minDesignTier` never sees the records with a `nu
 
 | Parameter | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `ids` | `string[]` | yes | 1–50 database-specific ids: PMIDs for `pubmed`; for `europepmc`, PMIDs or prefixed ids for records outside PubMed, e.g. `CBA:521529` (Chinese Biological Abstracts) or `PPR…` preprints; for `chinaxiv` and `russiarxiv`, the ids `literature_search` returned. |
+| `ids` | `string[]` | yes | 1–50 database-specific ids: PMIDs for `pubmed`; for `europepmc`, PMIDs or prefixed ids for records outside PubMed, e.g. `CBA:644599` (Chinese Biological Abstracts) or `PPR…` preprints; for `chinaxiv` and `russiarxiv`, the ids `literature_search` returned. |
 | `database` | `string` | yes | The database the ids belong to: `pubmed`, `europepmc`, `chinaxiv` or `russiarxiv`. Any other value is refused. |
 
 Returns `{ articles, missing, warnings? }`: the raw records in the order requested, with publication types, MeSH headings and retraction/correction links, and no design labels. ChinaXiv and RussiaRxiv records are complete here; search results cut their abstracts at 500 characters. `missing` lists ids that couldn't be fetched.

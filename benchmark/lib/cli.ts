@@ -6,10 +6,26 @@
 
 import { parseArgs } from "node:util";
 import { CONDITIONS, DEFAULT_MODELS, DEFAULTS, MODELS, type ModelSpec } from "./config.js";
-import { QUERIES, queryById } from "./queries.js";
-import type { BenchmarkQuery, Category, ConditionId } from "./types.js";
+import { QUERIES, queriesOf, queryById } from "./queries.js";
+import type { BenchmarkQuery, Category, ConditionId, Split } from "./types.js";
 
-export const CATEGORIES: Category[] = ["factual", "drill-down", "synthesis", "edge-case", "compound", "recent", "bullshit"];
+export const CATEGORIES: Category[] = [
+  "factual",
+  "drill-down",
+  "synthesis",
+  "edge-case",
+  "compound",
+  "recent",
+  "bullshit",
+  "lookup",
+  "control",
+  "preprint",
+  "regional",
+  "fulltext",
+];
+
+/** The set a run takes its queries from. */
+export type SplitChoice = Split | "all";
 
 /** A usage error: print `message` and exit non-zero, no stack trace. */
 export class CliError extends Error {}
@@ -24,6 +40,8 @@ export interface CliOptions {
   runs: number;
   models: ModelSpec[];
   conditions: ConditionId[];
+  /** Query set: the development set by default, the held-out set for `--publish`. */
+  split: SplitChoice;
   queries: BenchmarkQuery[];
   temperature: number;
   maxSteps: number;
@@ -43,6 +61,7 @@ const OPTION_SPEC = {
   models: { type: "string" },
   conditions: { type: "string" },
   "with-baselines": { type: "boolean" },
+  split: { type: "string" },
   queries: { type: "string" },
   temperature: { type: "string" },
   "max-steps": { type: "string" },
@@ -80,15 +99,15 @@ export function parseTemperature(raw: string | undefined, fallback: number): num
 
 export function resolveConditions(input?: string, withBaselines = false): ConditionId[] {
   if (!input) {
-    return withBaselines ? ["closed-book", "web-search", "mcp"] : ["mcp"];
+    return withBaselines ? ["closed-book", "web-search", "pubmed", "mcp"] : ["mcp"];
   }
   const byLetter = CONDITIONS as Record<string, ConditionId>;
-  const all: ConditionId[] = ["closed-book", "web-search", "mcp", "mcp-skill"];
+  const all: ConditionId[] = ["closed-book", "web-search", "pubmed", "mcp", "mcp-skill"];
   const out: ConditionId[] = [];
   for (const raw of input.split(",")) {
     const t = raw.trim();
     const found = byLetter[t.toUpperCase()] ?? all.find((c) => c === t.toLowerCase());
-    if (!found) throw new CliError(`Unknown condition "${t}". Use A|B|C|D or ${all.join("|")}.`);
+    if (!found) throw new CliError(`Unknown condition "${t}". Use A|B|C|D|E or ${all.join("|")}.`);
     if (!out.includes(found)) out.push(found);
   }
   return out;
@@ -107,14 +126,28 @@ export function resolveModels(input?: string): ModelSpec[] {
   return out;
 }
 
-export function resolveQueries(input?: string): BenchmarkQuery[] {
-  if (!input) return QUERIES;
+/** Parse `--split`. */
+export function resolveSplit(input?: string, fallback: SplitChoice = "dev"): SplitChoice {
+  if (input === undefined) return fallback;
+  const t = input.trim().toLowerCase();
+  if (t === "dev" || t === "test" || t === "all") return t;
+  throw new CliError(`--split must be dev, test or all (got "${input}").`);
+}
+
+/**
+ * The queries a run covers. Without `--queries`: every query of the split. A
+ * category name selects that category within the split; a query id selects
+ * that query whatever its split (naming it is explicit enough).
+ */
+export function resolveQueries(input?: string, split: SplitChoice = "dev"): BenchmarkQuery[] {
+  const pool = queriesOf(split);
+  if (!input) return pool;
   const out: BenchmarkQuery[] = [];
   const seen = new Set<string>();
   for (const raw of input.split(",")) {
     const t = raw.trim();
     if ((CATEGORIES as string[]).includes(t)) {
-      for (const q of QUERIES.filter((q) => q.category === t)) if (!seen.has(q.id)) (seen.add(q.id), out.push(q));
+      for (const q of pool.filter((q) => q.category === t)) if (!seen.has(q.id)) (seen.add(q.id), out.push(q));
       continue;
     }
     const q = queryById(t);
@@ -135,14 +168,15 @@ export function parseCli(argv: string[]): CliOptions {
 
   const publish = Boolean(values.publish);
   if (publish) {
-    const clash = (["models", "runs"] as const).filter((f) => values[f] !== undefined).map((f) => `--${f}`);
+    const clash = (["models", "runs", "split", "queries"] as const).filter((f) => values[f] !== undefined).map((f) => `--${f}`);
     if (clash.length > 0) {
       throw new CliError(
-        `--publish fixes the models (all enabled) and --runs (${DEFAULTS.runs}); it cannot be combined with ${clash.join(" or ")}. ` +
-          "Drop --publish for a custom run.",
+        `--publish fixes the models (all enabled), --runs (${DEFAULTS.runs}) and the query set (the whole held-out set); ` +
+          `it cannot be combined with ${clash.join(" or ")}. Drop --publish for a custom run.`,
       );
     }
   }
+  const split = resolveSplit(values.split, publish ? "test" : "dev");
 
   const opts: CliOptions = {
     help: Boolean(values.help),
@@ -151,7 +185,8 @@ export function parseCli(argv: string[]): CliOptions {
     runs: parsePositiveInt("runs", values.runs, DEFAULTS.runs),
     models: resolveModels(values.models),
     conditions: resolveConditions(values.conditions, Boolean(values["with-baselines"])),
-    queries: resolveQueries(values.queries),
+    split,
+    queries: resolveQueries(values.queries, split),
     temperature: parseTemperature(values.temperature, DEFAULTS.temperature),
     maxSteps: parsePositiveInt("max-steps", values["max-steps"], DEFAULTS.maxSteps),
     concurrency: parsePositiveInt("concurrency", values.concurrency, 1),
@@ -175,9 +210,13 @@ Pass 1 - Run + score:
   --runs <n>          runs per query per model, positive integer (default ${DEFAULTS.runs})
   --models <list>     comma-separated model labels (default: every enabled model;
                       a disabled model can still be named explicitly)
-  --conditions <list> comma-separated A|B|C or closed-book|web-search|mcp (default: mcp)
-  --with-baselines    include closed-book and web-search conditions (A and B)
-  --queries <list>    comma-separated query ids and/or categories (default: all ${QUERIES.length})
+  --conditions <list> comma-separated A|B|C|D|E or closed-book|web-search|mcp|mcp-skill|pubmed (default: mcp)
+  --with-baselines    add the baselines: closed-book (A), web-search (B) and plain PubMed tools (E)
+  --split <set>       dev (default): the ${queriesOf("dev").length} development queries, for building and tuning.
+                      test: the ${queriesOf("test").length} held-out queries; never tune anything against them.
+                      all: both (${QUERIES.length}).
+  --queries <list>    comma-separated query ids and/or categories (default: every query of the split;
+                      a category selects within the split, an id selects that query whatever its split)
   --temperature <t>   sampling temperature, 0-2 (default ${DEFAULTS.temperature})
   --max-steps <n>     agent tool-call rounds, positive integer (default ${DEFAULTS.maxSteps})
   --concurrency <n>   parallel runs, positive integer (default 1; NCBI rate limits favor 1)
@@ -191,12 +230,14 @@ Pass 1 - Run + score:
   --resume <dir>      reuse raw records from an existing results dir and only run the rest.
                       A record is reused only if its model id, settings (temperature,
                       max steps, timeout), prompt and system prompt all match this run;
-                      legacy records without those fields are re-run. The dir's
+                      legacy records without those fields are re-run, and so are runs
+                      that hit a provider error or a truncated context. A run that timed
+                      out or gave no answer is a result (scored 0) and is kept. The dir's
                       overrides.json (human grades) is copied into the new dir.
-  --publish           canonical publication run: ALL enabled models and ${DEFAULTS.runs} runs per query.
-                      Cannot be combined with --models or --runs. Conditions/queries stay
-                      selectable (default: mcp condition, all queries). Warns loudly about
-                      unpinned models and unverified answer keys.
+  --publish           canonical publication run: ALL enabled models, ${DEFAULTS.runs} runs per query, the whole
+                      held-out set. Cannot be combined with --models, --runs, --split or --queries.
+                      Conditions stay selectable (default: mcp). Warns loudly about unpinned
+                      models, unverified answer keys and a dirty working tree.
   --dry-run           print the plan and preflight, make no API calls
 
 Pass 2 - Rescore from raw + overrides:

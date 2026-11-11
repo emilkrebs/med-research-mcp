@@ -11,28 +11,23 @@
 
 import { JSDOM } from "jsdom";
 import * as d3 from "d3";
-import type { ConditionId, ScoreRow } from "../types.js";
-import { mean, sd } from "../stats.js";
-import { speedScore, costScore } from "../scoring/composite.js";
-import { WEIGHTS } from "../config.js";
+import type { ConditionId, ScoreRow, Split } from "../types.js";
+import { bootstrapMeanCI, mean } from "../stats.js";
+import { isScored } from "../status.js";
 
 type Sel<E extends Element = Element> = d3.Selection<E, unknown, null, undefined>;
 
 const COLOR: Record<ConditionId, string> = {
   "closed-book": "#E69F00",
   "web-search": "#56B4E9",
+  pubmed: "#0072B2",
   mcp: "#009E73",
   "mcp-skill": "#CC79A7",
 };
 
-const FALLBACK_COLORS = ["#CC79A7", "#F0E442", "#0072B2", "#D55E00", "#999999"];
+const FALLBACK_COLORS = ["#F0E442", "#D55E00", "#999999"];
 
 const FONT = "ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif";
-
-/** Rows eligible for charts: only successful runs (failed ones would plot as fake zeros). */
-function okRows(rows: ScoreRow[]): ScoreRow[] {
-  return rows.filter((r) => r.status === "ok");
-}
 
 function conditions(rows: ScoreRow[]): ConditionId[] {
   return [...new Set(rows.map((r) => r.condition))];
@@ -49,12 +44,22 @@ function colorFor(condition: ConditionId): string {
   return FALLBACK_COLORS[idx]!;
 }
 
+/**
+ * One value per query for a model × condition: the mean of `sel` over the query's rows.
+ * NaN is the selector's opt-out signal (e.g. rows of other key kinds in the rejection chart).
+ * The query is the unit everywhere in the report, so a bar is a mean of per-query means.
+ */
 function pick(rows: ScoreRow[], model: string, condition: ConditionId, sel: (r: ScoreRow) => number): number[] {
-  // NaN is the selector's opt-out signal (e.g. non-bullshit rows in the bullshit chart).
-  return rows
-    .filter((r) => r.model === model && r.condition === condition)
-    .map(sel)
-    .filter((v) => Number.isFinite(v));
+  const groups = new Map<string, number[]>();
+  for (const r of rows) {
+    if (r.model !== model || r.condition !== condition) continue;
+    const v = sel(r);
+    if (!Number.isFinite(v)) continue;
+    const g = groups.get(r.query_id);
+    if (g) g.push(v);
+    else groups.set(r.query_id, [v]);
+  }
+  return [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([, xs]) => mean(xs));
 }
 
 // ─── SVG document scaffolding ────────────────────────────────────
@@ -178,10 +183,11 @@ function groupedBars(rows: ScoreRow[], spec: BarSpec): string {
         .attr("height", pad.t + plotH - by)
         .attr("fill", colorFor(condition))
         .attr("fill-opacity", opacity.toFixed(2));
-      if (spec.errorBars) {
-        const s = sd(d.values);
-        const yTop = y(Math.min(spec.yMax, m + s));
-        const yBot = y(Math.max(0, m - s));
+      // 95% bootstrap interval over queries (the same one the summary table prints).
+      const ci = spec.errorBars ? bootstrapMeanCI(d.values) : null;
+      if (ci) {
+        const yTop = y(Math.min(spec.yMax, ci[1]));
+        const yBot = y(Math.max(0, ci[0]));
         const cx = x1.bandwidth() / 2;
         b.append("line").attr("x1", cx).attr("y1", yTop).attr("x2", cx).attr("y2", yBot).attr("stroke", "#333");
         b.append("line").attr("x1", cx - 4).attr("y1", yTop).attr("x2", cx + 4).attr("y2", yTop).attr("stroke", "#333");
@@ -373,92 +379,6 @@ function pooledRatioBars(rows: ScoreRow[], spec: PooledRatioSpec): string {
   return serialize(svg);
 }
 
-// ─── Radar ──────────────────────────────────────────────────────
-
-function radar(rows: ScoreRow[]): string {
-  const W = 560;
-  const H = 480;
-  const cx = W / 2;
-  const cy = H / 2 + 10;
-  const R = 150;
-  const axes = ["accuracy", "evidence", "bullshit", "speed", "cost"];
-  const dims: ((r: ScoreRow) => number)[] = [
-    (r) => r.accuracy / 10,
-    (r) => r.evidence_quality / 5,
-    (r) => r.bullshit_score,
-    (r) => speedScore(r.speed_s),
-    (r) => costScore(r.total_tokens),
-  ];
-
-  const angle = d3.scaleLinear().domain([0, axes.length]).range([-Math.PI / 2, 1.5 * Math.PI]);
-  const radius = d3.scaleLinear().domain([0, 1]).range([0, R]);
-  const line = d3
-    .lineRadial<number>()
-    .angle((_d, i) => angle(i))
-    .radius((d) => radius(d))
-    .curve(d3.curveLinearClosed);
-
-  const svg = createSvg(W, H, "Condition radar");
-  const plot = svg.append("g").attr("transform", `translate(${cx},${cy})`);
-
-  svg
-    .append("text")
-    .attr("x", cx)
-    .attr("y", 26)
-    .attr("font-size", 15)
-    .attr("font-weight", 700)
-    .attr("text-anchor", "middle")
-    .text("Condition profile (5 dimensions, 0–1)");
-
-  // Rings + axes.
-  plot
-    .selectAll("path.ring")
-    .data([0.25, 0.5, 0.75, 1])
-    .join("path")
-    .attr("class", "ring")
-    .attr("d", (frac) => line(axes.map(() => frac)))
-    .attr("fill", "none")
-    .attr("stroke", "#eee");
-
-  const axisG = plot.selectAll("g.axis").data(axes).join("g").attr("class", "axis");
-  axisG
-    .append("line")
-    .attr("x1", 0)
-    .attr("y1", 0)
-    .attr("x2", (_d, i) => radius(1) * Math.cos(angle(i)))
-    .attr("y2", (_d, i) => radius(1) * Math.sin(angle(i)))
-    .attr("stroke", "#ddd");
-  axisG
-    .append("text")
-    .attr("x", (_d, i) => (radius(1) + 24) * Math.cos(angle(i)))
-    .attr("y", (_d, i) => (radius(1) + 24) * Math.sin(angle(i)))
-    .attr("font-size", 11)
-    .attr("text-anchor", "middle")
-    .attr("fill", "#444")
-    .text((d) => d);
-
-  // One polygon per condition, averaged across models.
-  const conds = conditions(rows);
-  plot
-    .selectAll("path.condition")
-    .data(conds.map((condition) => ({ condition, subset: rows.filter((r) => r.condition === condition) })).filter((d) => d.subset.length > 0))
-    .join("path")
-    .attr("class", "condition")
-    .attr("d", (d) => line(dims.map((sel) => Math.max(0, Math.min(1, mean(d.subset.map(sel).filter(Number.isFinite)))))))
-    .attr("fill", (d) => colorFor(d.condition))
-    .attr("fill-opacity", 0.14)
-    .attr("stroke", (d) => colorFor(d.condition))
-    .attr("stroke-width", 2);
-
-  legend(
-    svg,
-    24,
-    H - 60,
-    conds.map((c) => ({ label: c, color: colorFor(c) })),
-  );
-  return serialize(svg);
-}
-
 // ─── Evidence histogram ─────────────────────────────────────────
 
 function evidenceHistogram(rows: ScoreRow[]): string {
@@ -485,14 +405,14 @@ function evidenceHistogram(rows: ScoreRow[]): string {
   const x1 = d3.scaleBand<ConditionId>().domain(conds).range([0, x0.bandwidth()]).padding(0.1);
   const y = d3.scaleLinear().domain([0, maxCount]).range([pad.t + plotH, pad.t]);
 
-  const svg = createSvg(W, H, "Evidence histogram");
+  const svg = createSvg(W, H, "Design tier of the cited records");
   svg
     .append("text")
     .attr("x", pad.l)
     .attr("y", 26)
     .attr("font-size", 15)
     .attr("font-weight", 700)
-    .text("Evidence-quality distribution (mean design tier of cited records)");
+    .text("Design tier of the cited records (mean per answer; descriptive, not a score)");
   yGridAxis(svg, pad, plotW, y, (v) => String(Math.round(v)));
 
   const group = svg
@@ -592,65 +512,6 @@ function scatter(rows: ScoreRow[]): string {
     .attr("fill", (r) => colorFor(r.condition))
     .attr("fill-opacity", 0.65);
 
-  // ── Compensation curves: iso-composite contours ──
-  // Bullshit queries use a different composite formula (see compositeForCategory),
-  // so the contours are derived from non-bullshit rows only.
-  const regular = points.filter(
-    (r) => r.category !== "bullshit" && Number.isFinite(r.evidence_quality) && Number.isFinite(r.bullshit_score),
-  );
-  if (regular.length > 0) {
-    const compLevels = [3, 5, 7, 9];
-    const avgEvidence = mean(regular.map((r) => r.evidence_quality)); // 0–5
-    const avgBullshit = mean(regular.map((r) => r.bullshit_score)); // 0–1
-    const avgCostScore = mean(regular.map((r) => costScore(r.total_tokens)).filter(Number.isFinite));
-    const N = 120;
-    // Derived from composite.ts: composite = 10*(wa*(acc/10) + we*(ev/5) + wb*bs + ws*ss + wc*cs)
-    // Solving for acc: acc = (10/wa) * (comp/10 - we*(ev/5) - wb*bs - ws*ss - wc*cs)
-    const lineGen = d3
-      .line<[number, number]>()
-      .x(([s]) => x(s))
-      .y(([, a]) => y(a))
-      .defined(([, a]) => a >= 0 && a <= 10);
-
-    for (const comp of compLevels) {
-      const pts: [number, number][] = Array.from({ length: N + 1 }, (_, i) => {
-        const speed = (maxSpeed * i) / N;
-        const ss = speedScore(speed);
-        const acc =
-          (10 / WEIGHTS.accuracy) *
-          (comp / 10 -
-            WEIGHTS.evidence * (avgEvidence / 5) -
-            WEIGHTS.bullshit * avgBullshit -
-            WEIGHTS.speed * ss -
-            WEIGHTS.cost * avgCostScore);
-        return [speed, acc];
-      });
-
-      const path = lineGen(pts);
-      if (!path) continue;
-
-      svg
-        .append("path")
-        .attr("d", path)
-        .attr("stroke", "#999")
-        .attr("stroke-dasharray", "4,4")
-        .attr("stroke-width", 1)
-        .attr("fill", "none");
-
-      const lastVisible = [...pts].reverse().find(([, a]) => a >= 0 && a <= 10);
-      if (lastVisible) {
-        svg
-          .append("text")
-          .attr("x", x(lastVisible[0]) + 4)
-          .attr("y", y(lastVisible[1]))
-          .attr("font-size", 9)
-          .attr("fill", "#999")
-          .attr("dominant-baseline", "middle")
-          .text(`comp=${comp}`);
-      }
-    }
-  }
-
   svg
     .append("text")
     .attr("x", pad.l - 40)
@@ -659,7 +520,7 @@ function scatter(rows: ScoreRow[]): string {
     .attr("text-anchor", "middle")
     .attr("fill", "#666")
     .attr("transform", `rotate(-90,${pad.l - 40},${pad.t + plotH / 2})`)
-    .text("accuracy");
+    .text("accuracy (0–10)");
   svg
     .append("text")
     .attr("x", pad.l + plotW / 2)
@@ -691,30 +552,61 @@ function scatter(rows: ScoreRow[]): string {
   return serialize(svg);
 }
 
-/** Render every chart. Returns filename → SVG string. */
+const SPLIT_LABEL: Record<Split, string> = { test: "held-out set", dev: "development set" };
+
+/**
+ * Render every chart. Returns filename → SVG string.
+ *
+ * Charts show one split: the held-out set when the rows have one, else the
+ * development set (the title says which). Accuracy and the two premise rates
+ * are over scored runs, so a run that gave no answer counts as 0; the citation
+ * charts are over the answers that exist.
+ */
 export function renderCharts(allRows: ScoreRow[]): Record<string, string> {
-  const rows = okRows(allRows);
+  const split: Split = allRows.some((r) => r.split === "test") ? "test" : "dev";
+  const inSplit = allRows.filter((r) => r.split === split);
+  const scored = inSplit.filter((r) => isScored(r.status));
+  const ok = inSplit.filter((r) => r.status === "ok");
+  const of = SPLIT_LABEL[split];
+  const percent = (v: number): string => `${Math.round(v * 100)}%`;
   return {
-    "composite-bars.svg": groupedBars(rows, { title: "Composite score by condition × model", sel: (r) => r.composite, yMax: 10, errorBars: true }),
-    "radar-conditions.svg": radar(rows),
-    "bullshit-rate.svg": groupedBars(rows, {
-      title: "Correct-rejection rate (bullshit queries)",
-      sel: (r) => (r.category === "bullshit" ? r.bullshit_score : Number.NaN),
+    "accuracy-bars.svg": groupedBars(scored, {
+      title: `Accuracy on keyed queries, 0–10, with 95% interval (${of})`,
+      sel: (r) => (r.key_kind === "rubric" ? Number.NaN : r.accuracy),
+      yMax: 10,
+      errorBars: true,
+    }),
+    "bullshit-rate.svg": groupedBars(scored, {
+      title: `Fabricated studies rejected (${of})`,
+      sel: (r) => (r.key_kind === "reject" ? r.bullshit_score : Number.NaN),
       yMax: 1,
       errorBars: false,
-      format: (v) => `${Math.round(v * 100)}%`,
+      format: percent,
     }),
-    // Pooled ratio (sum fabricated ÷ sum cited per group), matching summarizeCondition
-    // in report/summary.ts — see `pooledRatioBars` for why this can't be `groupedBars`.
-    "fabrication-rate.svg": pooledRatioBars(rows, {
-      title: "Fabrication rate (invented PMIDs ÷ cited PMIDs)",
+    "control-acceptance-rate.svg": groupedBars(scored, {
+      title: `Real-study controls accepted (${of})`,
+      sel: (r) => (r.key_kind === "accept" ? r.bullshit_score : Number.NaN),
+      yMax: 1,
+      errorBars: false,
+      format: percent,
+    }),
+    // Pooled ratios (sums per group), matching summarizeCondition in report/summary.ts —
+    // see `pooledRatioBars` for why these can't be `groupedBars`.
+    "fabrication-rate.svg": pooledRatioBars(ok, {
+      title: `Fabricated citations: missing or off-topic ÷ cited (${of})`,
       numerator: (r) => r.pmids_fabricated,
       denominator: (r) => r.pmids_cited,
       yMax: 1,
-      format: (v) => `${Math.round(v * 100)}%`,
+      format: percent,
     }),
-    "evidence-histogram.svg": evidenceHistogram(rows),
-    "speed-vs-accuracy-scatter.svg": scatter(rows),
+    "misattribution-rate.svg": pooledRatioBars(ok, {
+      title: `Contradicted claims ÷ checkable citations (${of})`,
+      numerator: (r) => r.citations_misattributed ?? 0,
+      denominator: (r) => r.citations_checked ?? 0,
+      yMax: 1,
+      format: percent,
+    }),
+    "evidence-histogram.svg": evidenceHistogram(ok),
+    "speed-vs-accuracy-scatter.svg": scatter(scored),
   };
 }
-

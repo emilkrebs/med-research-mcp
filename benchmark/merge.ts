@@ -8,25 +8,29 @@
  *   npx tsx merge.ts --min-rows 20         # skip dirs with fewer rows (smoke runs)
  *
  * A cell is (query, condition, model, run). When several dirs contain the same
- * cell the later dir wins, except that a failed row (status != ok) never
- * replaces an ok one. `combined/provenance.json` records which dir every cell
- * came from, and the merge warns when the dirs were produced by different MCP
- * commits, scorer versions or answer-key versions (their numbers are then not
- * strictly comparable). Legacy scores.csv files without the newer columns are
- * accepted and normalized.
+ * cell the later dir wins, except that a row without data (provider error,
+ * invalid context, scoring error) never replaces one with data. A run that gave
+ * no answer or timed out is data (scored 0): a later one replaces an earlier
+ * answer like any other re-run, and an earlier one is not rescued by a retry.
+ * `combined/provenance.json` records which dir every cell came from, and the
+ * merge warns when the dirs were produced by different MCP commits, scorer
+ * versions or answer-key versions (their numbers are then not comparable).
+ * Legacy scores.csv files are accepted and normalized: a composite column is
+ * ignored, a rubric accuracy from before scorer v8 (the citation proxy) reads
+ * as unscored, and `truncated` reads as `no-answer`.
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
-import { NORMALIZATION, WEIGHTS } from "./lib/config.js";
 import { QUERIES, queryById } from "./lib/queries.js";
-import { readManifest, type Manifest } from "./lib/manifest.js";
+import { effectiveScorerVersion, readManifest, type Manifest } from "./lib/manifest.js";
+import { isFailure, isScored, normalizeStatus } from "./lib/status.js";
 import { renderCharts } from "./lib/report/charts.js";
 import { toCsv } from "./lib/report/csv.js";
-import { buildSummary, toMarkdown, type SummaryMeta } from "./lib/report/summary.js";
-import type { AccuracySource, ConditionId, RunStatus, ScoreRow } from "./lib/types.js";
+import { buildSummary, partitionByCatalog, toMarkdown, type SummaryMeta } from "./lib/report/summary.js";
+import type { AccuracySource, AnswerKey, ConditionId, ScoreRow, Split } from "./lib/types.js";
 
 const RESULTS_DIR = join(import.meta.dirname, "results");
 const COMBINED = "combined";
@@ -64,46 +68,76 @@ export function parseCsv(text: string): Record<string, string>[] {
 /** An empty cell is an unscored value (NaN), not 0 — mirrors how toCsv writes NaN. */
 const num = (s: string | undefined): number => (s === undefined || s.trim() === "" ? Number.NaN : Number(s));
 
-/** Accuracy source implied by a query's answer-key kind (for legacy CSVs that predate the column). */
-function sourceFromKey(queryId: string): AccuracySource {
-  const kind = queryById(queryId)?.answerKey.kind;
-  if (kind === "reject") return "reject";
-  if (kind === "rubric") return "proxy";
-  return "deterministic";
+type KeyKind = AnswerKey["kind"];
+const KEY_KINDS: readonly string[] = ["values", "rubric", "reject", "accept"];
+
+/** The answer-key kind of a row: its own column, else the catalog's, else what its accuracy source implies. */
+function keyKindOf(r: Record<string, string>): KeyKind {
+  if (KEY_KINDS.includes(r.key_kind ?? "")) return r.key_kind as KeyKind;
+  const fromCatalog = queryById(r.query_id!)?.answerKey.kind;
+  if (fromCatalog) return fromCatalog;
+  if (r.accuracy_source === "reject") return "reject";
+  if (r.accuracy_source === "accept") return "accept";
+  if (r.accuracy_source === "proxy" || r.accuracy_source === "human" || r.accuracy_source === "ungraded") return "rubric";
+  return "values";
 }
 
-const STATUSES: RunStatus[] = ["ok", "provider-error", "truncated", "scoring-error"];
+const SOURCE_OF_KIND: Record<KeyKind, AccuracySource> = { values: "deterministic", reject: "reject", accept: "accept", rubric: "ungraded" };
 
-/** Convert one parsed CSV record to a ScoreRow, defaulting the columns legacy files lack. */
+/**
+ * Convert one parsed CSV record to a ScoreRow. Files from before scorer v8 lack
+ * the newer columns and carry a `composite` (ignored); their conventions are
+ * mapped onto the current ones: `proxy` accuracy is unscored, `truncated` is
+ * `no-answer`, a failed run scores 0, a missing run has no scores, and
+ * `bullshit_score` is kept only on fabricated-study and control rows.
+ */
 export function toScoreRow(r: Record<string, string>): ScoreRow {
   const input = num(r.input_tokens);
   const output = num(r.output_tokens);
-  const status = STATUSES.includes(r.status as RunStatus) ? (r.status as RunStatus) : "ok";
+  const status = normalizeStatus(r.status);
+  const failed = isFailure(status);
+  const kind = keyKindOf(r);
+  const premiseKind = kind === "reject" || kind === "accept";
+  const query = queryById(r.query_id!);
+
+  let source: AccuracySource = failed ? "failed" : r.accuracy_source === "human" ? "human" : SOURCE_OF_KIND[kind];
+  let accuracy = num(r.accuracy);
+  if (failed) accuracy = 0;
+  else if (!isScored(status) || source === "ungraded") accuracy = Number.NaN;
+  if (!failed && source === "human" && !Number.isFinite(accuracy)) source = SOURCE_OF_KIND[kind];
+
+  const cited = num(r.pmids_cited);
+  const fabricated = num(r.pmids_fabricated);
   return {
     query_id: r.query_id!,
     category: r.category as ScoreRow["category"],
+    split: r.split === "test" || r.split === "dev" ? (r.split as Split) : (query?.split ?? "dev"),
+    key_kind: kind,
+    retrieval_only: r.retrieval_only !== undefined && r.retrieval_only !== "" ? r.retrieval_only === "true" : (query?.retrievalOnly ?? false),
+    beyond_pubmed: r.beyond_pubmed !== undefined && r.beyond_pubmed !== "" ? r.beyond_pubmed === "true" : (query?.beyondPubmed ?? false),
     condition: r.condition as ConditionId,
     model: r.model!,
     run: Number(r.run),
     status,
-    accuracy: num(r.accuracy),
-    accuracy_source: (r.accuracy_source as AccuracySource) || sourceFromKey(r.query_id!),
-    evidence_quality: num(r.evidence_quality),
-    bullshit_score: num(r.bullshit_score),
+    accuracy,
+    accuracy_source: source,
+    ...(r.accuracy_graders !== undefined && r.accuracy_graders !== "" ? { accuracy_graders: Number(r.accuracy_graders) } : {}),
+    bullshit_score: !premiseKind || !isScored(status) ? Number.NaN : failed ? 0 : num(r.bullshit_score),
+    evidence_quality: status === "ok" ? num(r.evidence_quality) : Number.NaN,
     speed_s: num(r.speed_s),
     input_tokens: input,
     output_tokens: output,
     total_tokens: r.total_tokens !== undefined && r.total_tokens !== "" ? Number(r.total_tokens) : input + output,
     tool_calls: num(r.tool_calls),
     tools_used: r.tools_used ?? "",
-    pmids_cited: num(r.pmids_cited),
+    pmids_cited: cited,
     pmids_valid: num(r.pmids_valid),
-    pmids_fabricated: num(r.pmids_fabricated),
+    pmids_fabricated: fabricated,
+    pmids_off_topic: r.pmids_off_topic !== undefined && r.pmids_off_topic !== "" ? Number(r.pmids_off_topic) : 0,
     other_citations: r.other_citations !== undefined && r.other_citations !== "" ? Number(r.other_citations) : 0,
     ...(r.citations_checked !== undefined && r.citations_checked !== ""
       ? { citations_checked: Number(r.citations_checked), citations_misattributed: num(r.citations_misattributed) }
       : {}),
-    composite: num(r.composite),
   };
 }
 
@@ -144,7 +178,11 @@ export function provenanceWarnings(sources: Pick<Source, "dir" | "manifest">[]):
     new Set(withManifest.map((s) => pick(s.manifest!) ?? "unknown")).size > 1;
 
   const commit = (m: Partial<Manifest>) => m.git?.commit;
-  const scorer = (m: Partial<Manifest>) => (m.scorer_version === undefined ? undefined : String(m.scorer_version));
+  // The version the rows carry now: a dir scored again since its run has moved on from the run's.
+  const scorer = (m: Partial<Manifest>) => {
+    const v = effectiveScorerVersion(m);
+    return v === undefined ? undefined : String(v);
+  };
   const keys = (m: Partial<Manifest>) =>
     m.queries ? JSON.stringify([...m.queries].sort((a, b) => a.id.localeCompare(b.id))) : undefined;
 
@@ -166,9 +204,9 @@ export function provenanceWarnings(sources: Pick<Source, "dir" | "manifest">[]):
 }
 
 /**
- * Merge sources in the order given (later wins a shared cell, but a non-ok row
- * never displaces an ok one). Dirs with fewer than `minRows` rows are skipped as
- * smoke runs.
+ * Merge sources in the order given (later wins a shared cell, but a row without
+ * data never displaces one with data). Dirs with fewer than `minRows` rows are
+ * skipped as smoke runs.
  */
 export function mergeSources(sources: Source[], minRows = 12): MergeResult {
   const warnings: string[] = [];
@@ -184,7 +222,7 @@ export function mergeSources(sources: Source[], minRows = 12): MergeResult {
     for (const row of s.rows) {
       const key = cellKey(row);
       const prev = best.get(key);
-      if (prev && prev.row.status === "ok" && row.status !== "ok") continue;
+      if (prev && isScored(prev.row.status) && !isScored(row.status)) continue;
       best.set(key, { row, dir: s.dir });
     }
   }
@@ -266,7 +304,9 @@ function main(): void {
   writeFileSync(join(outDir, "scores.csv"), toCsv(rows));
   writeFileSync(join(outDir, "provenance.json"), `${JSON.stringify({ sources: used, warnings, cells: provenance }, null, 2)}\n`);
 
-  const charts = renderCharts(rows);
+  // scores.csv keeps every row; no number of a report or chart may include a query that left the catalog.
+  const inCatalog = (id: string): boolean => queryById(id) !== undefined;
+  const charts = renderCharts(partitionByCatalog(rows, inCatalog).kept);
   for (const [name, svg] of Object.entries(charts)) writeFileSync(join(outDir, "charts", name), svg);
   console.log(`Rendered ${Object.keys(charts).length} charts to ${join(outDir, "charts")}`);
 
@@ -285,12 +325,10 @@ function main(): void {
     conditions: [...new Set(rows.map((r) => r.condition))],
     runs: Math.max(1, ...rows.map((r) => r.run)),
     total_responses: rows.length,
-    weights: { ...WEIGHTS },
-    normalization: { ...NORMALIZATION },
-    unverified_queries: QUERIES.filter((q) => !q.verified && queryIds.has(q.id)).map((q) => q.id),
+    unverified_queries: QUERIES.filter((q) => !q.verified && q.answerKey.kind !== "rubric" && queryIds.has(q.id)).map((q) => q.id),
     sources: used,
   };
-  const summary = buildSummary(rows, meta);
+  const summary = buildSummary(rows, meta, { inCatalog });
   writeFileSync(join(outDir, "summary.json"), JSON.stringify(summary, null, 2));
   writeFileSync(join(outDir, "summary.md"), toMarkdown(summary));
   console.log(toMarkdown(summary));

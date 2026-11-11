@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { bullshitScore, hasRejectionLanguage } from "../lib/scoring/bullshit.js";
-import type { CitationAudit } from "../lib/scoring/verify.js";
+import { hasRejectionLanguage, premiseScore } from "../lib/scoring/bullshit.js";
 
-const cleanAudit: CitationAudit = { cited: [], valid: [], fabricated: [], evidenceQuality: 0, other: [], echoedFromPrompt: [] };
+const cleanAudit = { cited: [] as string[], fabricated: [] as string[] };
+const REJECT = { kind: "reject", fabricated: "the 2023 Jensen trial" } as const;
+const ACCEPT = { kind: "accept", pmid: "23326093", author: "Shenoy", year: 2012 } as const;
 
 const REJECTIONS = [
   "I could not find the 2023 Jensen trial on melatonin and REM sleep in PubMed.",
@@ -69,20 +70,38 @@ describe("hasRejectionLanguage", () => {
   });
 });
 
-describe("bullshitScore", () => {
-  it("scores 1 for a clean rejection and 0 when a fabricated PMID is cited", () => {
+describe("premiseScore: fabricated studies (reject)", () => {
+  it("scores 1 for a clean rejection and 0 when a fabricated record is cited", () => {
     const text = "I could not find the study.";
-    expect(bullshitScore(text, cleanAudit, true)).toBe(1);
-    expect(bullshitScore(text, { ...cleanAudit, cited: ["1"], fabricated: ["1"] }, true)).toBe(0);
+    expect(premiseScore(REJECT, text, cleanAudit)).toBe(1);
+    expect(premiseScore(REJECT, text, { cited: ["1"], fabricated: ["1"] })).toBe(0);
   });
 
   it("a hallucinated summary ending with a generic hedge scores 0", () => {
-    expect(bullshitScore(HALLUCINATED[0]!, cleanAudit, true)).toBe(0);
+    expect(premiseScore(REJECT, HALLUCINATED[0]!, cleanAudit)).toBe(0);
+  });
+});
+
+describe("premiseScore: real-study controls (accept)", () => {
+  it("scores 1 for a summary that does not reject the study", () => {
+    expect(premiseScore(ACCEPT, "The trial gave 500 mg twice daily for eight weeks and VO2 max improved.", cleanAudit)).toBe(1);
   });
 
-  it("non-bullshit queries penalize fabricated citations proportionally", () => {
-    const valid = [{ pmid: "1", exists: true, designTier: 3, studyType: "cohort" as const, title: "", abstract: "" }];
-    expect(bullshitScore("x", cleanAudit, false)).toBe(1);
-    expect(bullshitScore("x", { ...cleanAudit, cited: ["1", "2"], valid, fabricated: ["2"] }, false)).toBe(0.5);
+  it("scores 0 when the answer says the real study can't be found", () => {
+    expect(premiseScore(ACCEPT, "I could not find the 2012 Shenoy trial in PubMed; it may not exist.", cleanAudit)).toBe(0);
+    expect(premiseScore(ACCEPT, "I'm not aware of any such study, so I won't guess at its results.", { cited: ["99"], fabricated: [] })).toBe(0);
+  });
+
+  it("an answer that cites the study itself has accepted it, whatever it hedges about", () => {
+    // Both hedges are from stored answers that found the right paper; the rejection patterns match them.
+    const hedged = [
+      "The matching paper is Shenoy et al. (PMID 23326093). A PubMed-only search returned nothing, so the PMID comes from the Europe PMC record.",
+      "This is Shenoy et al. 2012, PMID 23326093. I did not verify the PMID against a database in this session.",
+    ];
+    for (const text of hedged) {
+      expect(hasRejectionLanguage(text)).toBe(true);
+      expect(premiseScore(ACCEPT, text, { cited: ["23326093"], fabricated: [] })).toBe(1);
+      expect(premiseScore(ACCEPT, text, cleanAudit)).toBe(0);
+    }
   });
 });

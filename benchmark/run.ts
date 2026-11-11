@@ -3,15 +3,16 @@
  * med-research-mcp benchmark runner.
  *
  * Runs each selected query under each condition (A closed-book / B web-search /
- * C mcp) for each model, `--runs` times, scores every response, and writes a
- * timestamped, auditable result tree under `benchmark/results/`:
+ * E plain PubMed tools / C mcp / D mcp + skill) for each model, `--runs` times,
+ * scores every response, and writes a timestamped, auditable result tree under
+ * `benchmark/results/`:
  * `manifest.json` (provenance), `raw/*.json` (record + embedded `_scoring`),
  * `overrides.json`, `scores.csv`, `summary.json/.md`, `charts/*.svg`.
  *
  * Pass 1 (run):
- *   npx tsx run.ts                                         # defaults: every enabled model, mcp condition
+ *   npx tsx run.ts                                         # defaults: development set, every enabled model, mcp condition
  *   npx tsx run.ts --runs 1 --models <label> --conditions C
- *   npx tsx run.ts --publish                               # canonical: all enabled models, 3 runs
+ *   npx tsx run.ts --publish                               # canonical: held-out set, all enabled models, 3 runs
  *   npx tsx run.ts --dry-run                               # plan only, no API calls
  *
  * Pass 2 (rescore): each run keeps its own `overrides.json` next to its `raw/`
@@ -19,18 +20,18 @@
  *   npx tsx run.ts --rescore results/2026-07-14-011335
  *   npx tsx run.ts --rescore results/2026-07-14-011335 --overrides path/to/shared-overrides.json
  *
- * Rubric queries need human grades (`npx tsx grade.ts <dir>`); until then their
- * accuracy is a citation-quality proxy and the report says so.
+ * Rubric queries need human grades (`npx tsx grade.ts <dir>`); until then they
+ * have no accuracy and the report says so.
  *
  * See `--help`.
  */
 
 import "./lib/loadenv.js"; // MUST be first — populates process.env before config/providers read it
-import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { DEFAULTS, NORMALIZATION, WEIGHTS, missingKeyFor, type ModelSpec } from "./lib/config.js";
+import { DEFAULTS, missingKeyFor, type ModelSpec } from "./lib/config.js";
 import { QUERIES, queryById } from "./lib/queries.js";
 import { runOne } from "./lib/agent.js";
 import { envSetting } from "./lib/core.js";
@@ -41,17 +42,18 @@ import {
   buildManifest,
   detectBenchmarkVersion,
   detectGit,
-  detectMcpVersion,
   fingerprintFor,
   readManifest,
   rescoreReason,
   resumeDecision,
+  type RescoreInfo,
 } from "./lib/manifest.js";
+import { RUN_STATUSES, isFailure, isScored, runOutcome } from "./lib/status.js";
 import { Verifier } from "./lib/scoring/verify.js";
 import { SCORER_VERSION, rowFromBreakdown, scoreRun } from "./lib/scoring/score.js";
 import { sharedNcbi } from "./lib/tools/literature.js";
 import { toCsv } from "./lib/report/csv.js";
-import { buildSummary, toMarkdown, type SummaryMeta } from "./lib/report/summary.js";
+import { buildSummary, partitionByCatalog, toMarkdown, type SummaryMeta } from "./lib/report/summary.js";
 import { renderCharts } from "./lib/report/charts.js";
 import { loadOverrides, applyOverrides, warnStaleOverrides, type RawRowWithBreakdown } from "./lib/overrides.js";
 import type { BenchmarkQuery, ConditionId, RunRecord, RunStatus, ScoreBreakdown, ScoreRow } from "./lib/types.js";
@@ -101,17 +103,19 @@ const sortRows = (rows: ScoreRow[]): ScoreRow[] =>
 
 /** Counts of rows per status, in a fixed order. */
 export function statusTally(rows: ScoreRow[]): Record<RunStatus, number> {
-  const t: Record<RunStatus, number> = { ok: 0, "provider-error": 0, truncated: 0, "scoring-error": 0 };
+  const t = Object.fromEntries(RUN_STATUSES.map((s) => [s, 0])) as Record<RunStatus, number>;
   for (const r of rows) t[r.status]++;
   return t;
 }
 
-/** "ok 3 | provider-error 1 | …" — ok in green, any non-zero failure count in red. */
+/** "ok 3 | no-answer 1 | …" — ok in green, runs scored 0 in yellow, missing runs in red (non-zero counts only). */
 const formatTally = (t: Record<RunStatus, number>, c: Palette = palette(false)): string =>
-  [
-    c.green(`ok ${t.ok}`),
-    ...(["provider-error", "truncated", "scoring-error"] as const).map((k) => (t[k] > 0 ? c.red(`${k} ${t[k]}`) : `${k} ${t[k]}`)),
-  ].join(" | ");
+  RUN_STATUSES.map((k) => {
+    const text = `${k} ${t[k]}`;
+    if (k === "ok") return c.green(text);
+    if (t[k] === 0) return text;
+    return isFailure(k) ? c.yellow(text) : c.red(text);
+  }).join(" | ");
 
 /** Preflight: keys present for the work we're about to do. Returns fatal problems. */
 function preflight(models: ModelSpec[], conditions: ConditionId[]): string[] {
@@ -121,7 +125,7 @@ function preflight(models: ModelSpec[], conditions: ConditionId[]): string[] {
     if (missing) problems.push(`Missing ${missing} (model ${m.label})`);
   }
   if (conditions.includes("web-search") && !process.env.BRAVE_API_KEY) problems.push("Missing BRAVE_API_KEY (condition B)");
-  if ((conditions.includes("mcp") || conditions.includes("mcp-skill")) && !envSetting("NCBI_EMAIL")) console.warn("⚠️  NCBI_EMAIL not set — PubMed requests carry the project's contact address instead. Set your own: a run sends over 100 requests, and NCBI contacts that address before blocking your IP.");
+  if (conditions.some((c) => c === "mcp" || c === "mcp-skill" || c === "pubmed") && !envSetting("NCBI_EMAIL")) console.warn("⚠️  NCBI_EMAIL not set — PubMed requests carry the project's contact address instead. Set your own: a run sends over 100 requests, and NCBI contacts that address before blocking your IP.");
   return problems;
 }
 
@@ -139,7 +143,8 @@ const OVERRIDES_TEMPLATE = {
     "Move an entry from `_example` into `overrides`, edit it, then re-run: npx tsx run.ts --rescore <this-dir>. " +
     "Each entry needs a queryId and a reason; `author` identifies the grader. " +
     'condition/model/run accept "*" wildcards (raw/ filenames are queryId-condition-model-run). Set ' +
-    "accuracy/evidence_quality/bullshit_score/composite to a number to replace it, or null to drop it from aggregation. " +
+    "accuracy/evidence_quality/bullshit_score to a number to replace it, or null to drop it from aggregation. " +
+    "On a fabricated-study or control row, correct bullshit_score (1 = handled correctly) and the accuracy follows. " +
     "Multi-grader rule: when several entries with DIFFERENT authors match the same row exactly (no wildcards), " +
     "their values are averaged per dimension; the same author's later entry replaces their earlier one.",
   _example: [
@@ -152,7 +157,8 @@ const OVERRIDES_TEMPLATE = {
       author: "alice",
       reason: "Correct effect, different terminology than the answer key",
     },
-    { queryId: "drill-down-01", condition: "*", model: "*", run: "*", composite: null, author: "alice", reason: "Unscored — answer key needs verification" },
+    { queryId: "bullshit-02", condition: "mcp", model: "<model-label>", run: 2, bullshit_score: 0, author: "alice", reason: "Says it could not find the study, then reports its findings anyway" },
+    { queryId: "drill-down-03", condition: "*", model: "*", run: "*", accuracy: null, author: "alice", reason: "Unscored — answer key needs verification" },
   ],
   overrides: [] as unknown[],
 };
@@ -194,38 +200,47 @@ async function writeReports(
   if (excluded.length > 0) console.log(`  Excluded ${excluded.length} score(s) from aggregation`);
 
   const rows = sortRows(applied);
-  const ungraded = rows.filter((r) => r.status === "ok" && r.accuracy_source === "proxy").length;
+  // scores.csv keeps every row; no number of the summary, a chart or a console tally may include a
+  // query that left the catalog (a lookup that a later version of the held-out set retired).
+  const inCatalog = (id: string): boolean => queryById(id) !== undefined;
+  const counted = partitionByCatalog(rows, inCatalog).kept;
+  const ungraded = counted.filter((r) => r.status === "ok" && r.accuracy_source === "ungraded").length;
 
+  // Provenance comes from the run's manifest: the answers were generated by that MCP version and
+  // commit, whatever the working tree is now (a rescore months later must not relabel them).
+  const manifest = readManifest(outDir);
   const full: SummaryMeta = {
     timestamp: outDir,
-    mcp_version: detectMcpVersion(),
-    mcp_commit: detectGit().commit,
-    benchmark_version: detectBenchmarkVersion(),
+    mcp_version: manifest?.mcp_version ?? "unknown",
+    mcp_commit: manifest?.git?.commit ?? "unknown",
+    benchmark_version: manifest?.benchmark_version ?? detectBenchmarkVersion(),
     ...meta,
     total_responses: rows.length,
-    weights: { ...WEIGHTS },
-    normalization: { ...NORMALIZATION },
-    unverified_queries: QUERIES.filter((q) => !q.verified && rows.some((r) => r.query_id === q.id)).map((q) => q.id),
+    unverified_queries: QUERIES.filter((q) => !q.verified && q.answerKey.kind !== "rubric" && rows.some((r) => r.query_id === q.id)).map((q) => q.id),
     overrides_applied: appliedMap.size,
     overrides_excluded: excluded.length,
     scorer_version: SCORER_VERSION,
-    ungraded_rubric_responses: ungraded,
+    ...(manifest?.rescored ? { rescored: { at: manifest.rescored.at, harness_commit: manifest.rescored.harness_commit } } : {}),
   };
-  const summary = buildSummary(rows, full);
+  const summary = buildSummary(rows, full, { inCatalog });
 
   const chartsDir = join(outDir, "charts");
   await mkdir(chartsDir, { recursive: true });
   await writeFile(join(outDir, "scores.csv"), toCsv(rows));
   await writeFile(join(outDir, "summary.json"), JSON.stringify(summary, null, 2));
   await writeFile(join(outDir, "summary.md"), toMarkdown(summary));
-  for (const [name, svg] of Object.entries(renderCharts(rows))) await writeFile(join(chartsDir, name), svg);
+  const charts = renderCharts(counted);
+  for (const [name, svg] of Object.entries(charts)) await writeFile(join(chartsDir, name), svg);
+  // Charts an older harness wrote here (the composite bars, the radar) would contradict the new report.
+  for (const stale of (await readdir(chartsDir)).filter((f) => f.endsWith(".svg") && !(f in charts))) await rm(join(chartsDir, stale));
 
-  console.log(`\n  Status: ${formatTally(statusTally(rows))}`);
+  console.log(`\n  Status: ${formatTally(statusTally(counted))}`);
+  const missing = counted.filter((r) => !isScored(r.status)).length;
+  if (missing > 0) {
+    console.warn(`⚠️  ${missing} run(s) are missing (provider error, invalid context or scoring error). Nothing is comparable until they exist: --resume ${outDir}, or --rescore for scoring errors.`);
+  }
   if (ungraded > 0) {
-    console.warn(
-      `⚠️  ${ungraded} rubric response(s) still use the citation-quality PROXY for accuracy (not correctness). ` +
-        `Grade them with: npx tsx grade.ts ${outDir}`,
-    );
+    console.warn(`⚠️  ${ungraded} rubric answer(s) have no accuracy until a human grades them: npx tsx grade.ts ${outDir}`);
   }
   console.log(toMarkdown(summary));
   return rows;
@@ -279,6 +294,14 @@ async function rescore(resultsDir: string, overridesPath: string): Promise<void>
   console.log(`Loaded ${entries.length} raw records from ${rawDir}`);
   console.log(`  Scoring: ${reused} reused, ${rescored} re-scored${why ? ` (${why})` : ""}, ${failed} failed`);
 
+  // Say in the manifest that these answers were scored again, and with what; it keeps describing the run otherwise.
+  const manifest = readManifest(resultsDir);
+  if (manifest && rescored > 0) {
+    const git = detectGit();
+    const info: RescoreInfo = { at: new Date().toISOString(), scorer_version: SCORER_VERSION, harness_commit: git.commit, harness_dirty: git.dirty };
+    await writeFile(join(resultsDir, "manifest.json"), `${JSON.stringify({ ...manifest, rescored: info }, null, 2)}\n`);
+  }
+
   const rows = entries.map((e) => e.row);
   await writeReports(resultsDir, entries, overridesPath, {
     models: [...new Set(rows.map((r) => r.model))],
@@ -306,18 +329,23 @@ async function loadResumePool(resumeDir: string): Promise<ResumePool> {
 
 /** Why a run did not end `ok`, in words a person can act on. */
 function failureReason(record: RunRecord, breakdown: ScoreBreakdown | undefined): string {
-  if (record.error) return record.error;
-  if (breakdown?.scoringError) return breakdown.scoringError;
-  if (record.contextTruncated) {
-    return `provider truncated the context (input tokens per step: ${record.stepInputTokens?.join(" → ")}) — raise the model's context window`;
+  if (breakdown?.scoringError) return `${breakdown.scoringError} — retry with --rescore`;
+  switch (runOutcome(record)) {
+    case "timeout":
+      return `${record.error} — scored 0`;
+    case "provider-error":
+      return `${record.error} — missing, re-run with --resume`;
+    case "invalid":
+      return `provider truncated the context (input tokens per step: ${record.stepInputTokens?.join(" → ")}) — raise the model's context window and re-run with --resume`;
+    default:
+      if (record.finishReason === "tool-calls") return "still calling tools when the loop ended — scored 0";
+      if (record.finishReason === "length") return "cut off by the output length limit — scored 0";
+      return "no final answer — scored 0";
   }
-  if (record.finishReason === "tool-calls") return "still calling tools when the loop ended (no answer)";
-  if (record.finishReason === "length") return "cut off by the output length limit";
-  return "no final answer";
 }
 
 async function runBenchmark(opts: CliOptions, argv: string[]): Promise<void> {
-  const { publish, runs, models, conditions, queries, temperature, maxSteps, concurrency } = opts;
+  const { publish, runs, models, conditions, queries, split, temperature, maxSteps, concurrency } = opts;
   const c = palette(colorEnabled());
   // Anchor the default to the package dir (not cwd) so `npx tsx run.ts` lands in
   // `benchmark/results` from anywhere. An explicit `--out` is resolved relative to cwd.
@@ -327,18 +355,25 @@ async function runBenchmark(opts: CliOptions, argv: string[]): Promise<void> {
   for (const query of queries)
     for (const condition of conditions) for (const model of models) for (let run = 1; run <= runs; run++) jobs.push({ query, condition, model, run });
 
-  const unverified = queries.filter((q) => !q.verified).map((q) => q.id);
+  // A rubric query has no key to verify: it is graded by people. Only an unchecked key with ground truth is a hazard.
+  const unverified = queries.filter((q) => !q.verified && q.answerKey.kind !== "rubric").map((q) => q.id);
+  const rubric = queries.filter((q) => q.answerKey.kind === "rubric").length;
   const unpinned = models.filter((m) => m.unpinned).map((m) => m.label);
   const fixedSampling = models.filter((m) => m.fixedSampling).map((m) => m.label);
+  const heldOut = queries.filter((q) => q.split === "test").length;
 
   console.log(
     `Plan: ${queries.length} queries × ${conditions.length} conditions × ${models.length} models × ${runs} runs = ${jobs.length} responses`,
   );
+  console.log(`Queries: ${split === "all" ? "development + held-out sets" : split === "test" ? "held-out set" : "development set"} (${heldOut} held-out, ${queries.length - heldOut} development)`);
   console.log(`Conditions: ${conditions.join(", ")}  |  Models: ${models.map((m) => m.label).join(", ")}`);
+  if (heldOut > 0 && !publish)
+    console.warn(c.yellow("⚠️  This run includes held-out queries. Read their results, but change nothing in the server, the skill or the scorer because of them: tune on the development set."));
   if (unverified.length > 0)
-    console.warn(c.yellow(`⚠️  ${unverified.length} selected queries have UNVERIFIED answer keys: ${unverified.join(", ")}`));
+    console.warn(c.yellow(`⚠️  ${unverified.length} selected keyed queries have UNVERIFIED answer keys: ${unverified.join(", ")}`));
   if (publish && unverified.length > 0)
-    console.warn("⚠️  --publish with unverified keys: results are provisional. Review the keys before quoting numbers.");
+    console.warn("⚠️  --publish with unverified keys: results are provisional. Run `npm run verify-keys` and review the keys before quoting numbers.");
+  if (rubric > 0) console.log(c.dim(`${rubric} of the queries are open-ended (rubric): they get an accuracy only from human grades (grade.ts).`));
   if (unpinned.length > 0) {
     console.warn(c.yellow(`⚠️  UNPINNED model id(s) (moving aliases, results may drift): ${unpinned.join(", ")}`));
     if (publish) console.warn("⚠️⚠️  --publish with UNPINNED models: these results are NOT reproducible. Pin the model ids in models.data.ts first.");
@@ -369,9 +404,10 @@ async function runBenchmark(opts: CliOptions, argv: string[]): Promise<void> {
   await mkdir(join(outDir, "charts"), { recursive: true });
 
   const git = detectGit();
+  if (publish && git.dirty) console.warn("⚠️⚠️  --publish from a working tree with uncommitted changes: the commit in the manifest does not describe the code that ran. Commit first.");
   await writeFile(
     join(outDir, "manifest.json"),
-    `${JSON.stringify(buildManifest({ args: argv, settings: { temperature, maxSteps }, models, conditions, queries, git }), null, 2)}\n`,
+    `${JSON.stringify(buildManifest({ args: argv, settings: { temperature, maxSteps }, models, conditions, queries, split, git }), null, 2)}\n`,
   );
 
   if (opts.resume) {

@@ -4,6 +4,7 @@ import {
   checkAttribution,
   claimedDesign,
   claimedNumbers,
+  isOffTopic,
   sentenceRanges,
 } from "../lib/scoring/attribution.js";
 import { valueMatches } from "../lib/scoring/accuracy.js";
@@ -22,8 +23,7 @@ const record = (over: Partial<PmidFacts> = {}): PmidFacts => ({
   ...over,
 });
 
-const audit = (text: string, f: PmidFacts = record(), topics: string[] = ["creatine"]) =>
-  checkAttribution(text, [f], [f.pmid], topics);
+const audit = (text: string, f: PmidFacts = record()) => checkAttribution(text, [f], [f.pmid]);
 
 describe("checkAttribution", () => {
   it("passes a citation whose year, author, design and numbers match the record", () => {
@@ -31,11 +31,9 @@ describe("checkAttribution", () => {
     expect(r).toEqual({ checked: 1, misattributed: 0, issues: [] });
   });
 
-  it("flags a real PMID that points at an unrelated paper", () => {
+  it("leaves the topic to the citation audit: an unrelated paper with no claim next to it has nothing to check", () => {
     const off = record({ title: "Coffee and mortality", abstract: "A cohort of 400,000 adults drank coffee." });
-    const r = audit("Creatine improves strength (PMID 42765482).", off);
-    expect(r.misattributed).toBe(1);
-    expect(r.issues).toEqual([{ id: "42765482", check: "topic", claimed: "query topic: creatine", actual: "Coffee and mortality" }]);
+    expect(audit("Creatine improves strength (PMID 42765482).", off)).toEqual({ checked: 0, misattributed: 0, issues: [] });
   });
 
   it("flags a wrong year, a wrong author and a wrong design", () => {
@@ -55,7 +53,7 @@ describe("checkAttribution", () => {
     // Two years, a year range, grouped citations, approximate figures, no abstract.
     expect(audit("Trials from 2010 and 2015 (PMID 42765482).").misattributed).toBe(0);
     expect(audit("Searches through 2025 (PMID 42765482).").misattributed).toBe(0);
-    const two = checkAttribution("A 2019 RCT gave 5 g for 12 weeks (PMIDs 42765482, 11111111).", [record()], ["42765482", "11111111"], ["creatine"]);
+    const two = checkAttribution("A 2019 RCT gave 5 g for 12 weeks (PMIDs 42765482, 11111111).", [record()], ["42765482", "11111111"]);
     expect(two.misattributed).toBe(0);
     expect(audit("About 200 people for roughly 10 weeks (PMID 42765482).").misattributed).toBe(0);
     const { pubYear: _year, ...bare } = record({ abstract: "", title: "Coffee", authors: [] });
@@ -72,17 +70,38 @@ describe("checkAttribution", () => {
       "Wang et al. 2026 pooled 63 studies (PMID 42765482), while Smith et al. 2019 ran an RCT (PMID 36615805).",
       [record(), other],
       ["42765482", "36615805"],
-      ["creatine"],
     );
     expect(r).toEqual({ checked: 2, misattributed: 0, issues: [] });
   });
 
   it("reads a citation that opens its line from the text after it, and handles regional ids", () => {
     const cba = record({ pmid: "CBA:521529", title: "Yishen Zhuanggu Tongbi Decoction for rheumatoid arthritis", abstract: "Fortyfour cases were randomized; group A (n=24).", authors: ["Chen Zuhong"], pubYear: 2005, studyType: "randomized-controlled-trial", publicationTypes: [] });
-    const ok = checkAttribution("- CBA:521529 — Chen et al. 2005 randomized 44 patients (24 treated).", [cba], ["CBA:521529"], ["rheumatoid"]);
+    const ok = checkAttribution("- CBA:521529 — Chen et al. 2005 randomized 44 patients (24 treated).", [cba], ["CBA:521529"]);
     expect(ok).toEqual({ checked: 1, misattributed: 0, issues: [] });
-    const bad = checkAttribution("- CBA:521529 — Li et al. 2012 randomized 120 patients for 12 weeks.", [cba], ["CBA:521529"], ["rheumatoid"]);
+    const bad = checkAttribution("- CBA:521529 — Li et al. 2012 randomized 120 patients for 12 weeks.", [cba], ["CBA:521529"]);
     expect(bad.issues.map((i) => i.check).sort()).toEqual(["author", "numbers", "year"]);
+  });
+});
+
+describe("isOffTopic", () => {
+  const paper = { title: "Creatine supplementation and sprint performance", abstract: "Creatine monohydrate improved repeated sprints.", meshHeadings: ["Athletic Performance"] };
+
+  it("is false when the record mentions a topic in its title, abstract or MeSH headings", () => {
+    expect(isOffTopic(paper, ["creatine"])).toBe(false);
+    expect(isOffTopic(paper, ["carnosine", "creatin"])).toBe(false); // matched at a word start
+    expect(isOffTopic(paper, ["athletic"])).toBe(false);
+    expect(isOffTopic({ ...paper, title: "Suplementación con Creatína" }, ["creatina"])).toBe(false); // accents folded
+  });
+
+  it("is true for a record about something else", () => {
+    expect(isOffTopic({ title: "Dentascan computed tomography of the mandibular incisive canal", abstract: "Radiologic anatomy." }, ["rhodiola", "adaptogen"])).toBe(true);
+    expect(isOffTopic(paper, ["eatine"])).toBe(true); // not a word start
+  });
+
+  it("is false when it can't be judged: no topics, or no abstract to read", () => {
+    expect(isOffTopic(paper, undefined)).toBe(false);
+    expect(isOffTopic(paper, [])).toBe(false);
+    expect(isOffTopic({ title: "Something else", abstract: "  " }, ["creatine"])).toBe(false);
   });
 });
 
@@ -106,6 +125,10 @@ describe("attribution helpers", () => {
     expect(claimedNumbers("300 mg/day for 8 weeks in n = 1,200 adults (HR 0.74), about 5%").sort()).toEqual(["0.74", "1200", "300", "8"]);
     const n = abstractNumbers("Sixty-three studies; Fortyfour cases; One hundred and one patients; hazard ratio −1.30; n = 1 489");
     for (const x of ["63", "44", "101", "1.3"]) expect(n.has(x)).toBe(true);
+    // The Lancet's raised decimal point.
+    const lancet = abstractNumbers("(rate ratio [RR] 0·79, 95% CI 0·62-1·01, p=0·059); 57·2 per 100 patient-years");
+    for (const x of ["0.79", "0.62", "1.01", "0.059", "57.2", "100"]) expect(lancet.has(x)).toBe(true);
+    expect(lancet.has("79")).toBe(false);
   });
 });
 
@@ -131,15 +154,15 @@ describe("clause attribution between citations", () => {
       "This returned reviews (for example PMID 37068054, Freeberg et al. 2023, on NAD) and the NADPARK trial (PMID 35235774).",
       [a, b],
       [a.pmid, b.pmid],
-      ["creatine"],
     );
-    expect(r).toEqual({ checked: 2, misattributed: 0, issues: [] });
+    // Freeberg's year and author check out; "the NADPARK trial" states nothing checkable about the second paper.
+    expect(r).toEqual({ checked: 1, misattributed: 0, issues: [] });
   });
 
   it("gives a trailing descriptor to the citation it follows", () => {
     const a = f("19445780", { pubYear: 2008 });
     const b = f("24780537", { pubYear: 2014 });
-    const r = checkAttribution("Clinical Evidence (PMID 19445780 for 2008 and PMID 24780537 for 2014).", [a, b], [a.pmid, b.pmid], ["creatine"]);
+    const r = checkAttribution("Clinical Evidence (PMID 19445780 for 2008 and PMID 24780537 for 2014).", [a, b], [a.pmid, b.pmid]);
     expect(r.misattributed).toBe(0);
   });
 
@@ -150,7 +173,6 @@ describe("clause attribution between citations", () => {
       "Examples include Thanawala et al. (PMID 41824889, n = 126 completers, 60 days) and West et al. (PMID 41815853, n = 141, 8 weeks).",
       [a, b],
       [a.pmid, b.pmid],
-      ["creatine"],
     );
     expect(r.issues).toEqual([{ id: "41824889", check: "author", claimed: "Thanawala et al.", actual: "Wang Y, Wang Z, Xin L" }]);
   });

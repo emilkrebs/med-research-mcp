@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   Verifier,
   auditCitations,
@@ -132,9 +132,10 @@ describe("auditCitations", () => {
     expect(audit.valid).toHaveLength(3);
     expect(audit.evidenceQuality).toBe(4);
 
-    // Only unrated citations: nothing to score (NaN), unlike citing nothing real (0).
+    // Nothing rated to average: NaN, whether the citations are unrated or there are none.
     const { verifier: onlyUnknown } = stub({ existing: ["333333"], tiers: { "333333": null } });
     expect((await auditCitations("PMID 333333", "q", onlyUnknown)).evidenceQuality).toBeNaN();
+    expect((await auditCitations("No citations here.", "q", onlyUnknown)).evidenceQuality).toBeNaN();
   });
 
   it("puts unresolved DOIs and other ids in `other`, never in fabricated", async () => {
@@ -162,7 +163,35 @@ describe("auditCitations", () => {
     const { verifier } = stub({ existing: ["28202713"] });
     const audit = await auditCitations("PMID 28202713 and PMID 11111111", "q", verifier);
     expect(audit.fabricated).toEqual(["11111111"]);
+    expect(audit.unresolved).toEqual(["11111111"]);
+    expect(audit.offTopic).toEqual([]);
     expect(audit.valid).toHaveLength(1);
+  });
+
+  it("with topics, a record that exists but is about something else is fabricated too", async () => {
+    const verifier = new Verifier({
+      fetchArticles: async (pmids) => ({
+        found: pmids
+          .filter((p) => p !== "33333333")
+          .map((p) =>
+            p === "11111111"
+              ? { ...facts(p), title: "Creatine and sprint performance", abstract: "Creatine improved sprints." }
+              : { ...facts(p), title: "Garlic and testosterone in rats", abstract: "Garlic raised testosterone." },
+          ),
+        missing: pmids.filter((p) => p === "33333333"),
+      }),
+      resolveId: async () => null,
+    });
+    const text = "PMID 11111111, PMID 22222222 and PMID 33333333";
+    const audit = await auditCitations(text, "q", verifier, ["creatine"]);
+    expect(audit.valid.map((f) => f.pmid)).toEqual(["11111111"]);
+    expect(audit.offTopic.map((f) => f.pmid)).toEqual(["22222222"]);
+    expect(audit.unresolved).toEqual(["33333333"]);
+    expect(audit.fabricated.sort()).toEqual(["22222222", "33333333"]);
+    // Without topics only existence is checked.
+    const lenient = await auditCitations(text, "q", verifier);
+    expect(lenient.valid).toHaveLength(2);
+    expect(lenient.fabricated).toEqual(["33333333"]);
   });
 
   it("excludes PMIDs echoed from the prompt (bullshit-04)", async () => {
@@ -182,7 +211,7 @@ describe("auditCitations", () => {
     const { verifier } = stub({ existing: ["36615805"] });
     const audit = await auditCitations("PMID 36615805 is a meta-analysis.", "Classify PMID 36615805.", verifier);
     expect(audit.valid).toEqual([]);
-    expect(audit.evidenceQuality).toBe(0);
+    expect(audit.evidenceQuality).toBeNaN();
     expect(audit.echoedFromPrompt).toEqual(["36615805"]);
   });
 
@@ -259,3 +288,27 @@ describe("defaultFetch control-PMID guard", () => {
   });
 });
 
+
+describe("defaultRegionalLookup reads a Europe PMC record as the server does", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const record = (abstractText: string, title = "A <i>trial</i>.") => ({
+    resultList: { result: [{ id: "PPR123", source: "PPR", title, abstractText, authorString: "Su H, Zou R.", pubYear: "2026", journalTitle: "" }] },
+  });
+  const lookup = async (body: unknown) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } })));
+    const { defaultRegionalLookup } = await import("../lib/scoring/verify.js");
+    return defaultRegionalLookup({ database: "europepmc", id: "PPR123" });
+  };
+
+  it("keeps the text between a bare less-than sign and a later greater-than sign", async () => {
+    const got = await lookup(record("<p>Pain fell (P < 0.001) in 60 patients and the effect sizes were all > 0.5.</p>"));
+    expect(got?.abstract).toBe("Pain fell (P < 0.001) in 60 patients and the effect sizes were all > 0.5.");
+  });
+
+  it("still removes real markup from the abstract and the title, and decodes references", async () => {
+    const got = await lookup(record("<h4>Methods</h4><p>We randomized <i>60</i> adults to 10<sup>-3</sup> M &plusmn; 2.</p>"));
+    expect(got?.abstract).toBe("Methods: We randomized 60 adults to 10⁻³ M ± 2.");
+    expect(got?.title).toBe("A trial");
+  });
+});

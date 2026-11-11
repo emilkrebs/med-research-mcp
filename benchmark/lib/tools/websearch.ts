@@ -9,6 +9,10 @@
  * `pdfToText` from `src/core/fulltext.ts`, via the `../core.js` seam), so a page
  * reads the same whether the MCP's `literature_fulltext` or the web baseline
  * fetched it.
+ *
+ * `web_search` retries a rate-limited (429) or failing (5xx) Brave request, as
+ * the MCP's NCBI client retries PubMed: a baseline that turned every throttled
+ * request into "no results" would lose to its own rate limit, not to the MCP.
  */
 
 import { tool } from "ai";
@@ -31,6 +35,59 @@ interface BraveResult {
 
 interface BraveResponse {
   web?: { results?: BraveResult[] };
+}
+
+/** Attempts at one Brave request before the tool reports the failure to the model. */
+const SEARCH_ATTEMPTS = 4;
+/** Longest wait a Retry-After header can ask for. */
+const MAX_RETRY_WAIT_MS = 10_000;
+
+export interface WebSearchDeps {
+  fetch?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export interface WebSearchResult {
+  results: { title: string; url: string; snippet: string }[];
+  error?: string;
+}
+
+/**
+ * One Brave web search, retried on HTTP 429 and 5xx: it waits what Retry-After
+ * asks for (capped), else 1 s, 2 s, 4 s. Failures are returned, never thrown.
+ */
+export async function braveSearch(query: string, count: number, apiKey: string, deps: WebSearchDeps = {}): Promise<WebSearchResult> {
+  const doFetch = deps.fetch ?? fetch;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const url = `${BRAVE_ENDPOINT}?${new URLSearchParams({ q: query, count: String(count) }).toString()}`;
+  let failure = "";
+  for (let attempt = 0; attempt < SEARCH_ATTEMPTS; attempt++) {
+    try {
+      const res = await doFetch(url, {
+        headers: { Accept: "application/json", "X-Subscription-Token": apiKey },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as BraveResponse;
+        const results = (data.web?.results ?? []).slice(0, count).map((r) => ({
+          title: r.title ?? "",
+          url: r.url ?? "",
+          snippet: r.description ?? "",
+        }));
+        return { results };
+      }
+      failure = `Brave Search returned HTTP ${res.status}`;
+      if (res.status !== 429 && res.status < 500) break; // a client error won't improve on retry
+      if (attempt < SEARCH_ATTEMPTS - 1) {
+        const retryAfter = Number(res.headers.get("retry-after"));
+        await sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, MAX_RETRY_WAIT_MS) : 1000 * 2 ** attempt);
+      }
+    } catch (err) {
+      failure = `Brave Search request failed: ${err instanceof Error ? err.message : String(err)}`;
+      if (attempt < SEARCH_ATTEMPTS - 1) await sleep(1000 * 2 ** attempt);
+    }
+  }
+  return { error: failure, results: [] };
 }
 
 /** Read a response body, stopping at `MAX_BYTES`. */
@@ -110,22 +167,7 @@ export function webSearchTools(count = DEFAULTS.webResults) {
       inputSchema: z.object({
         query: z.string().describe("The web search query."),
       }),
-      execute: async ({ query }) => {
-        const url = `${BRAVE_ENDPOINT}?${new URLSearchParams({ q: query, count: String(count) }).toString()}`;
-        const res = await fetch(url, {
-          headers: { Accept: "application/json", "X-Subscription-Token": apiKey },
-        });
-        if (!res.ok) {
-          return { error: `Brave Search returned HTTP ${res.status}`, results: [] };
-        }
-        const data = (await res.json()) as BraveResponse;
-        const results = (data.web?.results ?? []).slice(0, count).map((r) => ({
-          title: r.title ?? "",
-          url: r.url ?? "",
-          snippet: r.description ?? "",
-        }));
-        return { results };
-      },
+      execute: async ({ query }) => braveSearch(query, count, apiKey),
     }),
 
     web_fetch: tool({
