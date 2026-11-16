@@ -17,7 +17,7 @@ Three tools, a triage-first workflow. **Always start with `literature_search`** 
 
 ## Writing good queries (`literature_search`)
 
-2–5 keywords, never a sentence: every word must match, so each extra word narrows the result. On 0 results the warning names the word that blocks a query of plain words (no quotes, tags or operators), or says no single word does (use fewer, more general words); with tags, drop one clause at a time. `PubMed ignored "word"` means no record contains it: check the spelling. Tags and booleans add precision on PubMed and Europe PMC; `chinaxiv`/`russiarxiv` ignore them.
+2–5 keywords, never a sentence: every word must match, so each extra word narrows the result. On 0 results the warning names the word that blocks a query of plain words (no quotes, tags or operators), or says no single word does (use fewer, more general words); with tags, drop one clause at a time. `PubMed ignored "word"` means no record contains it: check the spelling. `PubMed has no phrase "…"` means PubMed found no such phrase and searched its words separately, anywhere in a record. Tags and booleans add precision on PubMed and Europe PMC; `chinaxiv`/`russiarxiv` ignore them.
 
 - `[tiab]` — title/abstract (most precise): `zinc[tiab] AND ("common cold"[tiab] OR rhinovirus[tiab])`. Quote a phrase before its tag or tag each word: Europe PMC drops the tag of `common cold[tiab]`.
 - `[mesh]` — controlled MeSH, PubMed only: `"Zinc"[mesh] AND "Common Cold"[mesh]`
