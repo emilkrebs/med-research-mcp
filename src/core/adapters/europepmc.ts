@@ -24,6 +24,19 @@
  * "Link created based on a title-first author match", or "Link created based on another matching version of
  * this preprint"; most links are matches, and we keep them all. Other types (seen: "Comment in", "Comment on") are dropped.
  *
+ * Europe PMC matches bare words against full text: `tirzepatide apnea` finds 1,560 records and
+ * `TITLE_ABS:tirzepatide AND TITLE_ABS:apnea` 142 (2026-11-16). A query written for PubMed therefore has
+ * its field tags translated, by toEuropePmcQuery: [tiab] to TITLE_ABS, [ti] TITLE, [au] AUTH, [pt] PUB_TYPE,
+ * [ta] JOURNAL, [la] LANG, [dp] FIRST_PDATE, E_PDATE and P_PDATE, [pmid] EXT_ID with SRC:MED, each compared
+ * with PubMed's esearch on live counts (2026-11-16; the numbers are in util.ts). TITLE_ABS lacks the author
+ * keywords that PubMed's [tiab] covers: it finds 91-95% of PubMed's records and none PubMed lacks. [mh] is
+ * removed with every other tag: Europe PMC has no MeSH field, KW holds MeSH headings and author keywords,
+ * and PubMed explodes a heading ("Sleep Apnea Syndromes"[mh] 50,220 records, KW 17,963). Europe PMC's
+ * own field syntax passes through unchanged. A date range of a search is matched against FIRST_PDATE (below),
+ * though PubMed's own [dp] matches the electronic and the print date: PMID 39680131, online 2024-12-16 and
+ * in print 2025-07-01, is found by 2024[dp] and by 2025[dp]; creatine[tiab] AND 2024[dp] finds 2,046 records
+ * in PubMed, 1,777 with FIRST_PDATE and 1,990 with the three date fields (2026-11-16).
+ *
  * `core` results name the journal in `journalInfo.journal.title` and a preprint's
  * server in `bookOrReportDetails.publisher`; `journalTitle` exists only in `lite`
  * results. The date is the issue date (`journalInfo.dateOfPublication`, "2026
@@ -55,7 +68,7 @@
 import { LRUCache } from "lru-cache";
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { cleanDoi, first, isoDateBound, pageWindow, splitAuthors, strArray, toIso1, withoutPubMedTags } from "./util.js";
+import { cleanDoi, first, isoDateBound, pageWindow, splitAuthors, strArray, toEuropePmcQuery, toIso1 } from "./util.js";
 import { designPublicationTypes } from "../grader.js";
 import { htmlToText } from "../text.js";
 import type { Article, Correction, CorrectionType, SearchInput } from "../types.js";
@@ -213,8 +226,8 @@ export class EuropePmcAdapter extends RestAdapter {
   }
 
   private buildQuery(input: SearchInput, types: string[] | null): string {
-    // PubMed field tags mean nothing here and would be searched as words.
-    const query = withoutPubMedTags(input.query);
+    // A PubMed field tag would be searched as a word: translated into the field that holds the same, or removed.
+    const query = toEuropePmcQuery(input.query);
     const clauses: string[] = [];
     if (types) clauses.push(types.map((t) => `PUB_TYPE:"${t}"`).join(" OR "));
     const from = isoDateBound(input.dateRange?.from, "from");
