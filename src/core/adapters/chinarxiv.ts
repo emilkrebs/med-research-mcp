@@ -23,8 +23,13 @@
  *
  * The search endpoint cuts abstracts at 500 characters ("…outcome indic..."),
  * which often drops the Results of a long abstract. Search keeps those previews
- * (one request per search); an explicit fetch (`fetchFull`) loads the complete
- * record from `/papers/{id}`.
+ * (one request per search) and sets `abstractTruncated` on them; an explicit fetch
+ * (`fetchFull`) loads the complete record from `/papers/{id}`, whose abstract has no
+ * such mark. A cut abstract is exactly 500 characters, the first 497 of the whole one
+ * followed by "..."; a complete one is shorter and doesn't end that way. Checked
+ * 2026-11-16 on 437 search results (every abstract of 500 characters ended in "...";
+ * the complete ones had 490, 276 and 225) and by comparing six previews with their
+ * `/papers/{id}` abstracts (five cut ones: preview = whole[:497] + "..."; one complete).
  *
  * A search matches only records that contain every word of the query, in any
  * order, and reads AND and OR as words: "gut microbiota", "microbiota gut" and
@@ -66,6 +71,9 @@ function nearestPage(cursors: Map<number, string>, pageIndex: number): { index: 
   return best;
 }
 
+/** The longest abstract the search endpoint returns: a longer one is cut to 497 characters and "...". */
+const SEARCH_PREVIEW_CHARS = 500;
+
 /** The corpora this adapter reads, by adapter id (also the API's `source` value). */
 export type ChinaRxivCorpus = "chinaxiv" | "russiarxiv";
 
@@ -98,8 +106,11 @@ export interface PaperResponse {
   next_cursor?: string | null;
 }
 
-/** One ChinaRxiv record (`PaperSummary` from search, `PaperDetail` from `/papers/{id}`) as an Article. */
-function toArticle(r: Record_): Article | null {
+/**
+ * One ChinaRxiv record (`PaperSummary` from search, `PaperDetail` from `/papers/{id}`) as an Article.
+ * `complete` says the record comes from `/papers/{id}`, whose abstract is never cut.
+ */
+function toArticle(r: Record_, complete: boolean): Article | null {
   const id = first(r.id);
   if (!id) return null;
   const corpus: ChinaRxivCorpus = first(r.source) === "russiarxiv" ? "russiarxiv" : "chinaxiv";
@@ -124,6 +135,8 @@ function toArticle(r: Record_): Article | null {
   const abstract = first(r.abstract);
   if (abstract) {
     article.abstract = abstract;
+    // Only the search endpoint cuts: a complete abstract may end in "..." and run past 500 characters.
+    if (!complete && abstract.length >= SEARCH_PREVIEW_CHARS && abstract.endsWith("...")) article.abstractTruncated = true;
     if (first(r.abstract_source) === "machine_generated") article.machineGeneratedAbstract = true;
   }
   // Not in the v1 schema; kept so a DOI, should records gain one, enables de-duplication and full text.
@@ -132,12 +145,13 @@ function toArticle(r: Record_): Article | null {
   return article;
 }
 
-export function parsePapers(data: PaperResponse): { count: number; articles: Article[] } {
+/** @param options `complete`: the records come from `/papers/{id}`, not from a search, so none has a cut abstract. */
+export function parsePapers(data: PaperResponse, options: { complete?: boolean } = {}): { count: number; articles: Article[] } {
   const records = data?.data ?? [];
   const count = Number(data?.total ?? records.length);
   const articles: Article[] = [];
   for (const r of records) {
-    const a = toArticle(r);
+    const a = toArticle(r, options.complete ?? false);
     if (a) articles.push(a);
   }
   return { count, articles };
@@ -250,7 +264,7 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
   protected async fetchOne(id: string): Promise<Article | null> {
     // Exact lookup by id; a `q=` text search for the id can return a different paper.
     const record = await this.http.json<Record_>(`${BASE}/${encodeURIComponent(id)}`);
-    const article = parsePapers({ data: [record] }).articles[0];
+    const article = parsePapers({ data: [record] }, { complete: true }).articles[0];
     return article?.pmid === id ? article : null;
   }
 }

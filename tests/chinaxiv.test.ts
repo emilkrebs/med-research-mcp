@@ -42,6 +42,9 @@ const RUSSIARXIV_RECORD = {
 
 const RESPONSE = { total: 1, limit: 10, next_cursor: null, data: [CHINAXIV_RECORD] };
 
+/** An abstract as the search endpoint cuts it: 497 characters of the whole one and "...", 500 in all. */
+const PREVIEW = "Objective: ".padEnd(497, "w") + "...";
+
 function fakeHttp(payload: unknown): { http: AdapterHttp; urls: string[] } {
   const urls: string[] = [];
   const http: AdapterHttp = {
@@ -161,6 +164,25 @@ describe("parsePapers", () => {
     expect(graded.studyType).toBe("unknown");
     expect(graded.designTier).toBeNull();
     expect(graded.flags).toEqual(["machine-translated", "machine-generated-abstract"]);
+  });
+
+  it("flags an abstract the search endpoint cut at 500 characters, and not a complete one", () => {
+    const parse = (abstract: string) => parsePapers({ data: [{ ...CHINAXIV_RECORD, abstract }] }).articles[0]!;
+    // Shapes seen on 2026-11-16: a cut abstract is 497 characters and "...", a complete one is shorter.
+    expect(PREVIEW).toHaveLength(500);
+    expect(parse(PREVIEW).abstractTruncated).toBe(true);
+    expect(parse(PREVIEW).abstract).toBe(PREVIEW);
+    expect(parse("Objective: complete and short.").abstractTruncated).toBeUndefined();
+    // Short and ending in "...": not a cut.
+    expect(parse("Objective: the trial was stopped early...").abstractTruncated).toBeUndefined();
+    expect(parse("a".repeat(490)).abstractTruncated).toBeUndefined();
+    expect(parse("a".repeat(499) + "!").abstractTruncated).toBeUndefined();
+    // A record without an abstract has none to cut.
+    const { abstract: _a, ...bare } = CHINAXIV_RECORD;
+    expect(parsePapers({ data: [bare] }).articles[0]!.abstractTruncated).toBeUndefined();
+    // The detail endpoint's abstract is whole, even when it is long and ends in "...".
+    const detail = parsePapers({ data: [{ ...CHINAXIV_RECORD, abstract: PREVIEW }] }, { complete: true }).articles[0]!;
+    expect(detail.abstractTruncated).toBeUndefined();
   });
 
   // Shapes of `authors` seen in real search results on 2026-11-16, with synthetic names.
@@ -354,6 +376,39 @@ describe("ChinaRXivAdapter", () => {
     before = urls.length;
     expect((await adapter.fetchFull(ids, cache))[0]?.abstract).toContain("38 studies");
     expect(urls.length - before).toBe(1);
+  });
+
+  it("marks a search preview as cut, the complete record not, and keeps the mark on a preview fetchFull falls back to", async () => {
+    const whole = PREVIEW.slice(0, 497) + " and the rest of it, with Results: 38 studies were included.";
+    const preview = { ...CHINAXIV_RECORD, abstract: PREVIEW };
+    let detailUp = true;
+    const http: AdapterHttp = {
+      json: async <T>(url: string): Promise<T> => {
+        if (url.includes("/papers?")) return { total: 1, data: [preview] } as T;
+        if (!detailUp) throw new Error("HTTP 503");
+        return { ...CHINAXIV_RECORD, abstract: whole } as T;
+      },
+      text: async () => "",
+    };
+    const adapter = new ChinaRXivAdapter(http);
+    const cache = new LRUBackend();
+    const { ids } = await adapter.search({ query: "tcm" });
+    expect((await adapter.fetch(ids, cache))[0]).toMatchObject({ abstract: PREVIEW, abstractTruncated: true });
+
+    // A fetch of a record the search never saw goes to /papers/{id}: complete, no mark.
+    const cold = await new ChinaRXivAdapter(http).fetch(ids, new LRUBackend());
+    expect(cold[0]?.abstract).toBe(whole);
+    expect(cold[0]).not.toHaveProperty("abstractTruncated");
+
+    const full = (await adapter.fetchFull(ids, cache))[0]!;
+    expect(full.abstract).toBe(whole);
+    expect(full).not.toHaveProperty("abstractTruncated");
+
+    // The detail endpoint is down: the preview stays a preview.
+    detailUp = false;
+    const warm = new ChinaRXivAdapter(http);
+    await warm.search({ query: "tcm" });
+    expect((await warm.fetchFull(ids, new LRUBackend()))[0]).toMatchObject({ abstract: PREVIEW, abstractTruncated: true });
   });
 });
 
