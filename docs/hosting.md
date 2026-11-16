@@ -39,6 +39,8 @@ The hosted endpoint is designed to know as little as possible:
   Unpaywall carry the operator's contact email if one is set, and those to NCBI
   and Unpaywall otherwise the project's. `MED_RESEARCH_UNPAYWALL=0` keeps DOIs
   from Unpaywall, at the cost of the open-access copies only it knows.
+  A search that finds nothing sends its query again to the same databases, a
+  word less each time.
   Tell your users, and see [compliance.md](compliance.md#data-flows) for what
   each service receives.
 
@@ -266,7 +268,13 @@ translations.
   included, so the call answers before a gateway in front of the server gives up
   (nginx's `proxy_read_timeout`, for one, defaults to 60 s). A database that runs
   out of time becomes a warning, or, when no database answered, the error
-  `TIMEOUT`.
+  `TIMEOUT`. A search that finds nothing for 2–5 plain words also probes each
+  word (up to one more request per word and database, see
+  [how-it-works.md](how-it-works.md#zero-results-probing-the-words)): the probes
+  get 10 seconds together, inside this budget (the earlier deadline applies),
+  and a probe that runs out of time is dropped, not an error. ChinaRxiv's
+  probes use at most a third of its per-minute allowance, counted per process,
+  so for all the users of an instance together.
   `literature_fulltext` has no budget: its pages are fetched with their own
   timeout, and its fallback needs the abstract. The stdio server sets none.
 

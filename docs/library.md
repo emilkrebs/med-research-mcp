@@ -17,7 +17,7 @@ const { articles, warnings } = await searchLiterature(
   cache,
 );
 
-// Full metadata and abstract for the top result (`pmid` holds the database-specific id).
+// Full metadata and abstract for the top result (`Article.pmid` holds the database-specific id).
 const top = articles[0]!;
 const fetched = await fetchLiterature({ ids: [top.pmid], database: top.database ?? "pubmed" }, cache);
 
@@ -25,7 +25,7 @@ const fetched = await fetchLiterature({ ids: [top.pmid], database: top.database 
 const fulltext = await fetchFulltext({ id: top.pmid, doi: top.doi }, cache);
 ```
 
-The build ships both ESM and CommonJS, so this works with `import` and `require` alike. The functions take the same inputs and return the same shapes as the [tools](tools.md).
+The build ships both ESM and CommonJS, so this works with `import` and `require` alike. The functions take the same inputs and return the same shapes as the [tools](tools.md), with one difference: the library's `Article` keeps the database's own id in `pmid` (a PMID, or `PPR…`, `CBA:…`, `chinaxiv-…`), and the MCP tools print it as `id`, the first key of each article, adding `pmid` only when the id is a PMID (all digits). `searchLiterature` also probes a search that finds nothing, as the tool does: a first-page query of 2 to 5 plain words that every database answers with nothing is searched again without each word, for the count, which costs up to one more request per word and database and can take several seconds ([how it works](how-it-works.md#zero-results-probing-the-words)). `searchPubMed`, which has no merge, doesn't probe, but warns of a word PubMed ignored.
 
 Also exported:
 
@@ -34,7 +34,7 @@ Also exported:
 - `NcbiClient`, with its rate limiter. Share one client between calls (pass it to `PubMedAdapter`, `searchPubMed` and `fetchFulltext`) so that concurrent requests stay within NCBI's limit.
 - The adapters (`PubMedAdapter`, `EuropePmcAdapter`, `ChinaRXivAdapter`, `SovietRxivAdapter`), `adaptersFor` (a `database` value to adapters, refusing unknown ids) and `getAdapters` (which drops them), `designPublicationTypes`, the types, and the constants `STUDY_TYPES`, `RECORD_FLAGS` and `DESIGN_TIER`. The types include `SearchFilters` (what `filters` in a search result echoes), `AdapterSearchResult` (what an adapter's `search` returns) and `EmptyReason` (why it found nothing, when its query rules say so: `every-word`; databases that report the same reason share one warning), and `RecordSource` and `RecordDatabase` (what `fetchFulltext` asks of the adapter of a database whose ids PubMed doesn't know).
 - `parseChinaRXiv(data, { complete? })`, which turns a ChinaRxiv API response into records; `complete: true` says they come from `/papers/{id}`, so that none is marked `abstractTruncated`.
-- `fetchFulltext`'s fourth argument, `FulltextDeps`, injects its seams for tests and embedding: `unpaywall`, `adapter` (database id to the adapter that holds its records, used for a record's abstract, the DOI Europe PMC has for a preprint, and ChinaRxiv's text; the registry's by default), the fetch and conversion functions, `proxyPrefix`, `maxChars`, `timeoutMs` and `now`.
+- `fetchFulltext`'s fourth argument, `FulltextDeps`, injects its seams for tests and embedding: `unpaywall`, `adapter` (database id to the adapter that holds its records, used for a record's abstract, the DOI Europe PMC has for a preprint or another Europe PMC id, and ChinaRxiv's text; the registry's by default), the fetch and conversion functions, `proxyPrefix`, `maxChars`, `timeoutMs` and `now`.
 
 Configuration comes from the same environment variables as the server ([README](../README.md#configuration)), read when the module is imported: the default adapters are created then, so set the variables before importing (e.g. `node --env-file=.env app.js`). To configure in code instead, pass your own clients, e.g. `searchLiterature(input, cache, [new PubMedAdapter(new NcbiClient({ email, apiKey }))])`; `NcbiClient` and `UnpaywallClient` take their settings as constructor options. If you build your own software on the library, give `NcbiClient` and `UnpaywallClient` your own `tool` and `email`: only the default tool, `med-research-mcp`, sends this project's contact address when there is no email in code or in the environment. `fetchFulltext`'s default `UnpaywallClient` takes the `NcbiClient`'s tool. A blank `email` sends none, which turns `UnpaywallClient` off (`configured` is then false); `UnpaywallClient.lookup()` tells an answer without copies apart from a failed or skipped lookup, where `resolve()` returns `null` for all of them.
 
