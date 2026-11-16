@@ -216,6 +216,8 @@ export async function fetchFulltext(
   const chinarxivId = chinarxivMatch ? id.toLowerCase() : undefined;
   const chinarxivCorpus: RecordDatabase | undefined = chinarxivMatch ? (chinarxivMatch[1]!.toLowerCase() === "ru" ? "russiarxiv" : "chinaxiv") : undefined;
   if (!isPmid(id) && !inputDoi && !europePmcId && !chinarxivId) {
+    // A doi that was given but isn't one (a record's url, say) is a mistake to name, not a missing doi.
+    if (input.doi?.trim()) throw errors.notADoi(input.doi.trim());
     throw errors.noDoi(String(input.id ?? ""));
   }
 
@@ -782,12 +784,16 @@ function isArticleBody(page: PageText, knownAbstract: string | undefined): boole
   return page.body + spill - unlabeled >= MIN_BODY_CHARS;
 }
 
-/** Strip a DOI URL/`doi:` prefix and validate the shape; return undefined if it isn't a DOI. */
+/**
+ * Strip a DOI URL/`doi:` prefix and validate the shape; return undefined if it isn't a DOI. Any other URL (a
+ * record's `url` or `originalUrl`, which a model once passed as `doi`) is no DOI and is not altered into one:
+ * it yields undefined, and {@link fetchFulltext} names it when the id can't be resolved without it.
+ */
 function normalizeDoi(doi: string | undefined): string | undefined {
   if (!doi) return undefined;
   const d = doi
     .trim()
-    .replace(/^https?:\/\/(dx\.)?doi\.org\//i, "")
+    .replace(/^https?:\/\/(?:dx\.|www\.)?doi\.org\//i, "")
     .replace(/^doi:\s*/i, "")
     .trim();
   return /^10\.\d{4,9}\/\S+$/.test(d) ? d : undefined;

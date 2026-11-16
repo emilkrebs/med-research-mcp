@@ -121,17 +121,29 @@ export const errors = {
     });
   },
 
-  /** A non-PubMed id reached a DOI-based lookup without a DOI. */
+  /** An id that isn't resolved on its own reached a DOI-based lookup without a DOI. */
   noDoi(id: string): ResearchApiException {
     return new ResearchApiException({
       code: "NOT_FOUND",
       message: `No DOI for non-PubMed id ${id}`,
       userMessage:
-        `"${id}" is not a PMID, PMCID or Europe PMC preprint id, and no DOI was given. Full text is found through the ` +
-        `DOI: pass the doi from the literature_search result. Records without one (all ChinaXiv and RussiaRxiv records, ` +
-        `some Europe PMC records) can't be resolved, unless they have a pmcid to pass as the id; open their url instead.`,
+        `"${id}" is not an id that works on its own, and no DOI was given. On its own, literature_fulltext takes a PMID ` +
+        `(digits), a PMCID (PMC…), a Europe PMC preprint id (PPR…), or the id of a ChinaXiv or RussiaRxiv record ` +
+        `(chinaxiv-…, ru-…). Any other id, such as a Europe PMC CBA:… id, needs the doi from its literature_search result as ` +
+        `well; a record without a doi can't be fetched, so open its url instead. A url or originalUrl is not a doi: don't ` +
+        `pass one as doi.`,
       recoverable: false,
     });
+  },
+
+  /** A `doi` that isn't one (a record's url, say) where the id can't be resolved without it. */
+  notADoi(value: string): ResearchApiException {
+    const shown = JSON.stringify(value.length > 200 ? `${value.slice(0, 200)}…` : value);
+    return errors.invalidInput(
+      `doi ${shown} is not a DOI. A DOI starts with 10. and a number, then a slash ("10.1234/abc"), alone or as a ` +
+        `https://doi.org/10.1234/abc link. A record's url or originalUrl is not a doi: pass the doi field of the ` +
+        `literature_search result. This id can't be resolved without one.`,
+    );
   },
 
   /** doi.org has no record of the DOI. */

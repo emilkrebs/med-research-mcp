@@ -503,6 +503,49 @@ describe("fetchFulltext resolution strategy", () => {
     expect(error.userMessage).not.toContain("PubMed article");
   });
 
+  it("tells which ids work on their own, when a doi is needed, and that a url is not one", async () => {
+    const error = await fetchFulltext({ id: "CBA:644599" }, new LRUBackend(), fakeClient()).catch((e: unknown) => e as ResearchApiException);
+    const message = error.userMessage;
+    // The ids that need nothing else.
+    for (const own of ["PMID", "PMCID (PMC…)", "preprint id (PPR…)", "chinaxiv-…", "ru-…"]) expect(message).toContain(own);
+    // Where the doi comes from, and what to do for a record without one.
+    expect(message).toContain("doi from its literature_search result");
+    expect(message).toContain("open its url instead");
+    expect(message).toContain("A url or originalUrl is not a doi");
+    // No longer says that ChinaXiv and RussiaRxiv records can't be resolved.
+    expect(message).not.toMatch(/can't be resolved|neither/);
+  });
+
+  it("raises INVALID_INPUT for a url passed as the doi of an id that needs one, naming the mistake", async () => {
+    for (const doi of ["https://chinaxiv.org/abs/202401.00027", "chinaxiv.org/abs/202401.00027", "not a doi", "10.12/short"]) {
+      const error = await fetchFulltext({ id: "CBA:644599", doi }, new LRUBackend(), fakeClient()).catch((e: unknown) => e as ResearchApiException);
+      expect(error, doi).toMatchObject({ code: "INVALID_INPUT", recoverable: true });
+      expect(error.userMessage, doi).toContain(`doi ${JSON.stringify(doi)} is not a DOI`);
+      expect(error.userMessage, doi).toContain("A record's url or originalUrl is not a doi");
+    }
+    // A long one is cut in the message.
+    const long = await fetchFulltext({ id: "CBA:1", doi: `https://example.org/${"x".repeat(500)}` }, new LRUBackend(), fakeClient()).catch((e: unknown) => e as ResearchApiException);
+    expect(long.userMessage.length).toBeLessThan(600);
+  });
+
+  it("ignores a url passed as the doi of an id that resolves on its own", async () => {
+    const out = await fetchFulltext({ id: "12345678", doi: "https://chinaxiv.org/abs/202401.00027" }, new LRUBackend(), fakeClient({ summary: ARTICLE }), {
+      unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://oa.example/article"] }),
+      fetchUrl: async () => htmlResource("<x/>"),
+      htmlToMarkdown: async () => LONG_MARKDOWN,
+    });
+    expect(out).toMatchObject({ source: "unpaywall", doi: DOI });
+  });
+
+  it("reads a doi.org link of any usual host form", async () => {
+    const lookup = vi.fn(async (): Promise<UnpaywallLookup> => ({ status: "none" }));
+    const deps: FulltextDeps = { unpaywall: { lookup } as unknown as UnpaywallClient, fetchUrl: async () => paywalled(), adapter: noRecords };
+    for (const doi of ["https://www.doi.org/10.1000/xyz123", "http://dx.doi.org/10.1000/xyz123", "doi:10.1000/xyz123", " 10.1000/xyz123 "]) {
+      await fetchFulltext({ id: "CBA:644599", doi }, new LRUBackend(), fakeClient(), deps);
+    }
+    expect(lookup.mock.calls.map(([d]) => d)).toEqual([DOI, DOI, DOI, DOI]);
+  });
+
   it("doesn't ask PubMed for the abstract of another database's id", async () => {
     const efetch = vi.fn();
     const client = { ...fakeClient(), efetch } as unknown as NcbiClient;
