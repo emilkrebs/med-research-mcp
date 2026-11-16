@@ -141,8 +141,43 @@ interface EsummaryDoc {
   authors?: { name?: string }[];
   articleids?: { idtype?: string; value?: string }[];
   pubtype?: string[];
+  /** The record's CommentsCorrections links (see {@link ESUMMARY_REFTYPES}). */
+  references?: { reftype?: string; pmid?: number | string }[];
   /** Present on NCBI's ERROR-DOC shape for uids it doesn't recognize, e.g. a nonexistent PMID. */
   error?: string;
+}
+
+/**
+ * esummary's `reftype` (lower case) of the links efetch calls RefType and {@link extractCorrections} keeps, as the
+ * RefType names. Checked live 2026-11-16: esummary of PMID 33247380 has `references: [{refsource: "Biol Trace Elem Res.
+ * 2025 Jan;203(1):589. doi: 10.1007/s12011-024-04150-3.", reftype: "Retraction in", pmid: 38512453, note: ""}]` next to
+ * its "Retracted Publication" type; that of PMID 27578231 has no such type and `reftype: "Expression of concern in"`
+ * with `pmid: 42781840`. In esummary of up to 300 records each of PubMed's `hasretractionin`, `haserratumin`,
+ * `hasupdatein`, `hasupdateof` and `hasexpressionofconcernin` (100 each from three places of the pub_date order), the
+ * five names below came as "Retraction in", "Erratum in", "Update in", "Update of" and "Expression of concern in",
+ * and `pmid` was a number, or "" for a link to a record PubMed doesn't hold (3 of 334 "Erratum in" links, 37 of 344
+ * "Retraction in", 17 of 318 "Update of", none of 303 "Update in" and 205 "Expression of concern in"). The other
+ * links seen ("Comment in", "Comment on", "Erratum for", "Retraction of", "Republished in" and "from", "Original
+ * report in", "Summary for patients in", "Dataset described in", "Dataset use reported in") are not kept, as in efetch.
+ */
+const ESUMMARY_REFTYPES: Readonly<Record<string, CorrectionType>> = {
+  "retraction in": "RetractionIn",
+  "expression of concern in": "ExpressionOfConcernIn",
+  "erratum in": "ErratumIn",
+  "update in": "UpdateIn",
+  "update of": "UpdateOf",
+};
+
+/** The correction links of an esummary record, in its order, as the efetch path gives them: `id` only for a link to a PMID. */
+function esummaryCorrections(references: EsummaryDoc["references"]): Correction[] {
+  const out: Correction[] = [];
+  for (const ref of toArray(references)) {
+    const type = ESUMMARY_REFTYPES[String(ref?.reftype ?? "").trim().toLowerCase()];
+    if (!type) continue;
+    const id = String(ref?.pmid ?? "").trim();
+    out.push({ type, ...(/^\d+$/.test(id) ? { id } : {}) });
+  }
+  return out;
 }
 
 /** What efetch adds to an esummary record. */
@@ -519,6 +554,10 @@ export class NcbiClient {
     if (doc.epubdate?.trim()) article.epubDate = doc.epubdate.trim();
     if (doi) article.doi = doi;
     if (pmcid && /^PMC\d+$/i.test(pmcid)) article.pmcid = pmcid.toUpperCase();
+    // The links, so that a record known only from esummary shows an expression of concern, and the notice's id, as one from
+    // efetch does. efetch's replace them (applyEfetch), and are the ones cached.
+    const corrections = esummaryCorrections(doc.references);
+    if (corrections.length > 0) article.corrections = corrections;
     return article;
   }
 
@@ -636,9 +675,9 @@ function extractCorrections(ccl: unknown): Correction[] {
 
 /**
  * Copy efetch's publication types, MeSH and correction links onto a summary.
- * efetch is the only source of MeSH and correction links and is at least as
- * fresh as a cached summary, so its values replace older ones (a later
- * RetractionIn must not be hidden behind an earlier ErratumIn).
+ * efetch is the only source of MeSH, and its publication types and correction links are
+ * at least as fresh as a cached summary's or esummary's (see {@link ESUMMARY_REFTYPES}), so
+ * they replace older ones (a later RetractionIn must not be hidden behind an earlier ErratumIn).
  */
 function applyEfetch(article: Article, data: EfetchData): void {
   if (data.publicationTypes.length > 0) article.publicationTypes = data.publicationTypes;
@@ -701,9 +740,9 @@ export async function searchPubMed(
   }
 
   // efetch for missing abstracts, and for every freshly fetched summary: only
-  // efetch carries MeSH and retraction/correction links. A summary is cached
-  // only once efetch has succeeded for it; caching it earlier would hide its
-  // retraction links for SUMMARY_TTL_MS after a failed efetch.
+  // efetch carries MeSH, and its links and publication types are the freshest. A summary is cached
+  // only once efetch has succeeded for it; caching it earlier would keep its MeSH headings from
+  // being loaded for SUMMARY_TTL_MS after a failed efetch.
   const abstracts = new Map<string, string>();
   const needEfetch: string[] = [];
   for (const pmid of pmids) {
@@ -726,7 +765,7 @@ export async function searchPubMed(
       }
     } catch (err) {
       // Abstracts are best-effort: degrade with a warning.
-      warnings.push("Some abstracts could not be fetched; those articles lack abstracts, MeSH headings and retraction/correction links.");
+      warnings.push("Some abstracts could not be fetched; those articles lack abstracts and MeSH headings.");
     }
   }
 
@@ -793,7 +832,7 @@ export async function fetchPubMed(
   }
 
   // Abstracts (best-effort, cache-aware). efetch also runs for every freshly
-  // fetched summary: only efetch carries MeSH and retraction/correction links.
+  // fetched summary: only efetch carries MeSH, and its links and publication types are the freshest.
   // As in searchPubMed, a summary is cached only once efetch has succeeded for it.
   const pmidsWithSummary = [...allArticles.keys()];
   for (const pmid of pmidsWithSummary) {
@@ -815,7 +854,7 @@ export async function fetchPubMed(
         cache.setSummary(pmid, article);
       }
     } catch {
-      warnings.push("Some abstracts could not be fetched; those articles lack abstracts, MeSH headings and retraction/correction links.");
+      warnings.push("Some abstracts could not be fetched; those articles lack abstracts and MeSH headings.");
     }
   }
 

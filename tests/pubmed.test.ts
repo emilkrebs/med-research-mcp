@@ -3,7 +3,8 @@ import { NcbiClient, searchPubMed, fetchPubMed } from "../src/core/pubmed";
 import { PubMedAdapter } from "../src/core/adapters/pubmed";
 import { PROJECT_CONTACT_EMAIL } from "../src/core/version";
 import { LRUBackend } from "../src/core/cache";
-import type { NcbiArticle, SearchInput } from "../src/core/types";
+import { classifyArticle } from "../src/core/grader";
+import { CORRECTION_TYPES, type NcbiArticle, type SearchInput } from "../src/core/types";
 
 const EFETCH_XML = `<?xml version="1.0" ?>
 <PubmedArticleSet>
@@ -366,7 +367,7 @@ describe("searchPubMed orchestration", () => {
     vi.spyOn(client, "efetch").mockRejectedValueOnce(new Error("HTTP 429"));
 
     const first = await searchPubMed({ query: "x" }, cache, client);
-    expect(first.warnings?.some((w) => /retraction\/correction links/.test(w))).toBe(true);
+    expect(first.warnings?.some((w) => /abstracts and MeSH headings/.test(w))).toBe(true);
     expect(cache.getSummary("22222222")).toBeNull();
 
     const second = await searchPubMed({ query: "x" }, cache, client);
@@ -907,6 +908,118 @@ describe("NcbiClient requests", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ result: { uids: ["37968687"], "37968687": doc } }), { status: 200 })));
     const out = await new NcbiClient({ email: "test@example.com" }).esummary(["37968687"]);
     expect(out.get("37968687")).toMatchObject({ pmcid: "PMC10647179", doi: "10.1186/s12916-023-03146-5" });
+  });
+
+  describe("correction links from esummary's references", () => {
+    // The shapes esummary answered on 2026-11-16 for PMIDs 33247380 (retracted) and 27578231 (expression of concern), trimmed.
+    const RETRACTED = {
+      uid: "33247380",
+      title: "Do Zinc Supplements Enhance the Clinical Efficacy of Hydroxychloroquine?: a Randomized, Multicenter Trial.",
+      pubdate: "2020",
+      pubtype: ["Journal Article", "Multicenter Study", "Randomized Controlled Trial", "Retracted Publication"],
+      references: [{ refsource: "Biol Trace Elem Res. 2025 Jan;203(1):589. doi: 10.1007/s12011-024-04150-3.", reftype: "Retraction in", pmid: 38512453, note: "" }],
+    };
+    const CONCERN = {
+      uid: "27578231",
+      title: "Randomized controlled trial comparing ondansetron and placebo for the reduction of spinal anesthesia-induced hypotension during elective cesarean delivery in Egypt.",
+      pubdate: "2016",
+      pubtype: ["Journal Article", "Randomized Controlled Trial"],
+      references: [{ refsource: "Int J Gynaecol Obstet. 2026 Sep 24. doi: 10.1002/ijgo.71386.", reftype: "Expression of concern in", pmid: 42781840, note: "" }],
+    };
+    const esummary = async (docs: object[]) => {
+      const result: Record<string, unknown> = { uids: docs.map((d) => (d as { uid: string }).uid) };
+      for (const doc of docs) result[(doc as { uid: string }).uid] = doc;
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ result }), { status: 200 })));
+      return new NcbiClient({ email: "test@example.com" }).esummary(docs.map((d) => (d as { uid: string }).uid));
+    };
+
+    it("reads the retraction and the expression of concern, with the notice's PMID, as efetch's links are read", async () => {
+      const out = await esummary([RETRACTED, CONCERN]);
+      expect(out.get("33247380")?.corrections).toEqual([{ type: "RetractionIn", id: "38512453" }]);
+      expect(out.get("27578231")?.corrections).toEqual([{ type: "ExpressionOfConcernIn", id: "42781840" }]);
+      // The expression of concern is no publication type, so only the link flags the record.
+      expect(classifyArticle(out.get("27578231")!).flags).toEqual(["expression-of-concern"]);
+      expect(classifyArticle(out.get("33247380")!).flags).toContain("retracted");
+    });
+
+    it("names the five link types as efetch does, and drops the others", async () => {
+      const ref = (reftype: string, pmid: number | string) => ({ refsource: "x", reftype, pmid, note: "" });
+      const out = await esummary([
+        {
+          ...CONCERN,
+          references: [
+            ref("Retraction in", 1),
+            ref("Expression of concern in", 2),
+            ref("Erratum in", 3),
+            ref("Update in", 4),
+            ref("Update of", 5),
+            ref("Comment in", 6),
+            ref("Comment on", 7),
+            ref("Erratum for", 8),
+            ref("Retraction of", 9),
+            ref("Republished in", 10),
+          ],
+        },
+      ]);
+      expect(out.get("27578231")?.corrections).toEqual([
+        { type: "RetractionIn", id: "1" },
+        { type: "ExpressionOfConcernIn", id: "2" },
+        { type: "ErratumIn", id: "3" },
+        { type: "UpdateIn", id: "4" },
+        { type: "UpdateOf", id: "5" },
+      ]);
+      expect(CORRECTION_TYPES).toEqual(expect.arrayContaining(out.get("27578231")!.corrections!.map((c) => c.type)));
+    });
+
+    it("leaves out the id of a link to a record PubMed doesn't hold, which esummary gives as an empty string, and takes a PMID given as a string", async () => {
+      const out = await esummary([
+        { ...CONCERN, references: [{ refsource: "doi: 10.1101/2023.11.26.568741", reftype: "Update of", pmid: "", note: "" }, { reftype: "Erratum in", pmid: "42735829" }] },
+      ]);
+      expect(out.get("27578231")?.corrections).toEqual([{ type: "UpdateOf" }, { type: "ErratumIn", id: "42735829" }]);
+    });
+
+    it("has no corrections when the record has no references, or only others", async () => {
+      const out = await esummary([
+        { ...CONCERN, uid: "1", references: undefined },
+        { ...CONCERN, uid: "2", references: [] },
+        { ...CONCERN, uid: "3", references: [{ refsource: "x", reftype: "Comment in", pmid: 5, note: "" }] },
+      ]);
+      for (const pmid of ["1", "2", "3"]) expect(out.get(pmid), pmid).not.toHaveProperty("corrections");
+    });
+
+    it("leaves efetch's links in charge: they replace esummary's in a fetched record, and a record without any loses them", async () => {
+      const efetch = (links: string) =>
+        `<PubmedArticleSet><PubmedArticle><MedlineCitation><PMID>27578231</PMID><Article><Abstract><AbstractText>Abstract.</AbstractText></Abstract></Article>${links}<MeshHeadingList><MeshHeading><DescriptorName>Humans</DescriptorName></MeshHeading></MeshHeadingList></MedlineCitation></PubmedArticle></PubmedArticleSet>`;
+      const linked = '<CommentsCorrectionsList><CommentsCorrections RefType="ExpressionOfConcernIn"><PMID>42781841</PMID></CommentsCorrections></CommentsCorrectionsList>';
+      for (const [xml, expected] of [[efetch(linked), [{ type: "ExpressionOfConcernIn", id: "42781841" }]], [efetch(""), undefined]] as const) {
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (url: string) =>
+            String(url).includes("efetch.fcgi")
+              ? new Response(xml, { status: 200 })
+              : new Response(JSON.stringify({ result: { uids: ["27578231"], "27578231": CONCERN } }), { status: 200 }),
+          ),
+        );
+        const out = await fetchPubMed({ ids: ["27578231"] }, new LRUBackend(), new NcbiClient({ email: "test@example.com" }));
+        expect(out.articles[0]?.corrections).toEqual(expected);
+        expect(out.articles[0]?.meshHeadings).toEqual(["Humans"]);
+      }
+    });
+
+    it("shows the link of a record whose efetch failed, which is not cached, so that the next call asks efetch again", async () => {
+      const cache = new LRUBackend();
+      const fetchMock = vi.fn(async (url: string) =>
+        String(url).includes("efetch.fcgi")
+          ? new Response("", { status: 400 })
+          : new Response(JSON.stringify({ result: { uids: ["27578231"], "27578231": CONCERN } }), { status: 200 }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const client = new NcbiClient({ email: "test@example.com" });
+      const first = await fetchPubMed({ ids: ["27578231"] }, cache, client);
+      expect(first.articles[0]?.corrections).toEqual([{ type: "ExpressionOfConcernIn", id: "42781840" }]);
+      expect(first.warnings).toEqual(["Some abstracts could not be fetched; those articles lack abstracts and MeSH headings."]);
+      expect(cache.getSummary("27578231")).toBeNull();
+    });
   });
 });
 

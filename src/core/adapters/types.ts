@@ -52,7 +52,7 @@ export interface DatabaseAdapter {
    * guaranteed; ids with no result are simply absent from the returned array.
    * The cache is scoped per-database (see {@link RestAdapter}). `warn` receives a
    * warning for records returned incomplete, such as PubMed records without their
-   * abstract and retraction links when efetch failed.
+   * abstract and MeSH headings when efetch failed.
    */
   fetch(ids: string[], cache: Cache, warn?: (warning: string) => void): Promise<Article[]>;
   /**

@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { defaultJatsToMarkdown, fetchFulltext, type FetchedResource, type FulltextDeps } from "../src/core/fulltext";
+import { defaultJatsToMarkdown, fetchFulltext, STANDING_WAIT_MS, type FetchedResource, type FulltextDeps } from "../src/core/fulltext";
 import { UnpaywallClient, type UnpaywallLookup, type UnpaywallResult } from "../src/core/unpaywall";
 import { EuropePmcAdapter } from "../src/core/adapters/europepmc";
 import { ChinaRXivAdapter } from "../src/core/adapters/chinarxiv";
 import type { AdapterHttp } from "../src/core/adapters/http";
 import { FULLTEXT_TTL_MS, LRUBackend } from "../src/core/cache";
-import { NcbiClient } from "../src/core/pubmed";
+import { fetchPubMed, NcbiClient } from "../src/core/pubmed";
 import { PROJECT_CONTACT_EMAIL } from "../src/core/version";
 import { errors, ResearchApiException } from "../src/core/errors";
 import { BlockedUrlError } from "../src/core/public-fetch";
@@ -845,6 +845,7 @@ describe("fetchFulltext — Europe PMC by PMCID", () => {
     const out = await fetchFulltext({ id: "pmc7654321" }, new LRUBackend(), fakeClient(), {
       fetchUrl,
       jatsToMarkdown: async () => LONG_MARKDOWN,
+      adapter: noRecords,
     });
     expect(out.source).toBe("europepmc");
     expect(out.doi).toBeUndefined();
@@ -898,15 +899,21 @@ describe("fetchFulltext — Europe PMC by PMCID", () => {
       expect(europePmc.fetch.mock.calls.map(([ids]) => ids)).toEqual([["PPR123456"]]);
     });
 
-    it("doesn't look the record up when Europe PMC has the text", async () => {
+    it("asks for the record once, beside the text, when Europe PMC has the text, and says nothing of a record that carries no flag", async () => {
       const europePmc = fakeEuropePmc([PREPRINT]);
-      const out = await fetchFulltext({ id: "PPR123456" }, new LRUBackend(), fakeClient(), {
+      const cache = new LRUBackend();
+      const deps: FulltextDeps = {
         fetchUrl: async (url: string) => ({ ...htmlResource("<article/>", url), contentType: "application/xml" }),
         jatsToMarkdown: async () => LONG_MARKDOWN,
         adapter: europePmc.adapter,
-      });
+      };
+      const out = await fetchFulltext({ id: "PPR123456" }, cache, fakeClient(), deps);
       expect(out.source).toBe("europepmc");
-      expect(europePmc.fetch).not.toHaveBeenCalled();
+      expect(out.warning).toBeUndefined();
+      expect(europePmc.fetch.mock.calls.map(([ids]) => ids)).toEqual([["PPR123456"]]);
+      // The record is kept, so that the next call (the text is cached too) asks for nothing.
+      expect((await fetchFulltext({ id: "PPR123456" }, cache, fakeClient(), deps)).source).toBe("europepmc");
+      expect(europePmc.fetch).toHaveBeenCalledTimes(1);
     });
 
     it("opens the Unpaywall and direct routes with the DOI of Europe PMC's record, and remembers the record", async () => {
@@ -1276,6 +1283,58 @@ describe("fetchFulltext — the record's standing, said first", () => {
     expect(out.warning).toContain("Linked notice: pubmed 42781840");
   });
 
+  it("knows an expression of concern, and the notice's id, from the esummary it makes anyway for a PMID given alone", async () => {
+    // esummary's references (see ESUMMARY_REFTYPES in pubmed.ts): PMID 27578231 has no type that marks its expression of concern, only the link.
+    const cache = new LRUBackend();
+    const summary = { ...ESUMMARY, corrections: [{ type: "ExpressionOfConcernIn" as const, id: "42781840" }] };
+    const onEfetch = vi.fn();
+    const out = await fetchFulltext({ id: "12345678" }, cache, fakeClient({ summary, onEfetch }), pdf());
+    expect(out.source).toBe("unpaywall");
+    expect(out.warning).toBe(
+      'EXPRESSION OF CONCERN: one is linked to this record (flag "expression-of-concern"): read the notice before relying on its findings. Linked notice: pubmed 42781840 (literature_fetch).',
+    );
+    expect(onEfetch).not.toHaveBeenCalled();
+  });
+
+  it("leaves literature_fetch to load the full record after a text call that cached only esummary's, links included", async () => {
+    // The 4e7b932 case: an abstract cached by an earlier search, whose summary expired, next to esummary's record.
+    const esummary = {
+      result: {
+        uids: ["27578231"],
+        "27578231": {
+          uid: "27578231",
+          title: "A trial.",
+          pubdate: "2016",
+          pubtype: ["Journal Article", "Randomized Controlled Trial"],
+          articleids: [{ idtype: "doi", value: DOI }],
+          references: [{ refsource: "Int J Gynaecol Obstet. 2026 Sep 24. doi: 10.1002/ijgo.71386.", reftype: "Expression of concern in", pmid: 42781840, note: "" }],
+        },
+      },
+    };
+    const efetchXml =
+      "<PubmedArticleSet><PubmedArticle><MedlineCitation><PMID>27578231</PMID><Article><Abstract><AbstractText>Abstract.</AbstractText></Abstract></Article>" +
+      '<CommentsCorrectionsList><CommentsCorrections RefType="ExpressionOfConcernIn"><PMID>42781840</PMID></CommentsCorrections></CommentsCorrectionsList>' +
+      "<MeshHeadingList><MeshHeading><DescriptorName>Humans</DescriptorName></MeshHeading></MeshHeadingList></MedlineCitation></PubmedArticle></PubmedArticleSet>";
+    const requested: string[] = [];
+    vi.stubGlobal("fetch", async (url: unknown) => {
+      requested.push(new URL(String(url)).pathname);
+      return new Response(String(url).includes("efetch.fcgi") ? efetchXml : JSON.stringify(esummary), { status: 200 });
+    });
+    const client = new NcbiClient({ email: "test@example.com" });
+    const cache = new LRUBackend();
+    cache.setAbstract("27578231", "Abstract.");
+
+    const out = await fetchFulltext({ id: "27578231" }, cache, client, pdf());
+    expect(out.warning).toContain("EXPRESSION OF CONCERN");
+    expect(out.warning).toContain("Linked notice: pubmed 42781840");
+    expect(requested.filter((p) => p.endsWith("efetch.fcgi"))).toEqual([]);
+    expect(cache.getSummary("27578231")).toBeNull();
+
+    const fetched = await fetchPubMed({ ids: ["27578231"] }, cache, client);
+    expect(requested.filter((p) => p.endsWith("efetch.fcgi"))).toHaveLength(1);
+    expect(fetched.articles[0]).toMatchObject({ meshHeadings: ["Humans"], corrections: [{ type: "ExpressionOfConcernIn", id: "42781840" }] });
+  });
+
   it("says nothing of an article whose records carry no flag, and nothing when it knows no record", async () => {
     const plain = await fetchFulltext({ id: "12345678" }, new LRUBackend(), fakeClient({ summary: ESUMMARY }), oa());
     expect(plain.warning).toBeUndefined();
@@ -1418,19 +1477,169 @@ describe("fetchFulltext — the record's standing, said first", () => {
     expect(looked.source).toBe("none");
     expect(looked.warning!.startsWith(`${RETRACTED_TEXT} Linked notice: europepmc PPR654321 (literature_fetch). No full text found; returned the abstract only.`)).toBe(true);
 
-    // Europe PMC has the text: no lookup is made for the flag, so the record must be in the cache already.
+    // Europe PMC has the text: the record is asked for beside it when no cache holds it, and not when one does.
     const jats = async (url: string): Promise<FetchedResource> => ({ ...htmlResource("<article/>", url), contentType: "application/xml" });
     const success = (adapter: FulltextDeps["adapter"], cache: LRUBackend) =>
       fetchFulltext({ id: "PPR123456" }, cache, fakeClient(), { fetchUrl: jats, jatsToMarkdown: async () => LONG_MARKDOWN, adapter });
     const cold = fakeEuropePmc([preprint]);
     const without = await success(cold.adapter, new LRUBackend());
     expect(without.source).toBe("europepmc");
-    expect(without.warning).toBeUndefined();
-    expect(cold.fetch).not.toHaveBeenCalled();
+    expect(without.warning!.startsWith(`${RETRACTED_TEXT} Linked notice: europepmc PPR654321 (literature_fetch).`)).toBe(true);
+    expect(cold.fetch).toHaveBeenCalledTimes(1);
     const cache = new LRUBackend();
     cache.setSummary("europepmc:PPR123456", preprint);
     expect((await success(cold.adapter, cache)).warning).toContain(RETRACTED_TEXT);
-    expect(cold.fetch).not.toHaveBeenCalled();
+    expect(cold.fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("fetchFulltext — a PMCID given alone, whose record no search cached under it", () => {
+  // Europe PMC's record of PMC12905075 (checked 2026-11-16): PMID 41695609, retracted, notice 42205309.
+  const PMCID = "PMC12905075";
+  const PMC_URL = `https://www.ebi.ac.uk/europepmc/webservices/rest/${PMCID}/fullTextXML`;
+  const retracted: Article = {
+    pmid: "41695609",
+    title: "A retracted trial",
+    authors: [],
+    journal: "SAGE Open Nurs",
+    pubDate: "2026",
+    publicationTypes: ["Retracted Publication", "research-article", "Journal Article"],
+    database: "europepmc",
+    pmcid: PMCID,
+    corrections: [{ type: "RetractionIn", id: "42205309" }],
+  };
+  const WARNING_START =
+    'RETRACTED: this record is flagged "retracted" (as in literature_search): do not use its findings as evidence. Linked notice: europepmc 42205309 (literature_fetch).';
+  const jats = (url: string): FetchedResource => ({ ...htmlResource("<article/>", url), contentType: "application/xml" });
+  /** An adapter that answers by PMCID, as Europe PMC's `PMCID:` query does, with the record under its PMID. */
+  const byPmcid = (answer: (ids: string[]) => Promise<Article[]> = async (ids) => (ids[0] === PMCID ? [retracted] : [])) => {
+    const fetch = vi.fn(answer);
+    const adapter: FulltextDeps["adapter"] = () => ({ fetch });
+    return { fetch, adapter };
+  };
+  const deps = (adapter: FulltextDeps["adapter"], fetchUrl: FulltextDeps["fetchUrl"] = async (url) => jats(url)): FulltextDeps => ({
+    fetchUrl,
+    jatsToMarkdown: async () => LONG_MARKDOWN,
+    adapter,
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("opens the warning of the text with the retraction, from Europe PMC's record of the PMCID asked for beside the text's request", async () => {
+    const europePmc = byPmcid();
+    // The text's request ends only once the record has been asked for: the two run side by side, not one after the other.
+    let asked!: () => void;
+    const recordAsked = new Promise<void>((resolve) => (asked = resolve));
+    europePmc.fetch.mockImplementation(async () => {
+      asked();
+      return [retracted];
+    });
+    const fetchUrl = vi.fn(async (url: string) => {
+      await recordAsked;
+      return jats(url);
+    });
+    // A search left the record in the cache under its PMID, where a PMCID doesn't find it.
+    const cache = new LRUBackend();
+    cache.setSummary("41695609", retracted);
+    const out = await fetchFulltext({ id: PMCID }, cache, fakeClient(), deps(europePmc.adapter, fetchUrl));
+    expect(out).toMatchObject({ source: "europepmc", format: "markdown", truncated: false });
+    expect(out.fulltext).toContain("word");
+    expect(out.warning).toBe(WARNING_START);
+    expect(fetchUrl.mock.calls.map(([url]) => url)).toEqual([PMC_URL]);
+    expect(europePmc.fetch.mock.calls.map(([ids]) => ids)).toEqual([[PMCID]]);
+  });
+
+  it("asks for the record once: the next call, with the text cached, finds it under the PMCID", async () => {
+    const europePmc = byPmcid();
+    const cache = new LRUBackend();
+    const fetchUrl = vi.fn(async (url: string) => jats(url));
+    const d = deps(europePmc.adapter, fetchUrl);
+    expect((await fetchFulltext({ id: PMCID }, cache, fakeClient(), d)).warning).toBe(WARNING_START);
+    const again = await fetchFulltext({ id: PMCID }, cache, fakeClient(), d);
+    expect(again.warning).toBe(WARNING_START);
+    expect(fetchUrl).toHaveBeenCalledTimes(1);
+    expect(europePmc.fetch).toHaveBeenCalledTimes(1);
+    // Later parts of the text are the same article: nothing is asked for them either.
+    const part = await fetchFulltext({ id: PMCID, offset: 100, maxChars: 200 }, cache, fakeClient(), d);
+    expect(part.warning).toBe(WARNING_START);
+    expect(europePmc.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks for nothing when the cache already holds a record of the PMCID, and says nothing of one without a flag", async () => {
+    const europePmc = byPmcid();
+    const cache = new LRUBackend();
+    cache.setSummary(PMCID, retracted);
+    expect((await fetchFulltext({ id: PMCID }, cache, fakeClient(), deps(europePmc.adapter))).warning).toBe(WARNING_START);
+    expect(europePmc.fetch).not.toHaveBeenCalled();
+
+    const plain = byPmcid(async () => [{ ...retracted, publicationTypes: ["Journal Article"], corrections: [] }]);
+    const out = await fetchFulltext({ id: PMCID }, new LRUBackend(), fakeClient(), deps(plain.adapter));
+    expect(out.source).toBe("europepmc");
+    expect(out.warning).toBeUndefined();
+    expect(plain.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the fallback's warning too, with the one lookup serving the DOI and the abstract", async () => {
+    const europePmc = byPmcid();
+    const out = await fetchFulltext({ id: PMCID }, new LRUBackend(), fakeClient(), {
+      ...deps(europePmc.adapter, async (url) => ({ ok: false, status: 404, contentType: "text/html", finalUrl: url })),
+      unpaywall: fakeUnpaywall(null),
+    });
+    expect(out.source).toBe("none");
+    expect(out.warning!.startsWith(`${WARNING_START} No full text found, and no abstract is available.`)).toBe(true);
+    expect(europePmc.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the text unchanged when the lookup fails or finds no record", async () => {
+    for (const adapter of [byPmcid(async () => Promise.reject(new Error("Europe PMC is down"))).adapter, byPmcid(async () => []).adapter, noRecords]) {
+      const out = await fetchFulltext({ id: PMCID }, new LRUBackend(), fakeClient(), deps(adapter));
+      expect(out).toMatchObject({ source: "europepmc", truncated: false });
+      expect(out.fulltext).toContain("word");
+      expect(out.warning).toBeUndefined();
+    }
+  });
+
+  it(`waits for a lookup that doesn't answer no longer than ${STANDING_WAIT_MS} ms from the call's start, and then returns the text without a warning`, async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const europePmc = byPmcid(() => new Promise<Article[]>(() => {}));
+    const call = fetchFulltext({ id: PMCID }, new LRUBackend(), fakeClient(), deps(europePmc.adapter));
+    let settled = false;
+    void call.then(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(STANDING_WAIT_MS - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const out = await call;
+    expect(settled).toBe(true);
+    expect(out).toMatchObject({ source: "europepmc", truncated: false });
+    expect(out.warning).toBeUndefined();
+  });
+
+  it("doesn't hold a text back for a lookup that has answered, and leaves its wait's timer cleared", async () => {
+    const set = vi.spyOn(globalThis, "setTimeout");
+    const clear = vi.spyOn(globalThis, "clearTimeout");
+    try {
+      const europePmc = byPmcid();
+      const started = Date.now();
+      const out = await fetchFulltext({ id: PMCID }, new LRUBackend(), fakeClient(), deps(europePmc.adapter));
+      expect(out.warning).toBe(WARNING_START);
+      expect(Date.now() - started).toBeLessThan(STANDING_WAIT_MS);
+      const waits = set.mock.results.filter((_, i) => set.mock.calls[i]![1] === STANDING_WAIT_MS).map((r) => r.value);
+      expect(waits).toHaveLength(1);
+      expect(clear.mock.calls.map(([timer]) => timer)).toContain(waits[0]);
+    } finally {
+      set.mockRestore();
+      clear.mockRestore();
+    }
+  });
+
+  it("takes the same trouble for a preprint id, whose record a search keeps under the same key", async () => {
+    const preprint: Article = { ...retracted, pmid: "PPR123456", pmcid: undefined };
+    const europePmc = byPmcid(async (ids) => (ids[0] === "PPR123456" ? [preprint] : []));
+    const out = await fetchFulltext({ id: "PPR123456" }, new LRUBackend(), fakeClient(), deps(europePmc.adapter));
+    expect(out.warning).toBe(WARNING_START);
+    expect(europePmc.fetch.mock.calls.map(([ids]) => ids)).toEqual([["PPR123456"]]);
   });
 });
 

@@ -25,9 +25,11 @@
  * The warning opens with the article's standing when a record of it is known and flagged retracted, a notice,
  * or with an expression of concern (see {@link standingNote}), whether or not a text was found. A record is
  * known from the cache (an earlier search or fetch, or this module's own lookups), or from a request made anyway:
- * esummary for a PMID given without a DOI, efetch for its abstract, the Europe PMC or ChinaRxiv record. No request
- * is made for it alone, so a PMID given with its DOI, a PMCID whose record no search left in the cache, and
- * the like are served without the flag. It is read from the records at every call and never stored with a
+ * esummary for a PMID given without a DOI, efetch for its abstract, the Europe PMC or ChinaRxiv record. A PMID given
+ * with its DOI is served without the flag: no request is made for it alone. A PMCID or preprint id whose record no
+ * cache holds is the one exception, as a search caches a record under its PMID, where a PMCID doesn't find it: Europe
+ * PMC's record of it is asked for beside the text's own request, which takes far longer, and the text waits for it at most
+ * STANDING_WAIT_MS. It is read from the records at every call and never stored with a
  * text: a full text cached for 30 days is served with a retraction recorded after it was cached.
  *
  * Only open-access (Europe PMC, Unpaywall) texts are cached; a proxy or direct
@@ -68,6 +70,13 @@ import { envSetting, USER_AGENT } from "./version.js";
 
 const DEFAULT_MAX_CHARS = 50_000;
 const DEFAULT_TIMEOUT_MS = 20_000;
+/**
+ * How long, counted from the start of a call, the text of a PMCID or preprint waits for Europe PMC's record of it, which is
+ * asked for beside the text's own request, for the article's standing (see {@link fetchFulltext}). On 2026-11-16 the
+ * record of PMC12905075 by PMCID answered in 50-301 ms (5 requests) and the text, `fullTextXML`, in 3.8-6.1 s (4 requests): the
+ * record is there long before the text, and only a lookup that outlasts this is left out of the warning.
+ */
+export const STANDING_WAIT_MS = 3_000;
 /** Extracted text shorter than this is treated as a paywall stub / failed extraction. */
 const MIN_FULLTEXT_CHARS = 500;
 /**
@@ -261,6 +270,25 @@ export async function fetchFulltext(
   const standing = (...more: (Article | undefined)[]): string | undefined =>
     standingNote([article, ...looked, ...more, ...cachedRecords(cache, recordId)]);
 
+  // The record of an id PubMed doesn't know, from the database that holds it. Looked up once, when first needed.
+  const adapterFor = deps.adapter ?? defaultAdapter;
+  let recordLookup: Promise<Article | undefined> | undefined;
+  const record = (): Promise<Article | undefined> =>
+    (recordLookup ??= lookUpRecord(recordId, chinarxivCorpus, cache, adapterFor).then((found) => {
+      // ChinaRxiv's is passed to the warning where it is read: its text may be served in parts.
+      if (found && !chinarxivId) looked.push(found);
+      return found;
+    }));
+
+  // A PMCID or preprint id whose record no cache holds, which the text's own request doesn't return: asked for beside
+  // that request, so that the warning can open with the article's standing. A PMCID alone never finds a record a search
+  // cached under its PMID, and a retracted paper's text is returned with nothing to say so. The text waits for the
+  // record at most STANDING_WAIT_MS from here (the record is usually there within the first half second, long before
+  // the text), and a lookup that fails or is late is left out: it goes on, and its record is kept for the next call.
+  // Not for the later parts of a text, which the first call's lookup has served.
+  const standingLookup: Promise<unknown> | undefined =
+    europePmcId && offset === 0 && cachedRecords(cache, recordId).length === 0 ? within(STANDING_WAIT_MS, record()) : undefined;
+
   // The part asked for. A proxy or direct text that goes on is kept for the next part, and any
   // other text replaces it: the next part comes from the text this one came from.
   const reading = readingsOf(cache);
@@ -288,6 +316,7 @@ export async function fetchFulltext(
   // Only open-access texts count: 0.5.0 also cached proxy and direct texts, which a persistent cache may still hold.
   const cached = cache.getFulltext(id);
   if (cached && OPEN_ACCESS_SOURCES.has(cached.source)) {
+    await standingLookup;
     return serve(cached, cached.source as Source, inputDoi ?? cachedRecords(cache, recordId).map((r) => normalizeDoi(r.doi)).find(Boolean));
   }
 
@@ -298,20 +327,10 @@ export async function fetchFulltext(
     const summaries = await client.esummary([id]);
     article = summaries.get(id) ?? null;
     // Not under the bare PMID, where search and fetch keep summaries that efetch has completed: esummary's lacks the
-    // links and MeSH, and one next to a cached abstract would keep them from asking efetch for them.
+    // MeSH headings, and one next to a cached abstract would keep them from asking efetch for them.
     if (article) cache.setSummary(ownSummaryKey(id), article);
     doi = normalizeDoi(article?.doi);
   }
-
-  // The record of an id PubMed doesn't know, from the database that holds it. Looked up once, when first needed.
-  const adapterFor = deps.adapter ?? defaultAdapter;
-  let recordLookup: Promise<Article | undefined> | undefined;
-  const record = (): Promise<Article | undefined> =>
-    (recordLookup ??= lookUpRecord(recordId, chinarxivCorpus, cache, adapterFor).then((found) => {
-      // ChinaRxiv's is passed to the warning where it is read: its text may be served in parts.
-      if (found && !chinarxivId) looked.push(found);
-      return found;
-    }));
 
   // The abstract: the landing-page check needs it, and the fallback returns it. Looked up once, when first needed.
   let abstractLookup: Promise<string | undefined> | undefined;
@@ -392,6 +411,7 @@ export async function fetchFulltext(
       if (OPEN_ACCESS_SOURCES.has(source)) {
         cache.setFulltext(id, { source, fulltext: got.fulltext, format: got.format, fetchedAt: now() });
       }
+      await standingLookup;
       return serve(got, source, doi);
     }
     return null;
@@ -441,6 +461,7 @@ export async function fetchFulltext(
   // 4. Fallback — nothing resolved. Return the abstract with what each location answered.
   const text = await abstract();
   const chinarxivRecord = chinarxivId ? await record() : undefined;
+  await standingLookup;
   const doiUnknown = misses.some((m) => m.source === "direct" && m.kind === "status" && (m.status === 404 || m.status === 410) && m.host === "doi.org");
   if (doi && doiUnknown && !text) throw errors.doiNotFound(doi);
   return noneResult(
@@ -573,9 +594,9 @@ function abstractNotes(record: Article | undefined): string[] {
 /**
  * Where the summary this module got from esummary is kept. Not the bare PMID, which search and fetch keep
  * summaries under only after efetch has completed them (pubmed.ts: "a summary is cached only once efetch has
- * succeeded for it"): esummary's has the publication types but not the correction links or MeSH (the NcbiClient
- * parses `pubtype`, not `references`), and under that key, next to an abstract cached by an earlier search, it
- * would keep search and fetch from ever asking efetch for them.
+ * succeeded for it"): esummary's has the publication types and the correction links (the NcbiClient parses `pubtype` and
+ * `references`) but not the MeSH headings, and under that key, next to an abstract cached by an earlier search, it
+ * would keep literature_fetch from ever asking efetch for them.
  */
 const ownSummaryKey = (id: string): string => `fulltext:${id}`;
 
@@ -583,11 +604,26 @@ const ownSummaryKey = (id: string): string => `fulltext:${id}`;
  * Every record of an id the cache holds, from an earlier search, fetch or lookup. PubMed searches and fetches keep
  * summaries under the bare PMID, with publication types and correction links; Europe PMC's adapter keeps its
  * records under "europepmc:<id>" (whole `core` records, with both) and this module under the bare id (a record it
- * looked up) or {@link ownSummaryKey} (esummary's, publication types only). ChinaXiv and RussiaRxiv records
+ * looked up) or {@link ownSummaryKey} (esummary's, with both and no MeSH). ChinaXiv and RussiaRxiv records
  * carry neither, and are read where they are fetched.
  */
 function cachedRecords(cache: Cache, id: string): Article[] {
   return [cache.getSummary(id), cache.getSummary(`europepmc:${id}`), cache.getSummary(ownSummaryKey(id))].filter((r): r is Article => r !== null);
+}
+
+/**
+ * The promise's value, or undefined when it fails or `ms` pass first. The promise goes on either way: whoever else
+ * reads it still gets its answer, and the timer is cleared once it settles.
+ */
+function within<T>(ms: number, promise: Promise<T>): Promise<T | undefined> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), ms);
+    const settle = (value: T | undefined): void => {
+      clearTimeout(timer);
+      resolve(value);
+    };
+    promise.then(settle, () => settle(undefined));
+  });
 }
 
 /** The notes that exist, in order, as one text; undefined when there are none. */
@@ -613,8 +649,8 @@ const NOTICE_KINDS: readonly [RegExp, string][] = [
  * Whether a record shows a flag depends on what the record has. Checked 2026-11-16: PubMed's esummary for
  * PMID 33247380 has the "Retracted Publication" type and a "Retraction in" reference (to PMID 38512453), while
  * for PMID 27578231 it has no type that marks its expression of concern, only an "Expression of concern in"
- * reference (to PMID 42781840), which NcbiClient.esummary doesn't read: from esummary alone the retraction shows
- * (by its type, without the notice's id) and the expression of concern doesn't. Europe PMC's `core` records have
+ * reference (to PMID 42781840). NcbiClient.esummary reads those references as `corrections` (see ESUMMARY_REFTYPES in
+ * pubmed.ts), so both show from esummary alone, with the notice's id. Europe PMC's `core` records have
  * "Retracted Publication" in pubTypeList and the link, with the notice's id, in commentCorrectionList.
  */
 function standingNote(records: readonly (Article | null | undefined)[]): string | undefined {
