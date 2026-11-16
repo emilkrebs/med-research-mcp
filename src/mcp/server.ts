@@ -377,13 +377,13 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     {
       title: "Fetch full text for a scientific article (multi-database)",
       description:
-        "Attempts to fetch an article's full text as markdown (plain text when format is pdf) via Europe PMC (records " +
-        "with a PMCID, and PPR preprints), Unpaywall (open access), institutional proxy (if configured), and direct DOI " +
-        "access; chinaxiv and russiarxiv records come from ChinaRxiv as a machine translation, which the warning says: " +
-        "check the original (originalUrl) before relying on a number. When none of them has it, a warning says what " +
-        "each location answered, and the record's abstract is returned instead. A long text comes in parts: truncated " +
-        "says that more follows (see offset), totalChars how long the whole text is. Use when the abstract isn't enough " +
-        "(verify dosage, sample sizes, methods).",
+        "Fetches an article's full text as markdown (plain text when format is pdf) via Europe PMC (a PMCID or PPR " +
+        "preprint), Unpaywall (open access), institutional proxy (if configured) and direct DOI access; chinaxiv and " +
+        "russiarxiv records come from ChinaRxiv as a machine translation (check originalUrl before relying on a number). " +
+        "The warning opens with RETRACTED, NOTICE or EXPRESSION OF CONCERN when the record has that flag (see " +
+        "literature_search); a retracted paper is no evidence. Without the text it says what each location answered, " +
+        "and the abstract is returned. A long text comes in parts: see truncated, totalChars, offset. Use when the " +
+        "abstract isn't enough (dosage, sample sizes, methods).",
       // Strict, like literature_search: a misnamed key errors instead of being stripped.
       inputSchema: z.object(literatureFulltextShape).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },

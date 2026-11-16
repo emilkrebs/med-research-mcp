@@ -9,7 +9,7 @@ import { NcbiClient } from "../src/core/pubmed";
 import { PROJECT_CONTACT_EMAIL } from "../src/core/version";
 import { errors, ResearchApiException } from "../src/core/errors";
 import { BlockedUrlError } from "../src/core/public-fetch";
-import type { Article } from "../src/core/types";
+import type { Article, Correction } from "../src/core/types";
 
 const DOI = "10.1000/xyz123";
 
@@ -29,7 +29,15 @@ const LONG_MARKDOWN = "# Methods\n\n" + "word ".repeat(600);
 
 /** A stand-in NCBI client. esummary/efetch are the only methods fetchFulltext touches. */
 function fakeClient(
-  opts: { summary?: Article | null; abstract?: string; onEsummary?: () => void; tool?: string } = {},
+  opts: {
+    summary?: Article | null;
+    abstract?: string;
+    /** What efetch adds to the summary, as the real one returns it. */
+    efetched?: { publicationTypes?: string[]; meshHeadings?: string[]; corrections?: Correction[] };
+    onEsummary?: () => void;
+    onEfetch?: () => void;
+    tool?: string;
+  } = {},
 ): NcbiClient {
   return {
     tool: opts.tool ?? "med-research-mcp",
@@ -40,8 +48,14 @@ function fakeClient(
       return m;
     },
     efetch: async (pmids: string[]) => {
-      const m = new Map<string, { abstract?: string; publicationTypes: string[] }>();
-      m.set(pmids[0]!, { ...(opts.abstract ? { abstract: opts.abstract } : {}), publicationTypes: [] });
+      opts.onEfetch?.();
+      const m = new Map<string, unknown>();
+      m.set(pmids[0]!, {
+        ...(opts.abstract ? { abstract: opts.abstract } : {}),
+        publicationTypes: opts.efetched?.publicationTypes ?? [],
+        meshHeadings: opts.efetched?.meshHeadings ?? [],
+        corrections: opts.efetched?.corrections ?? [],
+      });
       return m;
     },
   } as unknown as NcbiClient;
@@ -900,6 +914,25 @@ describe("fetchFulltext — ChinaXiv and RussiaRxiv by their ChinaRxiv id", () =
     expect(china.fetchText).toHaveBeenCalledTimes(2);
   });
 
+  it("opens the warning with a retraction the record's title marks, ahead of the translation note, on every part and on the fallback", async () => {
+    const retracted = { ...RECORD, title: "RETRACTED: Gastrointestinal dysfunction" };
+    const china = fakeChinaRxiv(BODY, retracted);
+    const deps: FulltextDeps = { adapter: china.adapter, maxChars: 400 };
+    let offset: number | undefined = 0;
+    let parts = 0;
+    while (offset !== undefined) {
+      const out: Awaited<ReturnType<typeof fetchFulltext>> = await fetchFulltext({ id: CN_ID, offset }, new LRUBackend(), fakeClient(), deps);
+      expect(out.warning, `part ${parts}`).toMatch(/^RETRACTED: this record is flagged "retracted".* Machine translation into English/);
+      parts += 1;
+      offset = out.nextOffset;
+    }
+    expect(parts).toBeGreaterThan(2);
+
+    const none = await fetchFulltext({ id: CN_ID }, new LRUBackend(), fakeClient(), { adapter: fakeChinaRxiv(null, retracted).adapter });
+    expect(none.source).toBe("none");
+    expect(none.warning).toMatch(/^RETRACTED: .* No full text found; returned the abstract only\./);
+  });
+
   it("returns the complete abstract, and says there is no text, when ChinaRxiv has none for the record", async () => {
     const out = await fetchFulltext({ id: CN_ID }, new LRUBackend(), fakeClient(), { adapter: fakeChinaRxiv(null, RECORD).adapter });
     expect(out).toMatchObject({ source: "none", fulltext: "The complete abstract.", truncated: false });
@@ -974,6 +1007,257 @@ describe("fetchFulltext — ChinaXiv and RussiaRxiv by their ChinaRxiv id", () =
       await expect(fetchFulltext({ id }, new LRUBackend(), fakeClient(), { adapter })).rejects.toMatchObject({ code: "NOT_FOUND" });
     }
     expect(adapter).not.toHaveBeenCalled();
+  });
+});
+
+describe("fetchFulltext — the record's standing, said first", () => {
+  const NOTICE_ID = "38512453";
+  const RETRACTED_TEXT =
+    'RETRACTED: this record is flagged "retracted" (as in literature_search): do not use its findings as evidence.';
+  /** As a search or fetch leaves it in the cache: publication types and the link to the retraction notice. */
+  const RETRACTED: Article = {
+    ...ARTICLE,
+    publicationTypes: ["Randomized Controlled Trial", "Retracted Publication"],
+    corrections: [{ type: "RetractionIn", id: NOTICE_ID }],
+  };
+  /** As esummary returns it: the types, no abstract, no links. */
+  const { abstract: _abstract, ...ESUMMARY } = ARTICLE;
+  const oa = (): FulltextDeps => ({
+    unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://oa.example/article"] }),
+    fetchUrl: async () => htmlResource("<x/>"),
+    htmlToMarkdown: async () => LONG_MARKDOWN,
+  });
+  const nothing = (): FulltextDeps => ({ unpaywall: fakeUnpaywall(null), fetchUrl: async () => paywalled(), adapter: noRecords });
+
+  it("opens the warning of a text it found when an earlier search or fetch cached the record as retracted, naming the notice", async () => {
+    const cache = new LRUBackend();
+    cache.setSummary("12345678", RETRACTED);
+    const onEsummary = vi.fn();
+    const onEfetch = vi.fn();
+    const out = await fetchFulltext({ id: "12345678" }, cache, fakeClient({ onEsummary, onEfetch }), oa());
+    expect(out).toMatchObject({ source: "unpaywall", doi: DOI });
+    expect(out.fulltext).toContain("Methods");
+    expect(out.warning).toBe(`${RETRACTED_TEXT} Linked notice: pubmed ${NOTICE_ID} (literature_fetch).`);
+    // Nothing was asked for the flag.
+    expect(onEsummary).not.toHaveBeenCalled();
+    expect(onEfetch).not.toHaveBeenCalled();
+  });
+
+  it("reads a record Europe PMC's adapter cached, under its own key, whatever the id is called", async () => {
+    // A search through the real adapter leaves its core records in the cache; no stand-in for that key.
+    const core = {
+      hitCount: 1,
+      resultList: {
+        result: [
+          {
+            id: "12345678",
+            source: "MED",
+            pmid: "12345678",
+            doi: DOI,
+            title: "Creatine and cognition",
+            pubTypeList: { pubType: ["Retracted Publication", "Randomized Controlled Trial"] },
+            commentCorrectionList: { commentCorrection: [{ source: "MED", id: NOTICE_ID, type: "Retraction in" }] },
+          },
+        ],
+      },
+    };
+    const adapter = new EuropePmcAdapter({ json: (async () => core) as AdapterHttp["json"], text: async () => "" });
+    const cache = new LRUBackend();
+    await adapter.fetch(["12345678"], cache);
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, cache, fakeClient(), oa());
+    expect(out.source).toBe("unpaywall");
+    expect(out.warning).toBe(`${RETRACTED_TEXT} Linked notice: europepmc ${NOTICE_ID} (literature_fetch).`);
+  });
+
+  /** A PDF copy: no landing page to tell from the article, so the abstract isn't needed to read it. */
+  const pdf = (): FulltextDeps => ({
+    unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://oa.example/paper.pdf"] }),
+    fetchUrl: async (url: string) => pdfResource(new Uint8Array([1]), url),
+    pdfToText: async () => "Text. " + "content ".repeat(200),
+  });
+
+  it("knows a retraction from the esummary it makes anyway for a PMID given alone, without the notice's id", async () => {
+    const cache = new LRUBackend();
+    const onEsummary = vi.fn();
+    const onEfetch = vi.fn();
+    const summary = { ...ESUMMARY, publicationTypes: ["Randomized Controlled Trial", "Retracted Publication"] };
+    const out = await fetchFulltext({ id: "12345678" }, cache, fakeClient({ summary, onEsummary, onEfetch }), pdf());
+    expect(out).toMatchObject({ source: "unpaywall", format: "pdf" });
+    expect(out.warning).toBe(RETRACTED_TEXT);
+    // The request the DOI needed, and no other.
+    expect(onEsummary).toHaveBeenCalledTimes(1);
+    expect(onEfetch).not.toHaveBeenCalled();
+    // The warning is the same from the cache, which has the text and the summary.
+    expect((await fetchFulltext({ id: "12345678" }, cache, fakeClient(), pdf())).warning).toBe(RETRACTED_TEXT);
+  });
+
+  it("gets the notice's id, and an expression of concern, from the efetch that an HTML page's abstract check makes anyway", async () => {
+    // An HTML copy is told from a landing page by the abstract, which efetch fetches when no summary has it.
+    const onEfetch = vi.fn();
+    const cache = new LRUBackend();
+    const efetched = { publicationTypes: ["Randomized Controlled Trial", "Retracted Publication"], corrections: [{ type: "RetractionIn" as const, id: NOTICE_ID }, { type: "ExpressionOfConcernIn" as const, id: "42781840" }] };
+    const out = await fetchFulltext({ id: "12345678" }, cache, fakeClient({ summary: ESUMMARY, onEfetch, efetched, abstract: "An abstract." }), oa());
+    expect(out.source).toBe("unpaywall");
+    expect(onEfetch).toHaveBeenCalledTimes(1);
+    expect(out.warning!.startsWith(`${RETRACTED_TEXT} Linked notice: pubmed ${NOTICE_ID} (literature_fetch). EXPRESSION OF CONCERN: `)).toBe(true);
+    expect(out.warning).toContain("Linked notice: pubmed 42781840");
+  });
+
+  it("says nothing of an article whose records carry no flag, and nothing when it knows no record", async () => {
+    const plain = await fetchFulltext({ id: "12345678" }, new LRUBackend(), fakeClient({ summary: ESUMMARY }), oa());
+    expect(plain.warning).toBeUndefined();
+    // A PMID given with its DOI and no cached summary, read from a PDF: no request is made for a flag, so none is known.
+    const onEsummary = vi.fn();
+    const onEfetch = vi.fn();
+    const unknown = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ onEsummary, onEfetch }), pdf());
+    expect(unknown).toMatchObject({ source: "unpaywall" });
+    expect(unknown.warning).toBeUndefined();
+    expect(onEsummary).not.toHaveBeenCalled();
+    expect(onEfetch).not.toHaveBeenCalled();
+  });
+
+  it("opens the fallback's warning with the retraction, from the efetch that fetches the abstract, and completes the cached summary", async () => {
+    const cache = new LRUBackend();
+    const client = fakeClient({
+      summary: ESUMMARY, // esummary: no flag, no links
+      abstract: "Abstract from efetch.",
+      efetched: { publicationTypes: ["Randomized Controlled Trial", "Retracted Publication"], corrections: [{ type: "RetractionIn", id: NOTICE_ID }] },
+    });
+    const out = await fetchFulltext({ id: "12345678" }, cache, client, nothing());
+    expect(out).toMatchObject({ source: "none", fulltext: "Abstract from efetch." });
+    expect(out.warning!.startsWith(`${RETRACTED_TEXT} Linked notice: pubmed ${NOTICE_ID} (literature_fetch). No full text found; returned the abstract only.`)).toBe(true);
+    // The summary search and fetch find under the bare PMID now has what efetch added, next to the abstract it cached.
+    expect(cache.getAbstract("12345678")).toBe("Abstract from efetch.");
+    expect(cache.getSummary("12345678")).toMatchObject({ corrections: [{ type: "RetractionIn", id: NOTICE_ID }], publicationTypes: ["Randomized Controlled Trial", "Retracted Publication"] });
+  });
+
+  it("knows the record from efetch alone for a PMID given with its DOI and no cached summary", async () => {
+    const cache = new LRUBackend();
+    const client = fakeClient({ abstract: "Abstract.", efetched: { corrections: [{ type: "RetractionIn", id: NOTICE_ID }] } });
+    const out = await fetchFulltext({ id: "12345678", doi: DOI }, cache, client, nothing());
+    expect(out.source).toBe("none");
+    expect(out.warning).toContain(`${RETRACTED_TEXT} Linked notice: pubmed ${NOTICE_ID}`);
+    // Not a summary: it has no title or authors, so it isn't cached as one.
+    expect(cache.getSummary("12345678")).toBeNull();
+  });
+
+  it("keeps the esummary record from the bare PMID, so that a later fetch still asks efetch for the links", async () => {
+    // Search and fetch skip efetch for a PMID with a cached summary and a cached abstract.
+    const cache = new LRUBackend();
+    cache.setAbstract("12345678", "Abstract cached by an earlier search, whose summary expired.");
+    await fetchFulltext({ id: "12345678" }, cache, fakeClient({ summary: ESUMMARY }), nothing());
+    expect(cache.getSummary("12345678")).toBeNull();
+    // It is still the fulltext call's own, and gives the DOI to the next call from the cache.
+    cache.setFulltext("12345678", { source: "europepmc", fulltext: LONG_MARKDOWN, format: "markdown", fetchedAt: Date.now() });
+    expect((await fetchFulltext({ id: "12345678" }, cache, fakeClient(), nothing())).doi).toBe(DOI);
+  });
+
+  it("reports a retraction recorded after the full text was cached, with the cached text", async () => {
+    const cache = new LRUBackend();
+    const deps = oa();
+    expect((await fetchFulltext({ id: "12345678" }, cache, fakeClient({ summary: ESUMMARY }), deps)).warning).toBeUndefined();
+    expect(cache.getFulltext("12345678")?.source).toBe("unpaywall");
+
+    // Weeks later a search finds the article retracted; the text is still the cached one.
+    cache.setSummary("12345678", RETRACTED);
+    const fetchUrl = vi.fn(async () => paywalled());
+    const later = await fetchFulltext({ id: "12345678" }, cache, fakeClient(), { ...deps, fetchUrl });
+    expect(later).toMatchObject({ source: "unpaywall", doi: DOI });
+    expect(later.fulltext).toContain("Methods");
+    expect(later.warning).toBe(`${RETRACTED_TEXT} Linked notice: pubmed ${NOTICE_ID} (literature_fetch).`);
+    expect(fetchUrl).not.toHaveBeenCalled();
+    // Nothing was stored with the text: it carries no warning of its own.
+    expect(Object.keys(cache.getFulltext("12345678")!).sort()).toEqual(["fetchedAt", "format", "fulltext", "source"]);
+  });
+
+  it("puts the retraction first, before the other things the warning says, on every part of a text", async () => {
+    const cache = new LRUBackend();
+    cache.setSummary("12345678", RETRACTED);
+    const deps: FulltextDeps = {
+      unpaywall: fakeUnpaywall(null),
+      proxyPrefix: "https://doi-org.ezproxy.example.edu",
+      fetchUrl: async (url: string) => (url.includes("ezproxy") ? htmlResource("<html/>", url) : paywalled()),
+      htmlToMarkdown: async () => LONG_MARKDOWN,
+      maxChars: 1000,
+    };
+    let offset: number | undefined = 0;
+    let parts = 0;
+    while (offset !== undefined) {
+      const out: Awaited<ReturnType<typeof fetchFulltext>> = await fetchFulltext({ id: "12345678", offset }, cache, fakeClient(), deps);
+      expect(out.source).toBe("proxy");
+      expect(out.warning, `part ${parts}`).toContain(RETRACTED_TEXT);
+      parts += 1;
+      offset = out.nextOffset;
+    }
+    expect(parts).toBeGreaterThan(2);
+
+    // And first of those the fallback says, also when no text is returned for an offset.
+    const fallback = await fetchFulltext({ id: "12345678", doi: DOI, offset: 5 }, cache, fakeClient(), nothing());
+    expect(fallback.warning!.startsWith(RETRACTED_TEXT)).toBe(true);
+    expect(fallback.warning).toContain("No full text found, so there is no part from offset 5");
+  });
+
+  it("says that a record is a notice, and which kind, and warns of an expression of concern with its notice", async () => {
+    const notice = (type: string): Article => ({ ...ARTICLE, title: "Notice", publicationTypes: [type] });
+    for (const [type, kind] of [
+      ["Retraction Notice", "a retraction notice"],
+      ["Retraction of Publication", "a retraction notice"],
+      ["Expression of Concern", "an expression of concern"],
+      ["Published Erratum", "an erratum"],
+    ] as const) {
+      const cache = new LRUBackend();
+      cache.setSummary("12345678", notice(type));
+      const out = await fetchFulltext({ id: "12345678" }, cache, fakeClient(), oa());
+      expect(out.warning, type).toBe(`NOTICE: this record is ${kind} (flag "notice"), not a study: its text is no evidence for a claim.`);
+    }
+
+    const cache = new LRUBackend();
+    cache.setSummary("12345678", { ...ARTICLE, corrections: [{ type: "ExpressionOfConcernIn", id: "42781840" }, { type: "ErratumIn" }] });
+    const out = await fetchFulltext({ id: "12345678" }, cache, fakeClient(), oa());
+    expect(out.warning).toBe(
+      'EXPRESSION OF CONCERN: one is linked to this record (flag "expression-of-concern"): read the notice before relying on its findings. Linked notice: pubmed 42781840 (literature_fetch).',
+    );
+  });
+
+  it("counts a retraction one record has for the article, and doesn't repeat itself or name a notice twice", async () => {
+    const cache = new LRUBackend();
+    // The bare key and Europe PMC's: one lacks the flag, both link the same notice.
+    cache.setSummary("12345678", { ...ARTICLE, corrections: [{ type: "ExpressionOfConcernIn", id: "42781840" }] });
+    cache.setSummary("europepmc:12345678", { ...RETRACTED, database: "europepmc", corrections: [{ type: "RetractionIn", id: NOTICE_ID }, { type: "RetractionIn", id: NOTICE_ID }] });
+    const out = await fetchFulltext({ id: "12345678" }, cache, fakeClient(), oa());
+    expect(out.warning).toBe(
+      `${RETRACTED_TEXT} Linked notice: europepmc ${NOTICE_ID} (literature_fetch). ` +
+        'EXPRESSION OF CONCERN: one is linked to this record (flag "expression-of-concern"): read the notice before relying on its findings. Linked notice: pubmed 42781840 (literature_fetch).',
+    );
+  });
+
+  it("knows the record of a preprint or PMC id from Europe PMC's lookup, on the fallback, and from a cached one on the success path", async () => {
+    const preprint: Article = {
+      ...ARTICLE,
+      pmid: "PPR123456",
+      publicationTypes: ["Preprint"],
+      database: "europepmc",
+      corrections: [{ type: "RetractionIn", id: "PPR654321" }],
+    };
+    const noText = async (url: string): Promise<FetchedResource> => ({ ok: false, status: 404, contentType: "text/html", finalUrl: url });
+    const europePmc = fakeEuropePmc([{ ...preprint, doi: undefined }]);
+    const looked = await fetchFulltext({ id: "PPR123456" }, new LRUBackend(), fakeClient(), { fetchUrl: noText, adapter: europePmc.adapter });
+    expect(looked.source).toBe("none");
+    expect(looked.warning!.startsWith(`${RETRACTED_TEXT} Linked notice: europepmc PPR654321 (literature_fetch). No full text found; returned the abstract only.`)).toBe(true);
+
+    // Europe PMC has the text: no lookup is made for the flag, so the record must be in the cache already.
+    const jats = async (url: string): Promise<FetchedResource> => ({ ...htmlResource("<article/>", url), contentType: "application/xml" });
+    const success = (adapter: FulltextDeps["adapter"], cache: LRUBackend) =>
+      fetchFulltext({ id: "PPR123456" }, cache, fakeClient(), { fetchUrl: jats, jatsToMarkdown: async () => LONG_MARKDOWN, adapter });
+    const cold = fakeEuropePmc([preprint]);
+    const without = await success(cold.adapter, new LRUBackend());
+    expect(without.source).toBe("europepmc");
+    expect(without.warning).toBeUndefined();
+    expect(cold.fetch).not.toHaveBeenCalled();
+    const cache = new LRUBackend();
+    cache.setSummary("europepmc:PPR123456", preprint);
+    expect((await success(cold.adapter, cache)).warning).toContain(RETRACTED_TEXT);
+    expect(cold.fetch).not.toHaveBeenCalled();
   });
 });
 

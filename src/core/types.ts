@@ -276,10 +276,15 @@ export interface FulltextOutput {
   /** Set when `truncated`: pass it as `offset` to read on. */
   nextOffset?: number;
   /**
-   * Set when the full text couldn't be retrieved: what each location answered, and what to do. Also set,
-   * though the text was retrieved, when the text is a machine translation (source "chinarxiv"): it says so
-   * and points to the original, as the `machine-translated` flag does for a search result. Absent for an
-   * English original.
+   * What to know before relying on `fulltext`, in this order. First, when a record of the article is known
+   * (cached from a search or fetch, or looked up on the way) and carries the flag: "RETRACTED" (flag `retracted`,
+   * with the linked notice's id when the record has it), "NOTICE" (the record is a notice about another paper) or
+   * "EXPRESSION OF CONCERN" (flag `expression-of-concern`). It is set whether or not the text was retrieved, and
+   * read from the records at each call, so a retraction recorded after a text was cached is reported with it;
+   * from a record that doesn't carry the flag, or none, nothing is said. Then, when the full text couldn't be
+   * retrieved: what each location answered, and what to do. Also, though the text was retrieved, when it is a
+   * machine translation (source "chinarxiv"): it says so and points to the original, as the `machine-translated`
+   * flag does for a search result. Absent when none applies (an English original of a record without a flag).
    */
   warning?: string;
 }
