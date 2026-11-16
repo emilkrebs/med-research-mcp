@@ -160,6 +160,12 @@ describe("createServer", () => {
     expect(query).toMatch(/drops other tags such as \[mh\].*chinaxiv and russiarxiv ignore tags.*On europepmc alone, SRC:PPR keeps preprints/);
     expect(query).toContain('"sleep apnea"[tiab]');
     expect(query).not.toContain("pubmed reads these as words");
+    // A search of a few plain words that finds nothing gets a warning naming the word that blocks it; a preprint's `updated` is its published article, in corrections.
+    expect(query).toContain("On 0 results a warning names the word whose removal gives hits; retry without it before concluding that no evidence exists.");
+    expect(query).not.toContain("If 0 results come back");
+    expect(search).toContain("a newer version (updated; for a preprint, its published article, id in corrections)");
+    // Both descriptions together were 2,338 bytes (1,485 and 853) before the id, zero-result and link sentences, and are no longer.
+    expect(Buffer.byteLength(search) + Buffer.byteLength(query)).toBeLessThanOrEqual(2338);
     await client.close();
     await server.close();
   });

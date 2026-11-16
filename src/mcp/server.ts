@@ -160,7 +160,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .min(1, "The query is empty.")
       .describe(
         "Search query: 2-5 keywords, not a sentence. Every space-separated word is required (ANDed), so each extra word " +
-          "narrows the results and a long phrase finds nothing. If 0 results come back, retry with fewer keywords before " +
+          "narrows the results. On 0 results a warning names the word whose removal gives hits; retry without it before " +
           "concluding that no evidence exists. OR (upper case) joins alternatives on pubmed and europepmc; chinaxiv and " +
           "russiarxiv read it as one more required word. " +
           "PubMed field tags apply on pubmed. europepmc reads [tiab] [ti] [au] [pt] [ta] [la] [dp] [pmid] (quote a phrase " +
@@ -264,20 +264,21 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     {
       title: "Search scientific literature (multi-database)",
       description:
-        "Search PubMed, Europe PMC, ChinaXiv and RussiaRxiv and return results with their study design. " +
+        "Search PubMed, Europe PMC, ChinaXiv and RussiaRxiv; each result has its study design. " +
         "studyType comes only from NLM PublicationType tags (PubMed, Europe PMC; assigned by NLM's automated indexing, " +
-        "with human review of some records). Records without one that names a design are 'unknown' with designTier null. " +
+        "with human review of some records). Records with none naming a design are 'unknown', designTier null. " +
         "designTier (0-5) ranks the design for 'does this intervention help?' by the OCEBM 2011 levels; it is not an " +
         "appraisal. A meta-analysis or systematic review ranks with the studies it pooled, which the tags don't say, so " +
-        "its designTier is null unless it is tagged Network Meta-Analysis (5). For a null tier, read the abstract to judge " +
-        "the design, or to see what a review pooled. flags marks retracted, notice, " +
+        "its designTier is null unless it is tagged Network Meta-Analysis (5). For a null tier, read the abstract for " +
+        "the design or for what a review pooled. flags marks retracted, notice, " +
         "protocol and editorial records (designTier 0), and warns of an expression of concern, an erratum (corrected), " +
-        "a newer version (updated), animals-not-humans indexing, preprints, letters, machine-translated text and " +
-        "machine-generated abstracts (chinaxiv, russiarxiv: check originalUrl before relying on a number). " +
+        "a newer version (updated; for a preprint, its published article, id in corrections), animals-not-humans indexing, " +
+        "preprints, letters, machine-translated text and machine-generated abstracts (chinaxiv, russiarxiv: check originalUrl " +
+        "before relying on a number). " +
         "id is the database's own id; pmid is set only for a PMID: cite any other (PPR…, CBA:…, chinaxiv-…, ru-…) " +
-        "by id with the database, or by doi/url. Results are merged, de-duplicated by DOI and sorted (see sort), a page at a time: when nextPage " +
-        "is set, more follow (see page); a record held by two databases counts twice in total. " +
-        "Use literature_fetch to get full metadata for specific ids, and literature_fulltext for the article body.",
+        "by id with the database, or by doi/url. Results are merged, de-duplicated by DOI and sorted, a page at a time: " +
+        "when nextPage is set, more follow; a record held by two databases counts twice in total. " +
+        "Use literature_fetch for full metadata of given ids, literature_fulltext for the article body.",
       // Strict, so a misnamed key (e.g. `databases`) errors instead of being stripped and silently searching PubMed.
       inputSchema: z.object(literatureSearchShape).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
