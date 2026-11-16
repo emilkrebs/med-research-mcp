@@ -130,7 +130,9 @@ export class NullCache implements Cache {
  * Europe PMC titles and abstracts carried HTML; Europe PMC full texts could end in an empty
  * References heading. Up to 0.6.0 the tables had no version in their names.
  * 2 (0.8.0): ChinaXiv and RussiaRxiv summaries held author lists as one joined string with
- * affiliation markers, and search previews cut at 500 characters carried no `abstractTruncated`.
+ * affiliation markers, and search previews cut at 500 characters carried no `abstractTruncated`;
+ * PubMed and Europe PMC summaries of earlier versions lack the `UpdateOf` links (a published article's
+ * preprint or earlier version, see `CORRECTION_TYPES` in types.ts).
  */
 export const CACHE_FORMAT_VERSION = 2;
 
