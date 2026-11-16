@@ -980,3 +980,77 @@ describe("NcbiClient contact email", () => {
     expect(params.has("email")).toBe(false);
   });
 });
+
+// esearch reports a term found in no record under errorlist.phrasesnotfound (checked live 2026-11-16, see the comment
+// on UnknownTerms in pubmed.ts): in a query of plain words it drops the word, in a quoted, tagged or ANDed one it keeps it.
+describe("esearch: words that no record contains", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** An esearch answer as the live API shaped them: the terms it found nowhere, and the query it ran. */
+  const answer = (count: number, notFound: string[], translation: string): Response =>
+    new Response(
+      JSON.stringify({
+        esearchresult: {
+          count: String(count),
+          idlist: count > 0 ? ["1", "2"] : [],
+          querytranslation: translation,
+          errorlist: { phrasesnotfound: notFound, fieldsnotfound: [] },
+        },
+      }),
+      { status: 200 },
+    );
+  const quick = () => new NcbiClient({ email: "test@example.com", apiKey: "test-key" });
+
+  it("warns that a word was left out of a plain query, whose records come from the rest of it", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer(71644, ["qzxvbnmk"], '"sleep apnoea"[All Fields] OR "sleep apnea"[All Fields]')));
+    const out = await quick().esearch({ query: "sleep apnea qzxvbnmk" });
+    expect(out.count).toBe(71644);
+    expect(out.warning).toBe('PubMed ignored "qzxvbnmk": no record contains it, so it searched without it.');
+  });
+
+  it("names the words, also when the rest of the query found nothing", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer(0, ["qzxvbnmk", "wrtyplkj"], '"vitamin"[All Fields] AND "tirzepatide"[All Fields]')));
+    const out = await quick().esearch({ query: "vitamin tirzepatide qzxvbnmk wrtyplkj" });
+    expect(out.warning).toBe('PubMed ignored "qzxvbnmk" and "wrtyplkj": no record contains them, so it searched without them.');
+  });
+
+  it("names the term that blocks a search that kept it, when the search found nothing", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer(0, ["fooxx"], "sleep apnea fooxx[tiab]")));
+    expect((await quick().esearch({ query: "sleep apnea fooxx[tiab]" })).warning).toBe('No PubMed record contains "fooxx".');
+    vi.stubGlobal("fetch", vi.fn(async () => answer(0, ["qzxvbnmk", "wrtyplkj"], "qzxvbnmk wrtyplkj")));
+    expect((await quick().esearch({ query: "qzxvbnmk wrtyplkj" })).warning).toBe('No PubMed record contains "qzxvbnmk" or "wrtyplkj".');
+  });
+
+  it("says nothing of a kept term in a search that found records (a NOT operand), or without the query it ran", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer(38542, ["qzxvbnmk"], "metformin NOT qzxvbnmk")));
+    expect(await quick().esearch({ query: "metformin NOT qzxvbnmk" })).not.toHaveProperty("warning");
+    // No querytranslation: whether the term was left out is unknown.
+    const bare = { esearchresult: { count: "5", idlist: ["1"], errorlist: { phrasesnotfound: ["x"] } } };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(bare), { status: 200 })));
+    expect(await quick().esearch({ query: "y x" })).not.toHaveProperty("warning");
+  });
+
+  it("keeps the warning on a repeated search, and next to the cap warning", async () => {
+    const fetchMock = vi.fn(async () => answer(20_000, ["qzxvbnmk"], '"sleep"[All Fields]'));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const sentence = 'PubMed ignored "qzxvbnmk": no record contains it, so it searched without it.';
+    expect((await client.esearch({ query: "sleep qzxvbnmk" })).warning).toBe(sentence);
+    expect((await client.esearch({ query: "sleep qzxvbnmk" })).warning).toBe(sentence);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const capped = await client.esearch({ query: "sleep qzxvbnmk", maxResults: 50, page: 200 });
+    expect(capped.warning).toMatch(/^PubMed serves only the first 9,999 records .* PubMed ignored "qzxvbnmk"/);
+  });
+
+  it("reaches the adapter's result and the standalone search's warnings", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer(0, ["fooxx"], "sleep apnea fooxx[tiab]")));
+    expect(await new PubMedAdapter(quick()).search({ query: "sleep apnea fooxx[tiab]" })).toMatchObject({
+      count: 0,
+      warning: 'No PubMed record contains "fooxx".',
+    });
+    const out = await searchPubMed({ query: "sleep apnea fooxx[tiab]" }, new LRUBackend(), quick());
+    expect(out.warnings).toContain('No PubMed record contains "fooxx".');
+  });
+});

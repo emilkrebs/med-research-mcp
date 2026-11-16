@@ -167,6 +167,56 @@ interface PmidList {
   count: number;
   pmids: string[];
   depth: number;
+  /** Words PubMed found in no record, when there are any (see {@link UnknownTerms}). */
+  unknown?: UnknownTerms;
+}
+
+/**
+ * Terms esearch reports under `errorlist.phrasesnotfound`: found in no PubMed record. Checked 2026-11-16 on
+ * 34 queries; none of ten real ones (BRCA1, COVID-19, 5-HT, vitamin D3, hs-CRP, ...) had a false report. Two cases:
+ * in a query of plain words esearch drops such a word and searches the rest (`sleep apnea qzxvbnmk` found 71,644
+ * records, as `sleep apnea` does, and its `querytranslation` leaves the word out), so the word is `ignored`;
+ * in a quoted phrase, a field-tagged term (`fooxx[tiab]`), an `AND` operand, or a query of unknown words only
+ * (`qzxvbnmk wrtyplkj`), the term stays in the query (`querytranslation` has it) and the search finds nothing:
+ * it is `blocking`. A misspelling that some record contains is not reported (`tirzepatid obesity` found 4 records).
+ */
+interface UnknownTerms {
+  ignored: string[];
+  blocking: string[];
+}
+
+/** `"a"`, `"a" and "b"`, `"a", "b" and "c"`. */
+function quotedList(terms: string[], joiner = "and"): string {
+  const quoted = terms.map((t) => `"${t}"`);
+  return quoted.length < 2 ? quoted.join("") : `${quoted.slice(0, -1).join(", ")} ${joiner} ${quoted.at(-1)}`;
+}
+
+/** The terms esearch reported as found in no record, sorted into ignored and blocking by `querytranslation`; undefined when there are none. */
+function unknownTerms(reported: unknown, translation: string | undefined): UnknownTerms | undefined {
+  const terms = toArray(reported as string[] | undefined).filter((t): t is string => typeof t === "string" && t.trim() !== "");
+  // Without the translation we can't tell whether the term was left out, so we say nothing.
+  if (terms.length === 0 || !translation) return undefined;
+  const kept = translation.toLowerCase();
+  const unknown: UnknownTerms = { ignored: [], blocking: [] };
+  for (const term of terms) (kept.includes(term.toLowerCase()) ? unknown.blocking : unknown.ignored).push(term);
+  return unknown;
+}
+
+/**
+ * What the unknown terms mean for a search, in a sentence: a word PubMed left out, always (the records come from the
+ * rest of the query); a term it kept, only when the search found nothing (otherwise it was a NOT or OR operand, which a
+ * missing term doesn't harm).
+ */
+function unknownWarning(unknown: UnknownTerms | undefined, count: number): string | undefined {
+  if (!unknown) return undefined;
+  const { ignored, blocking } = unknown;
+  const sentences: string[] = [];
+  if (ignored.length > 0) {
+    const them = ignored.length > 1 ? "them" : "it";
+    sentences.push(`PubMed ignored ${quotedList(ignored)}: no record contains ${them}, so it searched without ${them}.`);
+  }
+  if (blocking.length > 0 && count === 0) sentences.push(`No PubMed record contains ${quotedList(blocking, "or")}.`);
+  return sentences.length > 0 ? sentences.join(" ") : undefined;
 }
 
 export class NcbiClient {
@@ -235,7 +285,9 @@ export class NcbiClient {
    * With `sort: "date"`, the PMIDs are those first published last, newest first (see
    * {@link newest}). An identical search within `searchTtlMs` returns the same PMIDs, and
    * its later pages are cut from the same list. A search matching more than PubMed's first 9,999
-   * records gets a warning from the page that reaches the 9,999th on, and no PMIDs past it.
+   * records gets a warning from the page that reaches the 9,999th on, and no PMIDs past it. A word
+   * that no record contains gets one on every page (see {@link UnknownTerms}), as esearch leaves such a
+   * word out of a plain query without saying so in the records it returns.
    */
   async esearch(input: SearchInput): Promise<{ count: number; pmids: string[]; more: boolean; warning?: string }> {
     const { offset, size } = pageWindow(input);
@@ -260,11 +312,15 @@ export class NcbiClient {
     }
     const end = Math.min(offset + size, ESEARCH_LIMIT);
     const list = await this.searchList(key, end, (known) => (byDate ? this.newest(params, end, offset, known) : this.relevant(params, end, known)));
+    const warnings = [
+      ...(offset + size >= ESEARCH_LIMIT && list.count > ESEARCH_LIMIT ? [CAP_WARNING] : []),
+      ...[unknownWarning(list.unknown, list.count)].filter((w) => w !== undefined),
+    ];
     return {
       count: list.count,
       pmids: list.pmids.slice(offset, end),
       more: list.count > end && end < ESEARCH_LIMIT,
-      ...(offset + size >= ESEARCH_LIMIT && list.count > ESEARCH_LIMIT ? { warning: CAP_WARNING } : {}),
+      ...(warnings.length > 0 ? { warning: warnings.join(" ") } : {}),
     };
   }
 
@@ -304,10 +360,16 @@ export class NcbiClient {
     const block = new URLSearchParams(params);
     if (from > 0) block.set("retstart", String(from));
     block.set("retmax", String(to - from));
-    const { count, pmids } = await this.runEsearch(block);
+    const { count, pmids, unknown } = await this.runEsearch(block);
     const have = known?.pmids ?? [];
     const seen = new Set(have);
-    return { count, pmids: [...have, ...pmids.filter((pmid) => !seen.has(pmid))], depth: Math.min(count, to) };
+    const found = known?.unknown ?? unknown;
+    return {
+      count,
+      pmids: [...have, ...pmids.filter((pmid) => !seen.has(pmid))],
+      depth: Math.min(count, to),
+      ...(found ? { unknown: found } : {}),
+    };
   }
 
   /**
@@ -368,12 +430,22 @@ export class NcbiClient {
     // Otherwise a larger pool could still bring in newer records than all but the first finalDepth of this one.
     const whole = issued.count <= pool || pool === ESEARCH_LIMIT;
     const depth = whole ? pmids.length : Math.max(kept.length, finalDepth(pool));
-    return { count: issued.count, pmids, depth };
+    const notFound = known?.unknown ?? issued.unknown;
+    return { count: issued.count, pmids, depth, ...(notFound ? { unknown: notFound } : {}) };
   }
 
-  private async runEsearch(params: URLSearchParams): Promise<{ count: number; pmids: string[] }> {
+  private async runEsearch(params: URLSearchParams): Promise<{ count: number; pmids: string[]; unknown?: UnknownTerms }> {
     const body = await this.request("esearch.fcgi", params);
-    let data: { esearchresult?: { count?: string; idlist?: string[]; ERROR?: string }; ERROR?: string };
+    let data: {
+      esearchresult?: {
+        count?: string;
+        idlist?: string[];
+        querytranslation?: string;
+        errorlist?: { phrasesnotfound?: unknown };
+        ERROR?: string;
+      };
+      ERROR?: string;
+    };
     try {
       data = JSON.parse(body) as typeof data;
     } catch (err) {
@@ -388,7 +460,8 @@ export class NcbiClient {
     if (count > this.broadThreshold) {
       throw errors.queryTooBroad(count);
     }
-    return { count, pmids: toArray(data.esearchresult?.idlist) };
+    const unknown = unknownTerms(data.esearchresult?.errorlist?.phrasesnotfound, data.esearchresult?.querytranslation);
+    return { count, pmids: toArray(data.esearchresult?.idlist), ...(unknown ? { unknown } : {}) };
   }
 
   /** Fetches article metadata (no abstract). Preserves nothing about order. */
