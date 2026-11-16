@@ -140,7 +140,14 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   //   /fields; europepmc.org's own help pages answered 403 (Cloudflare) from here, so the syntax is as the API behaves.
   // - PubMed reads that syntax as words: esearch turned TITLE:melatonin into "title"[All Fields] AND melatonin (77 hits,
   //   not 25,414 title hits) and SRC:PPR into "SRC"[All Fields] AND ("plan pract res"[Journal] OR … OR "ppr"[All Fields]),
-  //   0 hits. So the syntax is for a search of europepmc alone; with pubmed in it, it empties that half.
+  //   0 hits. So Europe PMC's own syntax is for a search of europepmc alone; with pubmed in it, it empties that half.
+  // - Europe PMC reads PubMed tags since toEuropePmcQuery (util.ts; the counts of each tag are in its comment). Bare words
+  //   `tirzepatide apnea` find 1,560 records there; tirzepatide[tiab] AND apnea[tiab] is sent as TITLE_ABS:tirzepatide AND
+  //   TITLE_ABS:apnea, 142 (PubMed: 144). Translated: [tiab] [ti] [au] [pt] [ta] [la] [dp] [pmid]. Removed: every other tag, [mh]
+  //   among them ("Sleep Apnea Syndromes"[mh] 50,220 records in PubMed, KW:"Sleep Apnea Syndromes" 17,963: Europe PMC has no
+  //   MeSH field and does not explode a heading). A tag after several unquoted words is removed too: PubMed searches them as a
+  //   phrase only if its phrase index holds it (`sleep apnea[tiab]` is the phrase, `creatine cognition[tiab]` is creatine
+  //   mapped to MeSH AND "cognition"[Title/Abstract]), hence the advice to quote a phrase. The ChinaRxiv adapter sends words only.
   // - Size: for four generic queries, ten PubMed results came to 25,115-28,106 characters of JSON (PubMed's own answers run
   //   through searchLiterature), 12,760-13,330 with abstractMaxChars 600 and 6,577-7,154 with 0. The abstract text alone
   //   was 18,404-21,545 characters, about 2,000 per record.
@@ -155,10 +162,9 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
           "narrows the results and a long phrase finds nothing. If 0 results come back, retry with fewer keywords before " +
           "concluding that no evidence exists. OR (upper case) joins alternatives on pubmed and europepmc; chinaxiv and " +
           "russiarxiv read it as one more required word. " +
-          "PubMed field tags ([tiab], [mesh], [au]) apply to the pubmed database; for other databases they are removed, " +
-          "leaving their words to match anywhere. " +
-          "On europepmc alone (pubmed reads these as words), TITLE_ABS:word limits one word to title and abstract " +
-          "(also TITLE:, ABSTRACT:) and SRC:PPR keeps preprints. " +
+          "PubMed field tags apply on pubmed. europepmc reads [tiab] [ti] [au] [pt] [ta] [la] [dp] [pmid] (quote a phrase " +
+          'before its tag: "sleep apnea"[tiab]) and drops other tags such as [mh], keeping the words they tag; chinaxiv ' +
+          "and russiarxiv ignore tags. On europepmc alone, SRC:PPR keeps preprints. " +
           "The query is sent to third-party databases: never include names, dates of birth, record numbers or other details that " +
           "identify a person; describe the condition or intervention instead.",
       ),

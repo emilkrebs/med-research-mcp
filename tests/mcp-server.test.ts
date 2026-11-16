@@ -144,7 +144,14 @@ describe("createServer", () => {
     expect(prop("literature_search", "database")).toContain("it searches full text");
     expect(prop("literature_search", "database")).toContain("mostly mathematics, physics and chemistry; almost no medicine");
     expect(prop("literature_search", "database")).not.toContain("Soviet-era papers)");
-    expect(prop("literature_search", "query")).toMatch(/On europepmc alone \(pubmed reads these as words\).*TITLE_ABS:word.*SRC:PPR/);
+    // The query description says which PubMed tags europepmc reads, that it drops the others, that ChinaXiv and RussiaRxiv ignore them,
+    // and that Europe PMC's own SRC:PPR is for europepmc alone. Every byte of it is paid on every model call: it was 865 bytes before the tags were translated.
+    const query = prop("literature_search", "query");
+    expect(Buffer.byteLength(query)).toBeLessThanOrEqual(865);
+    expect(query).toMatch(/europepmc reads \[tiab\] \[ti\] \[au\] \[pt\] \[ta\] \[la\] \[dp\] \[pmid\]/);
+    expect(query).toMatch(/drops other tags such as \[mh\].*chinaxiv and russiarxiv ignore tags.*On europepmc alone, SRC:PPR keeps preprints/);
+    expect(query).toContain('"sleep apnea"[tiab]');
+    expect(query).not.toContain("pubmed reads these as words");
     await client.close();
     await server.close();
   });
