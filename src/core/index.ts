@@ -12,7 +12,7 @@ export type { NcbiConfig } from "./pubmed.js";
 export { searchLiterature, fetchLiterature } from "./literature.js";
 
 export { ADAPTERS, adaptersFor, getAdapters, getAdapter } from "./adapters/registry.js";
-export type { DatabaseAdapter } from "./adapters/types.js";
+export type { AdapterSearchResult, DatabaseAdapter, EmptyReason } from "./adapters/types.js";
 export { PubMedAdapter } from "./adapters/pubmed.js";
 export { EuropePmcAdapter, parseEuropePmc } from "./adapters/europepmc.js";
 export { ChinaRXivAdapter, parsePapers as parseChinaRXiv } from "./adapters/chinarxiv.js";
@@ -44,6 +44,7 @@ export type {
   Article as NcbiArticle,
   GradedArticle,
   DateRange,
+  SearchFilters,
   SearchInput,
   SearchOutput,
   FetchInput,

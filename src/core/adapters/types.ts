@@ -11,6 +11,25 @@
 import type { Cache } from "../cache.js";
 import type { Article, SearchInput } from "../types.js";
 
+/**
+ * Why a database found nothing, when its own query rules likely explain it. Databases that report the same
+ * reason in one search share a single warning (see `searchLiterature`), so that a reader is not told twice.
+ * `every-word`: the database returns only records containing every word of the query, and reads AND and OR as words.
+ */
+export type EmptyReason = "every-word";
+
+/** What {@link DatabaseAdapter.search} returns. */
+export interface AdapterSearchResult {
+  count: number;
+  ids: string[];
+  /** Set when the database's own query rules likely explain an empty result. */
+  warning?: string;
+  /** The cause behind `warning`, for databases to be grouped by; absent for a warning that is the database's alone. */
+  emptyReason?: EmptyReason;
+  /** False when no later page can be served although `count` goes on; absent, `count` decides. */
+  more?: boolean;
+}
+
 export interface DatabaseAdapter {
   /** Unique identifier — "pubmed", "europepmc", "chinaxiv", "russiarxiv". */
   id: string;
@@ -27,7 +46,7 @@ export interface DatabaseAdapter {
    * and a warning when the database's own query rules likely explain an empty result. `more` is
    * false when no later page can be served although `count` goes on; absent, `count` decides.
    */
-  search(input: SearchInput): Promise<{ count: number; ids: string[]; warning?: string; more?: boolean }>;
+  search(input: SearchInput): Promise<AdapterSearchResult>;
   /**
    * Fetch full metadata ({@link Article}[]) for one or more ids. Order is not
    * guaranteed; ids with no result are simply absent from the returned array.

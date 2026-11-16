@@ -184,6 +184,8 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
             warning:
               `${this.name} matched nothing: it returns only records containing every word of the query and treats ` +
               `AND/OR as words. Try one or two key words.`,
+            // Both corpora say this at once in a search of both: searchLiterature merges the two warnings.
+            emptyReason: "every-word" as const,
           }
         : { count, ids };
     if (pageIndex > 0 && known.total !== undefined && offset >= known.total) return result(known.total, []);

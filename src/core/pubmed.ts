@@ -575,7 +575,8 @@ function applyEfetch(article: Article, data: EfetchData): void {
 }
 
 /**
- * Search PubMed and return results classified from their NLM metadata.
+ * Search PubMed and return results classified from their NLM metadata. Unlike `searchLiterature`'s, the
+ * result names no `databases` and echoes no `filters`: it is always PubMed's.
  *
  * @param cache reused across calls to avoid re-fetching summaries/abstracts.
  * @param client injectable NCBI client; defaults to one configured from env.
@@ -584,7 +585,7 @@ export async function searchPubMed(
   input: SearchInput,
   cache: Cache = new LRUBackend(),
   client: NcbiClient = new NcbiClient(),
-): Promise<SearchOutput> {
+): Promise<Omit<SearchOutput, "databases">> {
   // As in searchLiterature: what the filter leaves out is said whatever PubMed returns.
   const warnings = filterWarnings(input.studyTypes, input.minDesignTier);
   if (input.page !== undefined && (!Number.isInteger(input.page) || input.page < 1)) {
@@ -685,14 +686,14 @@ export async function searchPubMed(
 
 /**
  * Fetch full metadata + abstracts for one or more PMIDs.
- * Pure data tool — no grading. The calling agent does its own
- * analysis on the returned NcbiArticle objects.
+ * Pure data tool — no grading, unlike `fetchLiterature`, which classifies what its adapters fetch with this.
+ * The calling agent does its own analysis on the returned NcbiArticle objects.
  */
 export async function fetchPubMed(
   input: FetchInput,
   cache: Cache = new LRUBackend(),
   client: NcbiClient = new NcbiClient(),
-): Promise<FetchOutput> {
+): Promise<Omit<FetchOutput, "articles"> & { articles: Article[] }> {
   const warnings: string[] = [];
   const allArticles = new Map<string, Article>();
   const missing: string[] = [];

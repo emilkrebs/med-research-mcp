@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { searchLiterature, fetchLiterature } from "../src/core/literature";
 import { adaptersFor } from "../src/core/adapters/registry";
+import { ChinaRXivAdapter } from "../src/core/adapters/chinarxiv";
+import { SovietRxivAdapter } from "../src/core/adapters/russiarxiv";
+import type { AdapterHttp } from "../src/core/adapters/http";
 import { cleanDoi, dateKey, doiKey, isoDateBound, pageWindow, withoutPubMedTags } from "../src/core/adapters/util";
 import { errors } from "../src/core/errors";
 import { LRUBackend } from "../src/core/cache";
@@ -164,16 +167,15 @@ describe("searchLiterature fan-out", () => {
     expect(out.warnings?.[0]).toContain("psilocybin glucose metabolism glycemic");
   });
 
-  it("doesn't add the zero warning when a design filter, a date range or a failed database explains it", async () => {
+  it("doesn't add the generic zero warning when a design filter or a failed database explains it", async () => {
     const filtered = await searchLiterature(
       { query: "x", database: "europepmc", studyTypes: ["randomized-controlled-trial"] },
       new LRUBackend(),
       [fakeAdapter("europepmc", [], 0)],
     );
     expect(filtered.warnings ?? []).not.toContainEqual(expect.stringContaining("not evidence of absence"));
-
-    const dated = await searchLiterature({ query: "x y", dateRange: { from: "2020" } }, new LRUBackend(), [fakeAdapter("pubmed", [], 0)]);
-    expect(dated.warnings).toBeUndefined();
+    const tiered = await searchLiterature({ query: "x y", database: "europepmc", minDesignTier: 4 }, new LRUBackend(), [fakeAdapter("europepmc", [], 0)]);
+    expect(tiered.warnings ?? []).not.toContainEqual(expect.stringContaining("not evidence of absence"));
 
     const failing: DatabaseAdapter = {
       id: "boom",
@@ -189,6 +191,343 @@ describe("searchLiterature fan-out", () => {
     ]);
     expect(partial.warnings ?? []).not.toContainEqual(expect.stringContaining("not evidence of absence"));
     expect(partial.warnings?.some((w) => w.includes("Boom DB"))).toBe(true);
+  });
+
+  it("warns that a zero under a dateRange names the range and is not evidence of absence", async () => {
+    // Two models read 0 results under a dateRange, with no warning and no trace of the filter in the result,
+    // as the filter having been ignored.
+    const run = (dateRange: { from?: string; to?: string }, query = "psilocybin glucose") =>
+      searchLiterature({ query, dateRange }, new LRUBackend(), [fakeAdapter("pubmed", [], 0)]);
+    const both = await run({ from: "2020", to: "2021-06" });
+    expect(both.warnings).toEqual([
+      'No record matched the query "psilocybin glucose" within dateRange 2020 to 2021-06. This is not evidence of absence: retry without the dateRange, or with fewer keywords.',
+    ]);
+    expect((await run({ from: "2020" })).warnings?.[0]).toContain("within dateRange from 2020.");
+    expect((await run({ to: "2021" })).warnings?.[0]).toContain("within dateRange up to 2021.");
+    // One warning, not this one and the generic one.
+    expect(both.warnings).toHaveLength(1);
+    // A one-word query has no keywords to drop.
+    expect((await run({ from: "2020" }, "psilocybin")).warnings?.[0]).toContain("or with a synonym");
+    // An empty dateRange is no filter.
+    const none = await run({});
+    expect(none.warnings).toEqual([expect.stringContaining("No record matched every term of the query")]);
+    expect(none.warnings?.[0]).not.toContain("dateRange");
+  });
+
+  it("still warns about a dateRange zero when a design filter is set, and not when records were found or a database failed", async () => {
+    const filtered = await searchLiterature(
+      { query: "x y", database: "europepmc", studyTypes: ["randomized-controlled-trial"], dateRange: { from: "2020" } },
+      new LRUBackend(),
+      [fakeAdapter("europepmc", [], 0)],
+    );
+    expect(filtered.warnings).toEqual([expect.stringContaining("within dateRange from 2020")]);
+
+    const found = await searchLiterature({ query: "x y", dateRange: { from: "2020" } }, new LRUBackend(), [fakeAdapter("pubmed", [pubmedMeta])]);
+    expect(found.warnings).toBeUndefined();
+
+    const failing: DatabaseAdapter = { id: "boom", name: "Boom DB", search: async () => { throw new Error("upstream 503"); }, fetch: async () => [] };
+    const partial = await searchLiterature({ query: "x y", database: "all", dateRange: { from: "2020" } }, new LRUBackend(), [fakeAdapter("pubmed", [], 0), failing]);
+    expect(partial.warnings ?? []).not.toContainEqual(expect.stringContaining("not evidence of absence"));
+  });
+
+  it("tells a one-word query to try a synonym or another spelling, not to use fewer keywords", async () => {
+    const one = await searchLiterature({ query: "psilocybin", database: "pubmed" }, new LRUBackend(), [fakeAdapter("pubmed", [], 0)]);
+    expect(one.warnings).toEqual([
+      'No record matched the query "psilocybin". This is not evidence of absence: try a synonym or another spelling, or another database.',
+    ]);
+    // Several databases searched: no other one to suggest from here.
+    const several = await searchLiterature({ query: "psilocybin", database: "all" }, new LRUBackend(), [fakeAdapter("pubmed", [], 0), fakeAdapter("europepmc", [], 0)]);
+    expect(several.warnings).toEqual([
+      'No record matched the query "psilocybin". This is not evidence of absence: try a synonym or another spelling.',
+    ]);
+    expect(JSON.stringify(one.warnings) + JSON.stringify(several.warnings)).not.toContain("fewer");
+    // Surrounding whitespace doesn't make two words.
+    const padded = await searchLiterature({ query: " psilocybin ", database: "pubmed" }, new LRUBackend(), [fakeAdapter("pubmed", [], 0)]);
+    expect(padded.warnings?.[0]).toContain("try a synonym");
+  });
+
+  describe("what the result says was searched", () => {
+    it("lists the databases searched, in order, and the filters given", async () => {
+      const out = await searchLiterature(
+        { query: "x", database: "all", dateRange: { from: "2020", to: "2021" }, studyTypes: ["randomized-controlled-trial"], minDesignTier: 3 },
+        new LRUBackend(),
+        [fakeAdapter("pubmed", [pubmedMeta]), fakeAdapter("europepmc", [epmcRct])],
+      );
+      expect(out.databases).toEqual(["pubmed", "europepmc"]);
+      expect(out.filters).toEqual({ dateRange: { from: "2020", to: "2021" }, studyTypes: ["randomized-controlled-trial"], minDesignTier: 3 });
+    });
+
+    it("holds only the filters the caller gave, and none when they gave none", async () => {
+      const search = (input: Partial<SearchInput>) => searchLiterature({ query: "x", ...input }, new LRUBackend(), [fakeAdapter("pubmed", [pubmedMeta])]);
+      expect(await search({})).not.toHaveProperty("filters");
+      expect(await search({ dateRange: { to: "2021" } })).toMatchObject({ filters: { dateRange: { to: "2021" } } });
+      expect((await search({ dateRange: { to: "2021" } })).filters?.dateRange).not.toHaveProperty("from");
+      expect(await search({ minDesignTier: 0 })).toMatchObject({ filters: { minDesignTier: 0 } });
+      // An empty dateRange or studyTypes list is no filter, as the search itself reads them.
+      expect(await search({ dateRange: {}, studyTypes: [] })).not.toHaveProperty("filters");
+      // Not the sort, the language or the page size: those are not filters.
+      expect(await search({ sort: "date", language: "ru", maxResults: 5 })).not.toHaveProperty("filters");
+    });
+
+    it("leaves out a database skipped for lack of design metadata, and keeps one that failed", async () => {
+      const china: DatabaseAdapter = { ...fakeAdapter("chinaxiv", [chinaxivRct]), designMetadata: false };
+      const filtered = await searchLiterature({ query: "x", database: "all", studyTypes: ["randomized-controlled-trial"] }, new LRUBackend(), [
+        fakeAdapter("europepmc", [epmcRct]),
+        china,
+      ]);
+      expect(filtered.databases).toEqual(["europepmc"]);
+
+      const failing: DatabaseAdapter = { id: "boom", name: "Boom DB", search: async () => { throw new Error("upstream 503"); }, fetch: async () => [] };
+      const partial = await searchLiterature({ query: "x", database: "all" }, new LRUBackend(), [fakeAdapter("pubmed", [pubmedMeta]), failing]);
+      expect(partial.databases).toEqual(["pubmed", "boom"]);
+      expect(partial.warnings).toEqual([expect.stringContaining("Boom DB search failed")]);
+    });
+
+    it("says so on the early returns that search nothing too", async () => {
+      const never = await searchLiterature({ query: "x", studyTypes: ["cohort"], dateRange: { from: "2020" } }, new LRUBackend(), [fakeAdapter("pubmed", [pubmedMeta])]);
+      expect(never).toMatchObject({ articles: [], databases: [], filters: { studyTypes: ["cohort"], dateRange: { from: "2020" } } });
+
+      const china: DatabaseAdapter = { ...fakeAdapter("chinaxiv", [chinaxivRct]), designMetadata: false };
+      const skipped = await searchLiterature({ query: "x", database: "chinaxiv", minDesignTier: 4 }, new LRUBackend(), [china]);
+      expect(skipped).toMatchObject({ articles: [], databases: [], filters: { minDesignTier: 4 } });
+      expect(skipped.warnings?.some((w) => w.startsWith("chinaxiv not searched"))).toBe(true);
+    });
+  });
+
+  describe("total across several databases", () => {
+    // Two databases hold the same records: the sum counted each twice, 4 for 2 articles.
+    const shared: NcbiArticle[] = [pubmedMeta, { ...epmcRct, pmid: "2", doi: "10.1234/second" }];
+    const copies = (id: string): NcbiArticle[] => shared.map((a) => ({ ...a, pmid: `${id}-${a.pmid}` }));
+
+    it("counts a record held by two databases twice, and says how many each database reported", async () => {
+      const out = await searchLiterature({ query: "x", database: "all" }, new LRUBackend(), [
+        fakeAdapter("pubmed", copies("p")),
+        fakeAdapter("europepmc", copies("e")),
+      ]);
+      expect(out.articles).toHaveLength(2);
+      expect(out.total).toBe(4);
+      expect(out.totalByDatabase).toEqual({ pubmed: 2, europepmc: 2 });
+    });
+
+    it("gives each database's own count, in the order searched", async () => {
+      const out = await searchLiterature({ query: "x", database: "all" }, new LRUBackend(), [
+        fakeAdapter("pubmed", [pubmedMeta], 100),
+        fakeAdapter("europepmc", [epmcRct], 7),
+        fakeAdapter("chinaxiv", [], 0),
+      ]);
+      expect(out.totalByDatabase).toEqual({ pubmed: 100, europepmc: 7, chinaxiv: 0 });
+      expect(Object.keys(out.totalByDatabase!)).toEqual(["pubmed", "europepmc", "chinaxiv"]);
+      expect(out.total).toBe(107);
+    });
+
+    it("leaves a failed database out of it, and sets none for a single database", async () => {
+      const failing: DatabaseAdapter = { id: "boom", name: "Boom DB", search: async () => { throw new Error("upstream 503"); }, fetch: async () => [] };
+      const partial = await searchLiterature({ query: "x", database: "all" }, new LRUBackend(), [fakeAdapter("pubmed", [pubmedMeta], 9), failing]);
+      expect(partial.totalByDatabase).toEqual({ pubmed: 9 });
+      expect(partial.totalByDatabase).not.toHaveProperty("boom");
+
+      const single = await searchLiterature({ query: "x" }, new LRUBackend(), [fakeAdapter("pubmed", [pubmedMeta], 9)]);
+      expect(single.total).toBe(9);
+      expect(single).not.toHaveProperty("totalByDatabase");
+    });
+
+    it("sets none when a design filter left a single database to search", async () => {
+      const china: DatabaseAdapter = { ...fakeAdapter("chinaxiv", [chinaxivRct]), designMetadata: false };
+      const out = await searchLiterature({ query: "x", database: "all", studyTypes: ["randomized-controlled-trial"] }, new LRUBackend(), [fakeAdapter("europepmc", [epmcRct], 7), china]);
+      expect(out.total).toBe(7);
+      expect(out).not.toHaveProperty("totalByDatabase");
+    });
+  });
+
+  describe("one warning when several databases match nothing for the same reason", () => {
+    const sentence = "matched nothing: it returns only records containing every word of the query and treats AND/OR as words. Try one or two key words.";
+    /** An adapter that found nothing and says why, like the ChinaRxiv ones. */
+    const silent = (id: string, name: string, emptyReason?: "every-word"): DatabaseAdapter => ({
+      ...fakeAdapter(id, []),
+      name,
+      search: async () => ({ count: 0, ids: [], warning: `${name} ${sentence}`, ...(emptyReason ? { emptyReason } : {}) }),
+    });
+
+    it("names them all in a single warning, in the order requested", async () => {
+      const out = await searchLiterature({ query: "a b", database: "all" }, new LRUBackend(), [
+        silent("chinaxiv", "ChinaXiv (via ChinaRxiv)", "every-word"),
+        silent("russiarxiv", "RussiaRxiv (via ChinaRxiv)", "every-word"),
+      ]);
+      expect(out.warnings).toEqual([
+        "ChinaXiv (via ChinaRxiv) and RussiaRxiv (via ChinaRxiv) matched nothing: they return only records containing every word of the query and treat AND/OR as words. Try one or two key words.",
+        // PubMed-style generic warning: nothing matched anywhere.
+        expect.stringContaining('No record matched every term of the query "a b"'),
+      ]);
+    });
+
+    it("lists three or more with commas", async () => {
+      const out = await searchLiterature({ query: "a b", database: "all" }, new LRUBackend(), [
+        silent("one", "One", "every-word"),
+        silent("two", "Two", "every-word"),
+        silent("three", "Three", "every-word"),
+      ]);
+      expect(out.warnings?.[0]).toMatch(/^One, Two and Three matched nothing: they return only records/);
+    });
+
+    it("keeps a lone database's own warning, as a single-database search always has", async () => {
+      const lone = await searchLiterature({ query: "a b", database: "chinaxiv" }, new LRUBackend(), [silent("chinaxiv", "ChinaXiv (via ChinaRxiv)", "every-word")]);
+      expect(lone.warnings?.[0]).toBe(`ChinaXiv (via ChinaRxiv) ${sentence}`);
+      // One of the two databases found something: the other keeps its own warning.
+      const mixed = await searchLiterature({ query: "a b", database: "all" }, new LRUBackend(), [
+        fakeAdapter("pubmed", [pubmedMeta]),
+        silent("chinaxiv", "ChinaXiv (via ChinaRxiv)", "every-word"),
+      ]);
+      expect(mixed.warnings).toEqual([`ChinaXiv (via ChinaRxiv) ${sentence}`]);
+    });
+
+    it("does so for the real ChinaXiv and RussiaRxiv adapters, which answer a many-word query with nothing", async () => {
+      const empty: AdapterHttp = { json: async <T>() => ({ data: [], total: 0 }) as T, text: async () => "" };
+      const adapters = [new ChinaRXivAdapter(empty), new SovietRxivAdapter(empty)];
+      const out = await searchLiterature({ query: "vitamin depression", database: ["chinaxiv", "russiarxiv"] }, new LRUBackend(), adapters);
+      const matched = out.warnings!.filter((w) => w.includes("matched nothing"));
+      expect(matched).toEqual([
+        "ChinaXiv (via ChinaRxiv) and RussiaRxiv (via ChinaRxiv) matched nothing: they return only records containing every word of the query and treat AND/OR as words. Try one or two key words.",
+      ]);
+      // Alone, each keeps the warning it always had.
+      const alone = await searchLiterature({ query: "vitamin depression", database: "russiarxiv" }, new LRUBackend(), [adapters[1]!]);
+      expect(alone.warnings?.[0]).toMatch(/^RussiaRxiv \(via ChinaRxiv\) matched nothing: it returns only records containing every word/);
+      // One word is not explained by that rule.
+      const oneWord = await searchLiterature({ query: "vitamin", database: ["chinaxiv", "russiarxiv"] }, new LRUBackend(), adapters);
+      expect(oneWord.warnings!.some((w) => w.includes("matched nothing"))).toBe(false);
+    });
+
+    it("doesn't merge warnings that carry no reason, or a database's warning with another's", async () => {
+      const out = await searchLiterature({ query: "a b", database: "all" }, new LRUBackend(), [
+        silent("chinaxiv", "ChinaXiv (via ChinaRxiv)"),
+        silent("russiarxiv", "RussiaRxiv (via ChinaRxiv)"),
+      ]);
+      expect(out.warnings?.slice(0, 2)).toEqual([`ChinaXiv (via ChinaRxiv) ${sentence}`, `RussiaRxiv (via ChinaRxiv) ${sentence}`]);
+    });
+  });
+
+  describe("abstractMaxChars", () => {
+    const LONG = "alpha beta gamma delta epsilon"; // 30 characters
+    const record = (pmid: string, abstract?: string, extra: Partial<NcbiArticle> = {}): NcbiArticle => ({
+      ...pubmedMeta,
+      pmid,
+      doi: undefined,
+      ...(abstract !== undefined ? { abstract } : {}),
+      ...extra,
+    });
+    const search = (articles: NcbiArticle[], abstractMaxChars?: number) =>
+      searchLiterature({ query: "x", ...(abstractMaxChars !== undefined ? { abstractMaxChars } : {}) }, new LRUBackend(), [fakeAdapter("pubmed", articles)]);
+
+    it("returns whole abstracts when absent, whatever their length", async () => {
+      const long = "word ".repeat(2_000).trim();
+      const out = await search([record("1", long), record("2")]);
+      expect(out.articles[0]!.abstract).toBe(long);
+      expect(out.articles[0]).not.toHaveProperty("abstractTruncated");
+      expect(out.articles[1]).not.toHaveProperty("abstract");
+    });
+
+    it("cuts a longer abstract at a word boundary, ends it with an ellipsis within the limit, and flags it", async () => {
+      const out = await search([record("1", LONG)], 20);
+      expect(out.articles[0]).toMatchObject({ abstract: "alpha beta gamma…", abstractTruncated: true });
+    });
+
+    it("never goes past the limit, and cuts between words whenever a first word fits", async () => {
+      for (let max = 6; max < LONG.length; max++) {
+        const { abstract } = (await search([record("1", LONG)], max)).articles[0]!;
+        expect(abstract!.length, `max ${max}`).toBeLessThanOrEqual(max);
+        expect(abstract!.endsWith("…"), `max ${max}`).toBe(true);
+        const kept = abstract!.slice(0, -1);
+        expect(LONG.startsWith(kept), `max ${max}`).toBe(true);
+        expect(LONG[kept.length], `max ${max}`).toBe(" ");
+      }
+    });
+
+    it("leaves an abstract that fits alone, with no flag, and cuts one a single character over", async () => {
+      const fits = await search([record("1", LONG)], LONG.length);
+      expect(fits.articles[0]!.abstract).toBe(LONG);
+      expect(fits.articles[0]).not.toHaveProperty("abstractTruncated");
+      const over = await search([record("1", LONG)], LONG.length - 1);
+      expect(over.articles[0]).toMatchObject({ abstract: "alpha beta gamma delta…", abstractTruncated: true });
+      expect(over.articles[0]!.abstract!.length).toBeLessThanOrEqual(LONG.length - 1);
+    });
+
+    it("ends the cut at the last word, not on the whitespace before it, and counts a newline as one", async () => {
+      expect((await search([record("1", "alpha  beta gamma")], 9)).articles[0]!.abstract).toBe("alpha…");
+      expect((await search([record("1", "alpha\nbeta gamma")], 10)).articles[0]!.abstract).toBe("alpha…");
+      expect((await search([record("1", "alpha beta gamma")], 11)).articles[0]!.abstract).toBe("alpha beta…");
+    });
+
+    it("cuts a text without spaces where it stands, not through a surrogate pair", async () => {
+      expect((await search([record("1", "中".repeat(50))], 11)).articles[0]!.abstract).toBe(`${"中".repeat(10)}…`);
+      // Budget 3 would end between the two halves of the second emoji.
+      expect((await search([record("1", "😀".repeat(20))], 4)).articles[0]!.abstract).toBe("😀…");
+    });
+
+    it("leaves the abstract out for 0, flags an article that had one, and not one that had none", async () => {
+      const out = await search([record("1", LONG), record("2")], 0);
+      expect(out.articles[0]).toMatchObject({ pmid: "1", abstractTruncated: true });
+      expect(out.articles[0]).not.toHaveProperty("abstract");
+      // Told apart from an omitted one: nothing was left out of this record.
+      expect(out.articles[1]).toMatchObject({ pmid: "2" });
+      expect(out.articles[1]).not.toHaveProperty("abstract");
+      expect(out.articles[1]).not.toHaveProperty("abstractTruncated");
+    });
+
+    it("leaves the abstract out when nothing of it would fit before the ellipsis", async () => {
+      const out = await search([record("1", LONG)], 1);
+      expect(out.articles[0]).toMatchObject({ abstractTruncated: true });
+      expect(out.articles[0]).not.toHaveProperty("abstract");
+    });
+
+    it("never clears an abstractTruncated an adapter set, whether or not it cuts more", async () => {
+      // A ChinaXiv search preview, cut at 500 characters by the database.
+      const preview = record("C1", LONG, { abstractTruncated: true });
+      expect((await search([preview], 1_000)).articles[0]).toMatchObject({ abstract: LONG, abstractTruncated: true });
+      expect((await search([preview])).articles[0]).toMatchObject({ abstract: LONG, abstractTruncated: true });
+      expect((await search([preview], 20)).articles[0]).toMatchObject({ abstract: "alpha beta gamma…", abstractTruncated: true });
+      // Without an abstract there is nothing to cut: the adapter's word stands.
+      expect((await search([record("C2", undefined, { abstractTruncated: true })], 0)).articles[0]).toMatchObject({ abstractTruncated: true });
+    });
+
+    it("doesn't change the adapter's own records", async () => {
+      const own = record("1", LONG);
+      await search([own], 10);
+      expect(own.abstract).toBe(LONG);
+      expect(own).not.toHaveProperty("abstractTruncated");
+    });
+
+    it("applies after de-duplication, to the copy that is kept, and across databases", async () => {
+      const longEpmc = { ...epmcRct, abstract: LONG, doi: "10.1590/shared" };
+      const out = await searchLiterature({ query: "x", database: "all", abstractMaxChars: 20 }, new LRUBackend(), [
+        fakeAdapter("pubmed", [{ ...pubmedMeta, abstract: "a different abstract of the same paper" }]),
+        fakeAdapter("europepmc", [longEpmc]),
+        fakeAdapter("chinaxiv", [record("C1", LONG, { database: "chinaxiv", doi: "10.2074/other" })]),
+      ]);
+      // The RCT copy outranks the unrated meta-analysis copy that shares its DOI.
+      expect(out.articles.map((a) => a.pmid)).toEqual(["E1", "C1"]);
+      expect(out.articles.map((a) => a.abstract)).toEqual(["alpha beta gamma…", "alpha beta gamma…"]);
+      expect(out.articles.every((a) => a.abstractTruncated)).toBe(true);
+    });
+
+    it("leaves ordering, filtering and the total to the full abstracts: only the text changes", async () => {
+      const articles = [record("1", LONG, { publicationTypes: ["Case Reports"] }), record("2", LONG, { publicationTypes: ["Randomized Controlled Trial"] })];
+      const full = await search(articles);
+      const capped = await search(articles, 8);
+      expect(capped.articles.map((a) => [a.pmid, a.studyType, a.designTier])).toEqual(full.articles.map((a) => [a.pmid, a.studyType, a.designTier]));
+      expect(capped.total).toBe(full.total);
+    });
+
+    it("raises INVALID_INPUT for a limit that isn't a whole number, 0 or more, before searching", async () => {
+      const searchSpy = vi.fn(async (_input: SearchInput) => ({ count: 1, ids: ["1"] }));
+      const adapters: DatabaseAdapter[] = [{ ...fakeAdapter("pubmed", [pubmedMeta]), search: searchSpy }];
+      for (const abstractMaxChars of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, "10" as unknown as number, null as unknown as number]) {
+        await expect(searchLiterature({ query: "x", abstractMaxChars }, new LRUBackend(), adapters), String(abstractMaxChars)).rejects.toMatchObject({
+          code: "INVALID_INPUT",
+          userMessage: expect.stringContaining("abstractMaxChars"),
+        });
+      }
+      expect(searchSpy).not.toHaveBeenCalled();
+      await expect(searchLiterature({ query: "x", abstractMaxChars: 0 }, new LRUBackend(), adapters)).resolves.toBeDefined();
+    });
   });
 
   describe("a retraction indexed in only one database", () => {
@@ -671,6 +1010,48 @@ describe("fetchLiterature", () => {
   it("raises INVALID_INPUT for an unknown database", async () => {
     await expect(fetchLiterature({ ids: ["S1"], database: "unknown-db" }, new LRUBackend())).rejects.toMatchObject({
       code: "INVALID_INPUT",
+    });
+  });
+
+  describe("grading", () => {
+    // A model that looked up a retracted RCT by PMID got no studyType, designTier or flags, and missed that the design is graded.
+    const retractedRct: NcbiArticle = {
+      ...epmcRct,
+      pmid: "9",
+      doi: "10.1234/retracted",
+      publicationTypes: ["Randomized Controlled Trial", "Journal Article", "Retracted Publication"],
+      database: undefined,
+    };
+
+    it("classifies every fetched article like a search result does", async () => {
+      const out = await fetchLiterature({ ids: ["9", "1", "C1"], database: "pubmed" }, new LRUBackend(), fakeAdapter("pubmed", [retractedRct, pubmedMeta, chinaxivRct]));
+      expect(out.articles.map((a) => a.pmid)).toEqual(["9", "1", "C1"]);
+      expect(out.articles[0]).toMatchObject({ studyType: "randomized-controlled-trial", designTier: 0, flags: ["retracted"] });
+      expect(out.articles[1]).toMatchObject({ studyType: "meta-analysis", designTier: null });
+      expect(out.articles[2]).toMatchObject({ studyType: "unknown", designTier: null });
+      expect(out.articles[1]).not.toHaveProperty("flags");
+    });
+
+    it("returns what a search returns for the same record, with the MeSH headings added", async () => {
+      const adapter = fakeAdapter("europepmc", [epmcRct]);
+      const searched = await searchLiterature({ query: "x", database: "europepmc" }, new LRUBackend(), [adapter]);
+      const fetched = await fetchLiterature({ ids: ["E1"], database: "europepmc" }, new LRUBackend(), adapter);
+      expect(fetched.articles[0]).toEqual({ ...searched.articles[0], meshHeadings: ["Creatine", "Humans", "Aged"] });
+    });
+
+    it("grades the complete records of an adapter that serves them separately, and returns the whole abstract", async () => {
+      const preview: NcbiArticle = { ...chinaxivRct, abstract: "short preview", abstractTruncated: true };
+      const complete: NcbiArticle = { ...chinaxivRct, abstract: "the complete abstract, which goes on far past the preview" };
+      const adapter: DatabaseAdapter = { ...fakeAdapter("chinaxiv", [preview]), fetchFull: async () => [complete] };
+      const out = await fetchLiterature({ ids: ["C1"], database: "chinaxiv" }, new LRUBackend(), adapter);
+      expect(out.articles[0]).toMatchObject({ abstract: complete.abstract, studyType: "unknown", designTier: null });
+      expect(out.articles[0]).not.toHaveProperty("abstractTruncated");
+    });
+
+    it("grades nothing for a missing id, and still reports it", async () => {
+      const out = await fetchLiterature({ ids: ["9", "404"], database: "pubmed" }, new LRUBackend(), fakeAdapter("pubmed", [retractedRct]));
+      expect(out.articles).toHaveLength(1);
+      expect(out.missing).toEqual(["404"]);
     });
   });
 });

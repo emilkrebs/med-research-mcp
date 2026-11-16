@@ -176,13 +176,35 @@ export interface SearchInput {
    * "ru" searches the Russian collection. Ignored by the others.
    */
   language?: string;
+  /**
+   * The most characters an abstract keeps in the results; a whole number, 0 or more. Longer ones are cut at a
+   * word boundary and end with "…" (within the limit), and the article gets `abstractTruncated`. 0 leaves
+   * abstracts out. Default: whole abstracts. `literature_fetch` always returns the whole abstract.
+   */
+  abstractMaxChars?: number;
 }
+
+/** The filters a search was given, as {@link SearchOutput.filters} echoes them. */
+export type SearchFilters = Pick<SearchInput, "dateRange" | "studyTypes" | "minDesignTier">;
 
 export interface SearchOutput {
   articles: GradedArticle[];
-  /** Hits reported by the databases searched, summed, before paging (of the narrowed query, with a design filter). */
+  /**
+   * Hits reported by the databases searched, summed, before paging and de-duplication (of the narrowed query,
+   * with a design filter): a record that two databases hold counts twice, so `total` can exceed what
+   * the pages hold. With several databases, `totalByDatabase` has each one's count.
+   */
   total: number;
+  /** Each database's own hit count, by adapter id; set when more than one database was searched. A failed one is left out. */
+  totalByDatabase?: Record<string, number>;
   query: string;
+  /**
+   * Ids of the databases searched, in order. A database skipped because a design filter would keep none of its
+   * records is not in it; one that failed is, with a warning saying so.
+   */
+  databases: string[];
+  /** What the search filtered by, as given; absent when it gave no dateRange, studyTypes or minDesignTier. */
+  filters?: SearchFilters;
   page: number;
   /** The records per database the page holds: ask for nextPage with it, as pages of another size start elsewhere. */
   maxResults: number;
@@ -204,7 +226,8 @@ export interface LiteratureFetchInput {
 }
 
 export interface FetchOutput {
-  articles: Article[];
+  /** Classified like search results (studyType, designTier, flags), with MeSH headings kept. */
+  articles: GradedArticle[];
   /** IDs that could not be found or fetched. */
   missing: string[];
   warnings?: string[];
