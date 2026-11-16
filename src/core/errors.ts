@@ -121,17 +121,22 @@ export const errors = {
     });
   },
 
-  /** An id that isn't resolved on its own reached a DOI-based lookup without a DOI. */
-  noDoi(id: string): ResearchApiException {
+  /**
+   * An id that no database record backs, and no DOI was given. `looked`: Europe PMC was asked for its record and had none
+   * (or couldn't be reached); otherwise the id is none that literature_fulltext looks up.
+   */
+  noDoi(id: string, looked = false): ResearchApiException {
     return new ResearchApiException({
       code: "NOT_FOUND",
-      message: `No DOI for non-PubMed id ${id}`,
+      message: looked ? `No Europe PMC record or DOI for id ${id}` : `No DOI for unrecognized id ${id}`,
       userMessage:
-        `"${id}" is not an id that works on its own, and no DOI was given. On its own, literature_fulltext takes a PMID ` +
-        `(digits), a PMCID (PMC…), a Europe PMC preprint id (PPR…), or the id of a ChinaXiv or RussiaRxiv record ` +
-        `(chinaxiv-…, ru-…). Any other id, such as a Europe PMC CBA:… id, needs the doi from its literature_search result as ` +
-        `well; a record without a doi can't be fetched, so open its url instead. A url or originalUrl is not a doi: don't ` +
-        `pass one as doi.`,
+        (looked
+          ? `Europe PMC has no record of "${id}" (or couldn't be reached), and no doi was given. `
+          : `"${id}" is not an id literature_fulltext looks up: not a PMID (digits), a PMCID (PMC…), an id of Europe PMC ` +
+            `(PPR…, CBA:…, IND…) or a ChinaXiv or RussiaRxiv id (chinaxiv-…, ru-…), and no doi was given. `) +
+        `Pass the id as literature_search returned it in pmid, with any prefix (CBA:644599), or the doi of that result; a ` +
+        `record without a doi can't be fetched, so open its url instead. A url or originalUrl is not a doi: don't pass one ` +
+        `as doi.`,
       recoverable: false,
     });
   },

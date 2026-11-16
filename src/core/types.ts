@@ -243,14 +243,15 @@ export type FulltextSource = "europepmc" | "unpaywall" | "proxy" | "direct" | "c
 
 export interface FulltextInput {
   /**
-   * A PMID, a PMCID ("PMC…"), a Europe PMC preprint id ("PPR…") or a ChinaXiv or RussiaRxiv id
-   * ("chinaxiv-…", "ru-…"), each on its own; or another database's id with `doi`.
+   * A PMID, a PMCID ("PMC…"), an id of Europe PMC's other records as `literature_search` returns it ("PPR…"
+   * preprints, "CBA:…", "IND…", with any prefix) or a ChinaXiv or RussiaRxiv id ("chinaxiv-…", "ru-…"), each
+   * on its own. A bare number is a PMID. An id none of them knows needs `doi`.
    */
   id: string;
   /**
-   * DOI, as "10.…" or a https://doi.org/ link; a record's url is not one. Required for an id
-   * outside the list above. With a PMID it skips the id→DOI lookup; a PMCID or preprint id without
-   * it takes the DOI Europe PMC has for the record, if any.
+   * DOI, as "10.…" or a https://doi.org/ link; a record's url is not one. Needed only for an id outside
+   * the list above, which Europe PMC has no record of. With a PMID it skips the id→DOI lookup; any
+   * Europe PMC id without it takes the DOI of Europe PMC's record, if it has one.
    */
   doi?: string;
   /** Character position in the full text to return it from: a previous call's `nextOffset`. Default 0. */

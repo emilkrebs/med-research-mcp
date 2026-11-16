@@ -1,9 +1,9 @@
 /**
  * Full-text resolution + extraction.
  *
- * Given a PMID (and optionally a DOI), a PMCID, a Europe PMC preprint id or a
- * ChinaXiv or RussiaRxiv id, try — in order — the machine's access paths, and
- * return the article body as markdown:
+ * Given a PMID (and optionally a DOI), a PMCID, a Europe PMC preprint id or other
+ * Europe PMC id, or a ChinaXiv or RussiaRxiv id, try — in order — the machine's
+ * access paths, and return the article body as markdown:
  *
  *   0. ChinaRxiv      — for a ChinaXiv or RussiaRxiv id: its API's translated text
  *   1. Europe PMC     — its full-text API, when the record has a PMCID (or is a
@@ -15,10 +15,12 @@
  *   5. Fallback       — the abstract, with `source: "none"` and a warning that
  *                       says what each location answered
  *
- * The abstract of a PMID comes from PubMed. For any other id (a preprint's, or
- * another database's passed with its DOI) it comes from the record that database's
- * adapter holds, and the DOI of Europe PMC's record opens steps 2 to 4 for a PMCID
- * or preprint id passed without one (see {@link lookUpRecord}).
+ * The abstract of a PMID comes from PubMed. For any other id (a preprint's, another
+ * Europe PMC source's such as CBA:… or IND…, or another database's passed with its
+ * DOI) it comes from the record that database's adapter holds, and the DOI of Europe
+ * PMC's record opens steps 2 to 4 for a PMCID, preprint or other Europe PMC id passed
+ * without one (see {@link lookUpRecord}). An id Europe PMC has no record of, given
+ * without a DOI, is NOT_FOUND.
  *
  * The warning opens with the article's standing when a record of it is known and flagged retracted, a notice,
  * or with an expression of concern (see {@link standingNote}), whether or not a text was found. A record is
@@ -82,6 +84,13 @@ const EUROPE_PMC_FULLTEXT = "https://www.ebi.ac.uk/europepmc/webservices/rest/";
 const isPmid = (id: string): boolean => /^\d+$/.test(id);
 /** Ids Europe PMC's full-text API takes as they are: PMCIDs, and preprint ids (for preprints it has the text of). */
 const EUROPE_PMC_ID = /^(?:PMC|PPR)\d+$/i;
+/**
+ * The ids of Europe PMC's other sources, as its search returns them (checked 2026-11-16, each found again by its exact
+ * id query): "SRC:digits" for the numeric ids of a source other than MED, which would collide with PMIDs (CBA:644335 of
+ * Chinese Biological Abstracts, ETH:836421), and letters then digits for the rest (IND609546324 of AGR, US2012071552
+ * and WO2012049332 of PAT, C2201 of CTX, NBK625970). A bare number is a PMID.
+ */
+const EUROPE_PMC_OTHER_ID = /^(?:[A-Za-z]{3}:\d+|[A-Za-z]{1,5}\d[A-Za-z0-9]*)$/;
 /** ChinaRxiv's ids, as its API issues them (2026-11-16): ChinaXiv's `chinaxiv-YYYYMM.NNNNN`, RussiaRxiv's `ru-YYYYMM.NNNNN`. */
 const CHINARXIV_ID = /^(chinaxiv|ru)-\d{6}\.\d+$/i;
 /** Sources whose texts are open access, and so may be cached. */
@@ -215,19 +224,21 @@ export async function fetchFulltext(
 ): Promise<FulltextOutput> {
   const id = String(input.id ?? "").trim();
   const inputDoi = normalizeDoi(input.doi);
-  // A numeric PMID, an id Europe PMC's full-text API takes, a ChinaRxiv id or a
-  // supplied DOI is enough to proceed. Other ids (Europe PMC "CBA:…") can arrive
-  // with a DOI, and DOI-based resolution is database-agnostic. Without one there's
-  // nothing to resolve.
+  // A numeric PMID, an id Europe PMC's full-text API takes, a ChinaRxiv id, another id Europe PMC may hold
+  // a record of, or a supplied DOI is enough to proceed. Any other id can arrive with a DOI, and DOI-based
+  // resolution is database-agnostic. Without one there's nothing to resolve.
   const europePmcId = EUROPE_PMC_ID.test(id) ? id.toUpperCase() : undefined;
   // ChinaXiv and RussiaRxiv ids are lowercase, as the API issues them; the corpus is the id's prefix.
   const chinarxivMatch = CHINARXIV_ID.exec(id);
   const chinarxivId = chinarxivMatch ? id.toLowerCase() : undefined;
   const chinarxivCorpus: RecordDatabase | undefined = chinarxivMatch ? (chinarxivMatch[1]!.toLowerCase() === "ru" ? "russiarxiv" : "chinaxiv") : undefined;
-  if (!isPmid(id) && !inputDoi && !europePmcId && !chinarxivId) {
+  // An id of Europe PMC's other sources (CBA:…, IND…): looked up there like a preprint's. The checks above come first, so
+  // that neither a ChinaRxiv id (it has a hyphen) nor a bare number (a PMID) can reach it.
+  const otherId = !isPmid(id) && !europePmcId && !chinarxivId && EUROPE_PMC_OTHER_ID.test(id) ? id.toUpperCase() : undefined;
+  if (!isPmid(id) && !inputDoi && !europePmcId && !chinarxivId && !otherId) {
     // A doi that was given but isn't one (a record's url, say) is a mistake to name, not a missing doi.
     if (input.doi?.trim()) throw errors.notADoi(input.doi.trim());
-    throw errors.noDoi(String(input.id ?? ""));
+    throw errors.noDoi(String(input.id ?? ""), false);
   }
 
   const offset = input.offset ?? 0;
@@ -241,7 +252,7 @@ export async function fetchFulltext(
   const proxyPrefix = deps.proxyPrefix === undefined ? envSetting("MED_RESEARCH_PROXY_PREFIX") : deps.proxyPrefix.trim() || undefined;
 
   // The key records of this id are kept under: the id as Europe PMC and ChinaRxiv write it.
-  const recordId = chinarxivId ?? europePmcId ?? id;
+  const recordId = chinarxivId ?? europePmcId ?? otherId ?? id;
   // What the call knows of the article's record. `article` is the summary used to resolve it (below); `looked` holds
   // the records fetched on the way, so that a cache that stores nothing doesn't hide them from the warning.
   let article: Article | null = null;
@@ -291,7 +302,6 @@ export async function fetchFulltext(
     if (article) cache.setSummary(ownSummaryKey(id), article);
     doi = normalizeDoi(article?.doi);
   }
-  const pmcid = europePmcId ?? (article?.pmcid && EUROPE_PMC_ID.test(article.pmcid) ? article.pmcid.toUpperCase() : undefined);
 
   // The record of an id PubMed doesn't know, from the database that holds it. Looked up once, when first needed.
   const adapterFor = deps.adapter ?? defaultAdapter;
@@ -308,11 +318,24 @@ export async function fetchFulltext(
   const abstract = (): Promise<string | undefined> =>
     (abstractLookup ??= resolveAbstract(id, article, cache, client, record, (record) => looked.push(record)));
 
+  // An id of Europe PMC's other sources, given without a DOI, is what Europe PMC's record of it makes it: the abstract,
+  // and a DOI when the record has one (a PMCID, as for a preprint, too). No record, nothing to go by.
+  if (otherId && !article && !doi) {
+    article = (await record()) ?? null;
+    if (!article) throw input.doi?.trim() ? errors.notADoi(input.doi.trim()) : errors.noDoi(id, true);
+    doi = normalizeDoi(article.doi);
+  }
+  const pmcid = europePmcId ?? (article?.pmcid && EUROPE_PMC_ID.test(article.pmcid) ? article.pmcid.toUpperCase() : undefined);
+
   // No DOI, PMCID or ChinaRxiv id → nothing to hand to a text or OA lookup. Degrade to the abstract.
   if (!doi && !pmcid && !chinarxivId) {
     if (!article) throw errors.notFound(id);
     const text = await abstract();
-    return noneResult(id, undefined, text, offset, "Could not resolve a DOI for this id, so no full-text source could be tried.", standing());
+    // The record's url is all there is to go on for an id without a DOI (a patent's page, a Bookshelf book's).
+    const reason = isPmid(id)
+      ? "Could not resolve a DOI for this id, so no full-text source could be tried."
+      : `Europe PMC's record for this id has no DOI, so no full-text source could be tried.${article.url ? ` A browser may open ${article.url}.` : ""}`;
+    return noneResult(id, undefined, text, offset, reason, standing());
   }
 
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -502,9 +525,10 @@ function hostOf(url: string): string | undefined {
  * for a ChinaRxiv id (`corpus`), Europe PMC's for any other. `fetch` answers from the adapter's memo of search
  * results and from the cache, where it stores each record under "<database>:<id>" ("europepmc:CBA:644599"),
  * before it asks the database for that exact id, so a record a search found costs no request. A Europe PMC
- * record is also kept under the bare id, as the PMID path keeps its summary, so that the next call finds its
- * DOI and abstract at once. A ChinaRxiv record comes from `fetchFull`, as complete as the API has it: its
- * search endpoint cuts abstracts. A failed lookup is no record: callers carry on without.
+ * record is also kept under the bare id, so that the next call finds its DOI and abstract at once (these ids
+ * are never PMIDs, whose summaries are kept apart: see {@link ownSummaryKey}). A ChinaRxiv record comes from
+ * `fetchFull`, as complete as the API has it: its search endpoint cuts abstracts. A failed lookup is no
+ * record: callers carry on without.
  */
 async function lookUpRecord(
   id: string,

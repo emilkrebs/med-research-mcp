@@ -346,17 +346,17 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     id: z
       .string()
       .describe(
-        "Article id as literature_search returns it: a PMID, a PMCID (PMC…, a record's pmcid), a Europe PMC preprint id " +
-          "(PPR…), or a chinaxiv or russiarxiv id (chinaxiv-…, ru-…); each works on its own. Any other id (a Europe PMC " +
-          "CBA:… id, say) also needs doi.",
+        "Id as literature_search returns it in pmid: a PMID, a PMCID (PMC…, a record's pmcid), an id of Europe PMC " +
+          "(PPR…, CBA:… with its prefix, IND…) or a chinaxiv or russiarxiv id (chinaxiv-…, ru-…). Each works alone; doi is for " +
+          "any other id.",
       ),
     doi: z
       .string()
       .optional()
       .describe(
         "The record's doi (10.… or a https://doi.org/ link), from a search result's doi field; a url or originalUrl is " +
-          "not one. Required when the id is not one of those above. With a PMID it saves the id→DOI lookup; a PMCID or " +
-          "PPR id without it uses the doi Europe PMC has for the record.",
+          "not one. Needed only for an id outside those above. With a PMID it saves the id→DOI lookup; a Europe PMC id " +
+          "without it uses the doi of Europe PMC's record.",
       ),
     offset: z
       .number()

@@ -508,38 +508,61 @@ describe("fetchFulltext resolution strategy", () => {
     );
   });
 
-  it("explains that an id that isn't resolved on its own needs a DOI", async () => {
-    const error = await fetchFulltext({ id: "CBA:644599" }, new LRUBackend(), fakeClient()).catch(
+  it("says Europe PMC has no record of an id given without a DOI, and what to do", async () => {
+    const europePmc = fakeEuropePmc();
+    const error = await fetchFulltext({ id: "cba:644599" }, new LRUBackend(), fakeClient(), { adapter: europePmc.adapter }).catch(
       (e: unknown) => e as ResearchApiException,
     );
     expect(error).toMatchObject({ code: "NOT_FOUND", recoverable: false });
-    expect(error.userMessage).toContain("no DOI");
+    expect(error.userMessage).toContain('Europe PMC has no record of "cba:644599"');
     expect(error.userMessage).not.toContain("PubMed article");
+    // Asked once, by the id as Europe PMC writes it.
+    expect(europePmc.fetch.mock.calls.map(([ids]) => ids)).toEqual([["CBA:644599"]]);
+    // A failing Europe PMC is no record either, and the message allows for it.
+    const failing: FulltextDeps["adapter"] = () => ({
+      fetch: async () => {
+        throw new Error("Europe PMC is down");
+      },
+    });
+    const down = await fetchFulltext({ id: "CBA:644599" }, new LRUBackend(), fakeClient(), { adapter: failing }).catch((e: unknown) => e as ResearchApiException);
+    expect(down).toMatchObject({ code: "NOT_FOUND" });
+    expect(down.userMessage).toContain("or couldn't be reached");
   });
 
-  it("tells which ids work on their own, when a doi is needed, and that a url is not one", async () => {
-    const error = await fetchFulltext({ id: "CBA:644599" }, new LRUBackend(), fakeClient()).catch((e: unknown) => e as ResearchApiException);
-    const message = error.userMessage;
-    // The ids that need nothing else.
-    for (const own of ["PMID", "PMCID (PMC…)", "preprint id (PPR…)", "chinaxiv-…", "ru-…"]) expect(message).toContain(own);
-    // Where the doi comes from, and what to do for a record without one.
-    expect(message).toContain("doi from its literature_search result");
-    expect(message).toContain("open its url instead");
-    expect(message).toContain("A url or originalUrl is not a doi");
-    // No longer says that ChinaXiv and RussiaRxiv records can't be resolved.
-    expect(message).not.toMatch(/can't be resolved|neither/);
+  it("tells which ids work on their own, what to pass instead, and that a url is not a doi", async () => {
+    const asked = vi.fn();
+    // An id of no shape any database has is refused before anything is asked.
+    const unrecognized = await fetchFulltext({ id: "not-a-pmid" }, new LRUBackend(), fakeClient(), { adapter: asked }).catch((e: unknown) => e as ResearchApiException);
+    expect(asked).not.toHaveBeenCalled();
+    const looked = await fetchFulltext({ id: "CBA:644599" }, new LRUBackend(), fakeClient(), { adapter: noRecords }).catch((e: unknown) => e as ResearchApiException);
+    expect(unrecognized.userMessage).toContain('"not-a-pmid" is not an id literature_fulltext looks up');
+    for (const [name, error] of [["unrecognized", unrecognized], ["looked up", looked]] as const) {
+      const message = error.userMessage;
+      expect(error, name).toMatchObject({ code: "NOT_FOUND", recoverable: false });
+      // What to pass: the id as search returned it, prefix included, or the doi; and what to do for a record without one.
+      expect(message, name).toContain("Pass the id as literature_search returned it in pmid, with any prefix (CBA:644599), or the doi of that result");
+      expect(message, name).toContain("open its url instead");
+      expect(message, name).toContain("A url or originalUrl is not a doi");
+    }
+    // The ids that work on their own, in the message for an id none of them is.
+    for (const own of ["PMID", "PMCID (PMC…)", "PPR…", "CBA:…", "IND…", "chinaxiv-…", "ru-…"]) expect(unrecognized.userMessage).toContain(own);
+    expect(unrecognized.userMessage).not.toMatch(/can't be resolved|neither/);
   });
 
   it("raises INVALID_INPUT for a url passed as the doi of an id that needs one, naming the mistake", async () => {
+    // For an id Europe PMC has no record of: with one that has a DOI, the record's is used (see "other Europe PMC ids").
     for (const doi of ["https://chinaxiv.org/abs/202401.00027", "chinaxiv.org/abs/202401.00027", "not a doi", "10.12/short"]) {
-      const error = await fetchFulltext({ id: "CBA:644599", doi }, new LRUBackend(), fakeClient()).catch((e: unknown) => e as ResearchApiException);
+      const error = await fetchFulltext({ id: "CBA:644599", doi }, new LRUBackend(), fakeClient(), { adapter: noRecords }).catch((e: unknown) => e as ResearchApiException);
       expect(error, doi).toMatchObject({ code: "INVALID_INPUT", recoverable: true });
       expect(error.userMessage, doi).toContain(`doi ${JSON.stringify(doi)} is not a DOI`);
       expect(error.userMessage, doi).toContain("A record's url or originalUrl is not a doi");
     }
     // A long one is cut in the message.
-    const long = await fetchFulltext({ id: "CBA:1", doi: `https://example.org/${"x".repeat(500)}` }, new LRUBackend(), fakeClient()).catch((e: unknown) => e as ResearchApiException);
+    const long = await fetchFulltext({ id: "CBA:1", doi: `https://example.org/${"x".repeat(500)}` }, new LRUBackend(), fakeClient(), { adapter: noRecords }).catch((e: unknown) => e as ResearchApiException);
     expect(long.userMessage.length).toBeLessThan(600);
+    // An id of no known shape too, without asking anyone.
+    const unrecognized = await fetchFulltext({ id: "not-a-pmid", doi: "https://chinaxiv.org/abs/1" }, new LRUBackend(), fakeClient()).catch((e: unknown) => e as ResearchApiException);
+    expect(unrecognized).toMatchObject({ code: "INVALID_INPUT" });
   });
 
   it("ignores a url passed as the doi of an id that resolves on its own", async () => {
@@ -576,6 +599,156 @@ describe("fetchFulltext resolution strategy", () => {
     await expect(
       fetchFulltext({ id: "99999999" }, new LRUBackend(), fakeClient({ summary: null })),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("keeps a bare number a PMID: PubMed is asked, and Europe PMC never, whatever record has that number", async () => {
+    // "644599" is also the number of a CBA record, which Europe PMC keys "CBA:644599" to tell them apart.
+    const europePmc = fakeEuropePmc([{ ...ARTICLE, pmid: "CBA:644599", database: "europepmc" }]);
+    const onEsummary = vi.fn();
+    await expect(fetchFulltext({ id: "644599" }, new LRUBackend(), fakeClient({ onEsummary }), { adapter: europePmc.adapter })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      userMessage: expect.stringContaining("No PubMed article found for PMID 644599"),
+    });
+    expect(onEsummary).toHaveBeenCalledTimes(1);
+    expect(europePmc.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("fetchFulltext — other Europe PMC ids, looked up like a preprint's", () => {
+  const CBA = "CBA:644599";
+  const CBA_DOI = "10.1000/cba-paper";
+  const CBA_RECORD: Article = {
+    pmid: CBA,
+    title: "A Chinese Biological Abstracts record",
+    authors: ["Zhang W"],
+    journal: "Chin J Test",
+    pubDate: "2007",
+    publicationTypes: [],
+    database: "europepmc",
+    abstract: "The CBA record's abstract.",
+  };
+  const paywall = (): FulltextDeps => ({ unpaywall: fakeUnpaywall(null), fetchUrl: async () => paywalled() });
+
+  it("opens the Unpaywall and direct routes with the DOI of the record, as for a preprint, and returns the text", async () => {
+    const europePmc = fakeEuropePmc([{ ...CBA_RECORD, doi: CBA_DOI }]);
+    const lookup = vi.fn(async (): Promise<UnpaywallLookup> => ({ status: "found", result: { doi: CBA_DOI, isOa: true, urls: ["https://oa.example/article"] } }));
+    const out = await fetchFulltext({ id: "cba:644599" }, new LRUBackend(), fakeClient(), {
+      unpaywall: { lookup } as unknown as UnpaywallClient,
+      fetchUrl: async () => htmlResource("<x/>"),
+      htmlToMarkdown: async () => LONG_MARKDOWN,
+      adapter: europePmc.adapter,
+    });
+    expect(out).toMatchObject({ id: "cba:644599", source: "unpaywall", doi: CBA_DOI });
+    expect(lookup).toHaveBeenCalledWith(CBA_DOI);
+    expect(europePmc.fetch.mock.calls.map(([ids]) => ids)).toEqual([[CBA]]);
+  });
+
+  it("returns the record's abstract, with a warning that no text was found, when the DOI's routes have none", async () => {
+    const europePmc = fakeEuropePmc([{ ...CBA_RECORD, doi: CBA_DOI }]);
+    const out = await fetchFulltext({ id: CBA }, new LRUBackend(), fakeClient(), { ...paywall(), adapter: europePmc.adapter });
+    expect(out).toMatchObject({ source: "none", doi: CBA_DOI, fulltext: "The CBA record's abstract.", truncated: false });
+    expect(out.warning).toContain("No full text found; returned the abstract only.");
+    expect(out.warning).toContain("The publisher's site");
+  });
+
+  it("returns the abstract, and says the record has no DOI, for a record without one", async () => {
+    const europePmc = fakeEuropePmc([CBA_RECORD]);
+    const lookup = vi.fn();
+    const fetchUrl = vi.fn();
+    const out = await fetchFulltext({ id: CBA }, new LRUBackend(), fakeClient(), { unpaywall: { lookup } as unknown as UnpaywallClient, fetchUrl, adapter: europePmc.adapter });
+    expect(out).toMatchObject({ source: "none", fulltext: "The CBA record's abstract.", truncated: false });
+    expect(out.doi).toBeUndefined();
+    expect(out.warning).toBe("No full text found; returned the abstract only. Europe PMC's record for this id has no DOI, so no full-text source could be tried.");
+    // Nothing to ask a DOI route about.
+    expect(lookup).not.toHaveBeenCalled();
+    expect(fetchUrl).not.toHaveBeenCalled();
+
+    // The record's url, when it has one, is the only place left to point to.
+    const url = "https://www.surechembl.org/document/US-20120071552-A1";
+    const patent = await fetchFulltext({ id: CBA }, new LRUBackend(), fakeClient(), { adapter: fakeEuropePmc([{ ...CBA_RECORD, url }]).adapter });
+    expect(patent.warning).toBe(`No full text found; returned the abstract only. Europe PMC's record for this id has no DOI, so no full-text source could be tried. A browser may open ${url}.`);
+  });
+
+  it("goes on with the record's PMCID, when it has one, through Europe PMC's full-text API", async () => {
+    const europePmc = fakeEuropePmc([{ ...CBA_RECORD, pmcid: "PMC7654321" }]);
+    const fetchUrl = vi.fn(async (url: string) => ({ ...htmlResource("<article/>", url), contentType: "application/xml" }));
+    const out = await fetchFulltext({ id: CBA }, new LRUBackend(), fakeClient(), { fetchUrl, jatsToMarkdown: async () => LONG_MARKDOWN, adapter: europePmc.adapter });
+    expect(out.source).toBe("europepmc");
+    expect(fetchUrl.mock.calls.map(([url]) => url)).toEqual(["https://www.ebi.ac.uk/europepmc/webservices/rest/PMC7654321/fullTextXML"]);
+  });
+
+  it("remembers the record, and asks Europe PMC for it once", async () => {
+    const europePmc = fakeEuropePmc([{ ...CBA_RECORD, doi: CBA_DOI }]);
+    const cache = new LRUBackend();
+    const deps: FulltextDeps = { ...paywall(), adapter: europePmc.adapter };
+    await fetchFulltext({ id: CBA }, cache, fakeClient(), deps);
+    await fetchFulltext({ id: CBA }, cache, fakeClient(), deps);
+    expect(europePmc.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a DOI the caller gave without asking Europe PMC for the record's, as before", async () => {
+    const europePmc = fakeEuropePmc([{ ...CBA_RECORD, doi: CBA_DOI }]);
+    const lookup = vi.fn(async (): Promise<UnpaywallLookup> => ({ status: "none" }));
+    const out = await fetchFulltext({ id: CBA, doi: DOI }, new LRUBackend(), fakeClient(), { unpaywall: { lookup } as unknown as UnpaywallClient, fetchUrl: async () => paywalled(), adapter: europePmc.adapter });
+    expect(lookup).toHaveBeenCalledWith(DOI);
+    expect(out.doi).toBe(DOI);
+    // Only the fallback asks for the abstract.
+    expect(out).toMatchObject({ source: "none", fulltext: "The CBA record's abstract." });
+  });
+
+  it("uses the record's DOI over a url given as the doi", async () => {
+    const europePmc = fakeEuropePmc([{ ...CBA_RECORD, doi: CBA_DOI }]);
+    const out = await fetchFulltext({ id: CBA, doi: "https://europepmc.org/article/CBA/644599" }, new LRUBackend(), fakeClient(), { ...paywall(), adapter: europePmc.adapter });
+    expect(out).toMatchObject({ source: "none", doi: CBA_DOI });
+  });
+
+  it("looks up each kind of id by its exact query: SRC:id with a prefix, the bare id without one", async () => {
+    const queries: string[] = [];
+    const record = (id: string, source: string) => ({ id, source, title: `Record ${id}`, abstractText: `Abstract of ${id}.`, doi: undefined });
+    const http: AdapterHttp = {
+      json: async <T>(url: string): Promise<T> => {
+        const query = new URL(url).searchParams.get("query")!;
+        queries.push(query);
+        const found = /^EXT_ID:(?:"([^"]+)"|(\d+) AND SRC:([A-Z]{3}))$/.exec(query);
+        const id = found?.[1] ?? found?.[2];
+        const source = found?.[3] ?? (id?.startsWith("IND") ? "AGR" : id?.startsWith("WO") ? "PAT" : id?.startsWith("NBK") ? "NBK" : "CTX");
+        return { hitCount: 1, resultList: { result: id ? [record(id, source)] : [] } } as T;
+      },
+      text: async () => "",
+    };
+    const adapter = new EuropePmcAdapter(http);
+    for (const [given, expected] of [
+      ["CBA:644335", "EXT_ID:644335 AND SRC:CBA"],
+      ["ETH:836421", "EXT_ID:836421 AND SRC:ETH"],
+      ["IND609546324", 'EXT_ID:"IND609546324"'],
+      ["wo2012049332", 'EXT_ID:"WO2012049332"'],
+      ["NBK625970", 'EXT_ID:"NBK625970"'],
+      ["C2201", 'EXT_ID:"C2201"'],
+    ] as const) {
+      queries.length = 0;
+      const out = await fetchFulltext({ id: given }, new LRUBackend(), fakeClient(), { ...paywall(), adapter: () => adapter });
+      expect(queries, given).toEqual([expected]);
+      expect(out, given).toMatchObject({ id: given, source: "none" });
+      expect(out.fulltext, given).toMatch(/^Abstract of /);
+    }
+  });
+
+  it("leaves the ChinaRxiv ids to ChinaRxiv, and every id that fits no database to the error, without asking Europe PMC", async () => {
+    const asked: string[] = [];
+    const adapter: FulltextDeps["adapter"] = (database) => {
+      asked.push(database);
+      return undefined;
+    };
+    // A ChinaRxiv id: its own database is asked, and when it has no text nothing is asked of Europe PMC.
+    const out = await fetchFulltext({ id: "chinaxiv-202401.00027" }, new LRUBackend(), fakeClient(), { adapter });
+    expect(out.source).toBe("none");
+    expect(new Set(asked)).toEqual(new Set(["chinaxiv"]));
+    // Not a ChinaRxiv id, and no Europe PMC id either: hyphens, dots, slashes, spaces.
+    asked.length = 0;
+    for (const id of ["chinaxiv-2024.00027", "ru-1962", "202401.00027", "10.1000/xyz", "doi:10.1000/xyz", "PMID:12345678", "two words", "https://europepmc.org/article/CBA/644599", "CBA:"]) {
+      await expect(fetchFulltext({ id }, new LRUBackend(), fakeClient(), { adapter }), id).rejects.toMatchObject({ code: "NOT_FOUND" });
+    }
+    expect(asked).toEqual([]);
   });
 });
 

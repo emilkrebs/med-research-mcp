@@ -280,8 +280,10 @@ describe("createServer", () => {
     expect(description).not.toMatch(/can't be resolved|neither DOI nor PMCID/);
     // Sent to the model on every session: it stays short.
     expect(description.length).toBeLessThan(800);
-    for (const shape of ["PMID", "PMC…", "PPR…", "chinaxiv-…", "ru-…"]) expect(props.id!.description, shape).toContain(shape);
-    expect(props.id!.description).toContain("also needs doi");
+    for (const shape of ["PMID", "PMC…", "PPR…", "CBA:…", "chinaxiv-…", "ru-…"]) expect(props.id!.description, shape).toContain(shape);
+    // Europe PMC's other ids work alone too; doi is for an id none of them is.
+    expect(props.id!.description).toContain("doi is for any other id");
+    expect(props.id!.description).not.toContain("also needs doi");
     expect(props.doi!.description).toContain("a url or originalUrl is not one");
     await client.close();
     await server.close();
