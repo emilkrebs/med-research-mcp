@@ -76,6 +76,11 @@ export interface Article {
   pmid: string;
   title: string;
   abstract?: string;
+  /**
+   * The abstract is cut short: a ChinaXiv or RussiaRxiv search preview, or a search that asked
+   * for shortened abstracts. `literature_fetch` returns the whole abstract.
+   */
+  abstractTruncated?: boolean;
   authors: string[];
   journal: string;
   /** Publication date as reported by the source database (e.g. "2021 Mar 15" or "2021"): the issue date when there is one. */
