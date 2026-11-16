@@ -149,7 +149,7 @@ mkdir -p ~/.claude/skills && cp -r med-research-mcp/skills/* ~/.claude/skills/
 
 ## 隐私
 
-服务器在你的电脑上运行，不发送遥测数据。你的检索内容会发送到你所检索的数据库（PubMed 由 NCBI 提供，Europe PMC 由 EMBL-EBI 提供，此外还有 ChinaRxiv），获取全文的请求会发送到 Unpaywall、doi.org 和出版商网站，它们各自适用其服务条款和隐私政策。检索结果缓存在你的电脑上，默认保存在内存中，除非你选择 SQLite。如果你使用他人运行的 HTTP 实例，其运营方也会收到你的检索内容。请勿在检索内容中输入姓名、病历号或其他可识别患者身份的信息。详见 [docs/compliance.md](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/compliance.md)（英文）。
+服务器在你的电脑上运行，不发送遥测数据。你的检索内容会发送到你所检索的数据库（PubMed 由 NCBI 提供，Europe PMC 由 EMBL-EBI 提供，此外还有 ChinaRxiv），获取全文的请求还可能把文献编号或 DOI 发送到你并未检索的服务：NCBI、Europe PMC 或 ChinaRxiv（查询该编号的记录、获取全文）、Unpaywall、doi.org、出版商或存储库的网站，以及你配置的机构代理，它们各自适用其服务条款和隐私政策。检索结果缓存在你的电脑上，默认保存在内存中，除非你选择 SQLite。如果你使用他人运行的 HTTP 实例，其运营方也会收到你的检索内容。请勿在检索内容中输入姓名、病历号或其他可识别患者身份的信息。详见 [docs/compliance.md](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/compliance.md)（英文）。
 
 ## 文档
 

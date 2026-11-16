@@ -143,7 +143,7 @@ Use `.claude/skills/` inside a project to install them for that project only. Sk
 
 ## Privacy
 
-The server runs on your machine and sends no telemetry. Your queries go to the databases you search (NCBI for PubMed, EMBL-EBI for Europe PMC, ChinaRxiv), and full-text requests go to Unpaywall, doi.org and the publishers' sites, each under its own terms and privacy policy. Results are cached on your machine, in memory unless you choose SQLite. If you use someone else's HTTP instance, its operator receives your queries too. Don't put names, record numbers or other details that identify a patient into a query. [docs/compliance.md](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/compliance.md) has the details.
+The server runs on your machine and sends no telemetry. Your queries go to the databases you search (NCBI for PubMed, EMBL-EBI for Europe PMC, ChinaRxiv), and a full-text request can send an article's id or DOI to services you did not search: NCBI, Europe PMC or ChinaRxiv for the id's record or text, Unpaywall, doi.org, the publisher's or a repository's site and, if you set one, your institution's proxy, each under its own terms and privacy policy. Results are cached on your machine, in memory unless you choose SQLite. If you use someone else's HTTP instance, its operator receives your queries too. Don't put names, record numbers or other details that identify a patient into a query. [docs/compliance.md](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/compliance.md) has the details.
 
 ## Documentation
 
