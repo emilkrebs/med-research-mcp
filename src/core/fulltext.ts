@@ -1,9 +1,11 @@
 /**
  * Full-text resolution + extraction.
  *
- * Given a PMID (and optionally a DOI), a PMCID or a Europe PMC preprint id, try —
- * in order — the machine's access paths, and return the article body as markdown:
+ * Given a PMID (and optionally a DOI), a PMCID, a Europe PMC preprint id or a
+ * ChinaXiv or RussiaRxiv id, try — in order — the machine's access paths, and
+ * return the article body as markdown:
  *
+ *   0. ChinaRxiv      — for a ChinaXiv or RussiaRxiv id: its API's translated text
  *   1. Europe PMC     — its full-text API, when the record has a PMCID (or is a
  *                       PMCID or preprint id): open access, with tables
  *   2. Unpaywall      — free, aggregates every open-access copy of a DOI; PMC and
@@ -14,15 +16,19 @@
  *                       says what each location answered
  *
  * The abstract of a PMID comes from PubMed. For any other id (a preprint's, or
- * another database's passed with its DOI) it comes from the record Europe PMC's
- * adapter holds, and the record's DOI opens steps 2 to 4 for a PMCID or preprint
- * id passed without one (see {@link lookUpRecord}).
+ * another database's passed with its DOI) it comes from the record that database's
+ * adapter holds, and the DOI of Europe PMC's record opens steps 2 to 4 for a PMCID
+ * or preprint id passed without one (see {@link lookUpRecord}).
  *
  * Only open-access (Europe PMC, Unpaywall) texts are cached; a proxy or direct
- * text may be licensed to the user alone. A long text is returned in parts of at
- * most `maxChars` characters; `offset` reads on from where the last part ended. A
- * proxy or direct text that goes on is kept in memory while it is read (see
- * {@link READING_TTL_MS}), so that every part comes from the same text.
+ * text may be licensed to the user alone, and a ChinaRxiv text is a translation of
+ * a paper whose licence the record may leave blank (none of the 5 ChinaXiv records
+ * read on 2026-11-16 stated one, `license` being null or empty; the 3 RussiaRxiv ones
+ * said "open-access" or "cc-by"), served and not kept (see chinarxiv.ts).
+ * A long text is returned in parts of at most `maxChars` characters; `offset`
+ * reads on from where the last part ended. A text that isn't cached and goes on
+ * is kept in memory while it is read (see {@link READING_TTL_MS}), so that every
+ * part comes from the same text.
  *
  * HTML is reduced to the article body with mozilla/readability, then converted
  * to markdown with turndown. A page counts as full text only if it holds text
@@ -41,7 +47,7 @@ import { LRUCache } from "lru-cache";
 import type { DatabaseAdapter } from "./adapters/types.js";
 import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
-import { errors } from "./errors.js";
+import { errors, isMedResearchError } from "./errors.js";
 import { BlockedUrlError, fetchPublic } from "./public-fetch.js";
 import { NcbiClient } from "./pubmed.js";
 import type { FulltextInput, FulltextOutput, FulltextSource, Article } from "./types.js";
@@ -67,6 +73,8 @@ const EUROPE_PMC_FULLTEXT = "https://www.ebi.ac.uk/europepmc/webservices/rest/";
 const isPmid = (id: string): boolean => /^\d+$/.test(id);
 /** Ids Europe PMC's full-text API takes as they are: PMCIDs, and preprint ids (for preprints it has the text of). */
 const EUROPE_PMC_ID = /^(?:PMC|PPR)\d+$/i;
+/** ChinaRxiv's ids, as its API issues them (2026-11-16): ChinaXiv's `chinaxiv-YYYYMM.NNNNN`, RussiaRxiv's `ru-YYYYMM.NNNNN`. */
+const CHINARXIV_ID = /^(chinaxiv|ru)-\d{6}\.\d+$/i;
 /** Sources whose texts are open access, and so may be cached. */
 const OPEN_ACCESS_SOURCES: ReadonlySet<string> = new Set(["europepmc", "unpaywall"]);
 /**
@@ -94,20 +102,29 @@ export interface FetchedResource {
   bytes?: Uint8Array;
 }
 
-/** What `fetchFulltext` asks of the adapter of a database whose ids PubMed doesn't know: a record by id. */
-export type RecordSource = Pick<DatabaseAdapter, "fetch">;
+/**
+ * What `fetchFulltext` asks of the adapter of a database whose ids PubMed doesn't know: a record by id,
+ * and from ChinaRxiv's the complete record and the translated text.
+ */
+export type RecordSource = Pick<DatabaseAdapter, "fetch" | "fetchFull"> & {
+  /** The text of a record, or null when there is none; throws when the request fails. */
+  fetchText?(id: string): Promise<string | null>;
+};
+
+/** The databases whose records `fetchFulltext` reads for an id PubMed doesn't know. */
+export type RecordDatabase = "europepmc" | "chinaxiv" | "russiarxiv";
 
 /** Injectable seams. Defaults hit the network and load the extraction libraries. */
 export interface FulltextDeps {
   /** Unpaywall client. Defaults to one configured from env, for the NCBI client's `tool`. */
   unpaywall?: UnpaywallClient;
   /**
-   * The adapter holding the records of a database, for an id that isn't a PMID: its abstract, and
-   * the DOI Europe PMC has for a preprint. Defaults to the registry's, so a search's records, which the
-   * adapters keep in memory and in the cache, are found without a request. Returns undefined for a
-   * database it has no adapter for.
+   * The adapter holding the records of a database, for an id that isn't a PMID: the abstract, the DOI
+   * Europe PMC has for a preprint, and ChinaRxiv's translated text. Defaults to the registry's, so a
+   * search's records, which the adapters keep in memory and in the cache, are found without a request.
+   * Returns undefined for a database it has no adapter for.
    */
-  adapter?: (database: "europepmc") => RecordSource | undefined | Promise<RecordSource | undefined>;
+  adapter?: (database: RecordDatabase) => RecordSource | undefined | Promise<RecordSource | undefined>;
   /** Fetch a URL, classifying the body as HTML text or PDF bytes. */
   fetchUrl?: (url: string, timeoutMs: number) => Promise<FetchedResource>;
   /** Reduce an HTML document to the article body and convert it to markdown. */
@@ -129,6 +146,8 @@ export interface FulltextDeps {
 interface Extracted {
   fulltext: string;
   format: "markdown" | "pdf";
+  /** Said with the text: that it is a machine translation. */
+  warning?: string;
 }
 
 type Source = Exclude<FulltextSource, "none">;
@@ -187,12 +206,16 @@ export async function fetchFulltext(
 ): Promise<FulltextOutput> {
   const id = String(input.id ?? "").trim();
   const inputDoi = normalizeDoi(input.doi);
-  // A numeric PMID, an id Europe PMC's full-text API takes, or a supplied DOI is
-  // enough to proceed. Other ids (Europe PMC "CBA:…", ChinaXiv) can arrive with a
-  // DOI, and DOI-based resolution is database-agnostic. Without one there's
+  // A numeric PMID, an id Europe PMC's full-text API takes, a ChinaRxiv id or a
+  // supplied DOI is enough to proceed. Other ids (Europe PMC "CBA:…") can arrive
+  // with a DOI, and DOI-based resolution is database-agnostic. Without one there's
   // nothing to resolve.
   const europePmcId = EUROPE_PMC_ID.test(id) ? id.toUpperCase() : undefined;
-  if (!isPmid(id) && !inputDoi && !europePmcId) {
+  // ChinaXiv and RussiaRxiv ids are lowercase, as the API issues them; the corpus is the id's prefix.
+  const chinarxivMatch = CHINARXIV_ID.exec(id);
+  const chinarxivId = chinarxivMatch ? id.toLowerCase() : undefined;
+  const chinarxivCorpus: RecordDatabase | undefined = chinarxivMatch ? (chinarxivMatch[1]!.toLowerCase() === "ru" ? "russiarxiv" : "chinaxiv") : undefined;
+  if (!isPmid(id) && !inputDoi && !europePmcId && !chinarxivId) {
     throw errors.noDoi(String(input.id ?? ""));
   }
 
@@ -211,7 +234,14 @@ export async function fetchFulltext(
   const reading = readingsOf(cache);
   const readingKey = `${id}\n${proxyPrefix ?? ""}`;
   const serve = (text: Extracted, source: Source, doi: string | undefined): FulltextOutput => {
-    const out: FulltextOutput = { id, ...(doi ? { doi } : {}), source, ...part(text.fulltext, offset, maxChars), format: text.format };
+    const out: FulltextOutput = {
+      id,
+      ...(doi ? { doi } : {}),
+      source,
+      ...part(text.fulltext, offset, maxChars),
+      format: text.format,
+      ...(text.warning ? { warning: text.warning } : {}),
+    };
     if (out.truncated && !OPEN_ACCESS_SOURCES.has(source)) reading.set(readingKey, { ...text, source, doi });
     else reading.delete(readingKey);
     return out;
@@ -240,14 +270,15 @@ export async function fetchFulltext(
   // The record of an id PubMed doesn't know, from the database that holds it. Looked up once, when first needed.
   const adapterFor = deps.adapter ?? defaultAdapter;
   let recordLookup: Promise<Article | undefined> | undefined;
-  const record = (): Promise<Article | undefined> => (recordLookup ??= lookUpRecord(europePmcId ?? id, cache, adapterFor));
+  const record = (): Promise<Article | undefined> =>
+    (recordLookup ??= lookUpRecord(chinarxivId ?? europePmcId ?? id, chinarxivCorpus, cache, adapterFor));
 
   // The abstract: the landing-page check needs it, and the fallback returns it. Looked up once, when first needed.
   let abstractLookup: Promise<string | undefined> | undefined;
   const abstract = (): Promise<string | undefined> => (abstractLookup ??= resolveAbstract(id, article, cache, client, record));
 
-  // No DOI or PMCID → nothing to hand to a publisher/OA lookup. Degrade to the abstract.
-  if (!doi && !pmcid) {
+  // No DOI, PMCID or ChinaRxiv id → nothing to hand to a text or OA lookup. Degrade to the abstract.
+  if (!doi && !pmcid && !chinarxivId) {
     if (!article) throw errors.notFound(id);
     return noneResult(id, undefined, await abstract(), offset, "Could not resolve a DOI for this id, so no full-text source could be tried.");
   }
@@ -311,11 +342,28 @@ export async function fetchFulltext(
     return null;
   };
 
+  // ChinaRxiv's API holds the text of a ChinaXiv or RussiaRxiv record, as a machine translation. The request
+  // goes to the adapter's own host with its headers and rate limit; the id has been checked against CHINARXIV_ID.
+  if (chinarxivId && chinarxivCorpus) {
+    const source = "chinarxiv";
+    try {
+      const adapter = await adapterFor(chinarxivCorpus);
+      const text = (await adapter?.fetchText?.(chinarxivId)) ?? "";
+      if (text.length >= MIN_FULLTEXT_CHARS) {
+        const note = translationNote(await record());
+        return serve({ fulltext: text, format: "markdown", ...(note ? { warning: note } : {}) }, source, doi);
+      }
+      misses.push({ source, kind: "no-text" });
+    } catch (err) {
+      const rateLimited = isMedResearchError(err) && err.code === "RATE_LIMIT";
+      misses.push(rateLimited ? { source, kind: "status", status: 429, host: "chinarxiv.org" } : { source, kind: "unreachable" });
+    }
+  }
   if (pmcid) {
     const out = await attempt("europepmc", [`${EUROPE_PMC_FULLTEXT}${pmcid}/fullTextXML`]);
     if (out) return out;
   }
-  // An id without a DOI is a PMCID or preprint id here: Europe PMC's record of it may carry the DOI the
+  // An id without a DOI is a PMCID or preprint id here (or a ChinaRxiv one): the record may carry the DOI the
   // caller didn't have, which opens the Unpaywall and direct routes (a preprint's copy at medRxiv, say).
   if (!doi && !isPmid(id)) doi = normalizeDoi((await record())?.doi);
   const unpaywall = deps.unpaywall ?? new UnpaywallClient({ tool: client.tool });
@@ -349,6 +397,7 @@ export async function fetchFulltext(
       unpaywallSharedContact: unpaywall.sharedContact,
       proxyConfigured: Boolean(proxyPrefix),
       misses,
+      abstractNotes: chinarxivId && text ? abstractNotes(await record()) : [],
     }),
   );
 }
@@ -413,15 +462,24 @@ function hostOf(url: string): string | undefined {
 }
 
 /**
- * The record behind an id PubMed doesn't know, as Europe PMC's adapter has it. `fetch` answers from the
- * adapter's memo of search results and from the cache, where it stores each record under "europepmc:<id>"
- * ("europepmc:CBA:644599"), before it asks Europe PMC for that exact id, so a record a search found costs no
- * request. The record is also kept under the bare id, as the PMID path keeps its summary, so that the next
- * call finds its DOI and abstract at once. A failed lookup is no record: callers carry on without.
+ * The record behind an id PubMed doesn't know, as its database's adapter has it: ChinaXiv's or RussiaRxiv's
+ * for a ChinaRxiv id (`corpus`), Europe PMC's for any other. `fetch` answers from the adapter's memo of search
+ * results and from the cache, where it stores each record under "<database>:<id>" ("europepmc:CBA:644599"),
+ * before it asks the database for that exact id, so a record a search found costs no request. A Europe PMC
+ * record is also kept under the bare id, as the PMID path keeps its summary, so that the next call finds its
+ * DOI and abstract at once. A ChinaRxiv record comes from `fetchFull`, as complete as the API has it: its
+ * search endpoint cuts abstracts. A failed lookup is no record: callers carry on without.
  */
-async function lookUpRecord(id: string, cache: Cache, adapterFor: NonNullable<FulltextDeps["adapter"]>): Promise<Article | undefined> {
+async function lookUpRecord(
+  id: string,
+  corpus: RecordDatabase | undefined,
+  cache: Cache,
+  adapterFor: NonNullable<FulltextDeps["adapter"]>,
+): Promise<Article | undefined> {
   try {
-    const found = (await (await adapterFor("europepmc"))?.fetch([id], cache))?.[0];
+    const adapter = await adapterFor(corpus ?? "europepmc");
+    if (corpus) return (await adapter?.fetchFull?.([id], cache))?.[0];
+    const found = (await adapter?.fetch([id], cache))?.[0];
     if (found) cache.setSummary(id, found);
     return found;
   } catch {
@@ -431,6 +489,24 @@ async function lookUpRecord(id: string, cache: Cache, adapterFor: NonNullable<Fu
 
 /** The adapters of the registry, loaded on first use so that importing this module stays cheap. */
 const defaultAdapter: NonNullable<FulltextDeps["adapter"]> = async (database) => (await import("./adapters/registry.js")).getAdapter(database);
+
+/**
+ * What to say with ChinaRxiv's text: it is a machine translation, to check against the original. Nothing for
+ * a record whose original is English; a record that couldn't be read counts as translated, as in search.
+ */
+function translationNote(record: Article | undefined): string | undefined {
+  if (record && !record.machineTranslated) return undefined;
+  const original = record?.originalUrl ? ` at ${record.originalUrl}` : " (its originalUrl is in the record literature_fetch returns)";
+  return `Machine translation into English by ChinaRxiv, a third-party service, not the authors' wording: check numbers and claims against the original${original} before relying on them.`;
+}
+
+/** What to say with the abstract of a ChinaXiv or RussiaRxiv record returned in place of its text. */
+function abstractNotes(record: Article | undefined): string[] {
+  const notes = [translationNote(record)];
+  if (record?.machineGeneratedAbstract) notes.push("ChinaRxiv wrote this abstract, not the authors.");
+  if (record?.abstractTruncated) notes.push("The abstract is cut at 500 characters, as ChinaRxiv's search shows it: its full record couldn't be read.");
+  return notes.filter((n): n is string => n !== undefined);
+}
 
 async function resolveAbstract(
   id: string,
@@ -520,9 +596,14 @@ function fallbackWarning(ctx: {
   unpaywallSharedContact: boolean;
   proxyConfigured: boolean;
   misses: Miss[];
+  /** What to say about the abstract being returned (a machine translation, a cut preview), at the end. */
+  abstractNotes: string[];
 }): string {
   const parts: string[] = [];
   const of = (source: Source): Miss[] => ctx.misses.filter((m) => m.source === source);
+
+  const chinarxiv = of("chinarxiv")[0];
+  if (chinarxiv) parts.push(chinarxiv.kind === "no-text" ? "ChinaRxiv has no text for this record." : `ChinaRxiv ${describeMiss(chinarxiv)}.`);
 
   const europePmc = of("europepmc")[0];
   if (europePmc && ctx.pmcid) {
@@ -574,6 +655,7 @@ function fallbackWarning(ctx: {
         "MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE=1 to allow them; never on a shared server.",
     );
   }
+  parts.push(...ctx.abstractNotes);
   return parts.join(" ");
 }
 

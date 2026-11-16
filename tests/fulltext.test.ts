@@ -2,11 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultJatsToMarkdown, fetchFulltext, type FetchedResource, type FulltextDeps } from "../src/core/fulltext";
 import { UnpaywallClient, type UnpaywallLookup, type UnpaywallResult } from "../src/core/unpaywall";
 import { EuropePmcAdapter } from "../src/core/adapters/europepmc";
+import { ChinaRXivAdapter } from "../src/core/adapters/chinarxiv";
 import type { AdapterHttp } from "../src/core/adapters/http";
 import { FULLTEXT_TTL_MS, LRUBackend } from "../src/core/cache";
 import { NcbiClient } from "../src/core/pubmed";
 import { PROJECT_CONTACT_EMAIL } from "../src/core/version";
-import { ResearchApiException } from "../src/core/errors";
+import { errors, ResearchApiException } from "../src/core/errors";
 import { BlockedUrlError } from "../src/core/public-fetch";
 import type { Article } from "../src/core/types";
 
@@ -493,8 +494,8 @@ describe("fetchFulltext resolution strategy", () => {
     );
   });
 
-  it("explains that a DOI-less record from another database can't be resolved", async () => {
-    const error = await fetchFulltext({ id: "chinaxiv-202401.00027" }, new LRUBackend(), fakeClient()).catch(
+  it("explains that an id that isn't resolved on its own needs a DOI", async () => {
+    const error = await fetchFulltext({ id: "CBA:644599" }, new LRUBackend(), fakeClient()).catch(
       (e: unknown) => e as ResearchApiException,
     );
     expect(error).toMatchObject({ code: "NOT_FOUND", recoverable: false });
@@ -767,6 +768,169 @@ describe("fetchFulltext — Europe PMC by PMCID", () => {
       expect(out.fulltext).toBe("The preprint's abstract.");
       expect(new URL(urls.at(-1)!).searchParams.get("query")).toBe("EXT_ID:PPR123456 AND SRC:PPR");
     });
+  });
+});
+
+describe("fetchFulltext — ChinaXiv and RussiaRxiv by their ChinaRxiv id", () => {
+  const CN_ID = "chinaxiv-202401.00027";
+  const RU_ID = "ru-196201.58177";
+  const ORIGINAL = "https://chinaxiv.org/abs/202401.00027";
+  const BODY = ("<!-- source-page: 001 -->\n\n# A title\n\n" + "Translated sentence. ".repeat(60)).trim();
+  const RECORD: Article = {
+    pmid: CN_ID,
+    title: "Gastrointestinal dysfunction",
+    authors: ["Li Jing"],
+    journal: "ChinaXiv",
+    pubDate: "2024-01-03",
+    publicationTypes: [],
+    database: "chinaxiv",
+    originalUrl: ORIGINAL,
+    machineTranslated: true,
+    abstract: "The complete abstract.",
+  };
+
+  /** A stand-in for the ChinaRxiv adapters: `text` is what `/text` answers (null: no text; an Error: the request fails). */
+  function fakeChinaRxiv(text: string | null | Error, record?: Article) {
+    const fetchText = vi.fn(async (_id: string) => {
+      if (text instanceof Error) throw text;
+      return text;
+    });
+    const fetchFull = vi.fn(async (_ids: string[]) => (record ? [record] : []));
+    const databases: string[] = [];
+    const adapter: FulltextDeps["adapter"] = (database) => {
+      databases.push(database);
+      return database === "europepmc" ? undefined : { fetch: async () => [], fetchFull, fetchText };
+    };
+    return { fetchText, fetchFull, databases, adapter };
+  }
+
+  it("returns the translated text, and says it is a machine translation with a pointer to the original", async () => {
+    const china = fakeChinaRxiv(BODY, RECORD);
+    const out = await fetchFulltext({ id: CN_ID }, new LRUBackend(), fakeClient(), { adapter: china.adapter });
+    expect(out).toMatchObject({ id: CN_ID, source: "chinarxiv", format: "markdown", fulltext: BODY, truncated: false, totalChars: BODY.length });
+    expect(out.doi).toBeUndefined();
+    expect(out.warning).toContain("Machine translation into English by ChinaRxiv");
+    expect(out.warning).toContain(`against the original at ${ORIGINAL}`);
+    expect(china.fetchText).toHaveBeenCalledWith(CN_ID);
+    expect([...new Set(china.databases)]).toEqual(["chinaxiv"]);
+  });
+
+  it("takes a RussiaRxiv id from the russiarxiv adapter, and a capitalized id as the API writes it", async () => {
+    const china = fakeChinaRxiv(BODY, { ...RECORD, pmid: RU_ID, database: "russiarxiv", originalUrl: "https://www.mathnet.ru/eng/dan27147" });
+    const out = await fetchFulltext({ id: ` RU-196201.58177 ` }, new LRUBackend(), fakeClient(), { adapter: china.adapter });
+    expect(out.source).toBe("chinarxiv");
+    expect(out.warning).toContain("https://www.mathnet.ru/eng/dan27147");
+    expect([...new Set(china.databases)]).toEqual(["russiarxiv"]);
+    expect(china.fetchText).toHaveBeenCalledWith(RU_ID);
+  });
+
+  it("leaves out the translation warning for an English original, and says it when the record couldn't be read", async () => {
+    const { machineTranslated: _t, ...english } = RECORD;
+    const original = await fetchFulltext({ id: CN_ID }, new LRUBackend(), fakeClient(), { adapter: fakeChinaRxiv(BODY, english).adapter });
+    expect(original.source).toBe("chinarxiv");
+    expect(original.warning).toBeUndefined();
+
+    const unread = await fetchFulltext({ id: CN_ID }, new LRUBackend(), fakeClient(), { adapter: fakeChinaRxiv(BODY).adapter });
+    expect(unread.warning).toContain("Machine translation into English by ChinaRxiv");
+    expect(unread.warning).toContain("its originalUrl is in the record literature_fetch returns");
+  });
+
+  it("doesn't put the text into the cache, and reads on from the same download with the warning on every part", async () => {
+    const china = fakeChinaRxiv(BODY, RECORD);
+    const cache = new LRUBackend();
+    const deps: FulltextDeps = { adapter: china.adapter, maxChars: 400 };
+    const parts: string[] = [];
+    let offset: number | undefined = 0;
+    while (offset !== undefined) {
+      const out = await fetchFulltext({ id: CN_ID, offset }, cache, fakeClient(), deps);
+      expect(out.source).toBe("chinarxiv");
+      expect(out.warning).toContain("Machine translation");
+      parts.push(out.fulltext!);
+      offset = out.nextOffset;
+    }
+    expect(parts.length).toBeGreaterThan(2);
+    expect(parts.join("")).toBe(BODY);
+    expect(china.fetchText).toHaveBeenCalledTimes(1);
+    expect(cache.getFulltext(CN_ID)).toBeNull();
+    // Read to the end, it is let go: a new reading asks again.
+    await fetchFulltext({ id: CN_ID }, cache, fakeClient(), deps);
+    expect(china.fetchText).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns the complete abstract, and says there is no text, when ChinaRxiv has none for the record", async () => {
+    const out = await fetchFulltext({ id: CN_ID }, new LRUBackend(), fakeClient(), { adapter: fakeChinaRxiv(null, RECORD).adapter });
+    expect(out).toMatchObject({ source: "none", fulltext: "The complete abstract.", truncated: false });
+    expect(out.warning).toContain("No full text found; returned the abstract only.");
+    expect(out.warning).toContain("ChinaRxiv has no text for this record.");
+    expect(out.warning).toContain(`original at ${ORIGINAL}`);
+    expect(out.warning).not.toMatch(/cut at 500|wrote this abstract/);
+  });
+
+  it("says when the abstract is a search preview, or one ChinaRxiv wrote", async () => {
+    const record = { ...RECORD, abstractTruncated: true, machineGeneratedAbstract: true };
+    const out = await fetchFulltext({ id: RU_ID }, new LRUBackend(), fakeClient(), { adapter: fakeChinaRxiv(null, record).adapter });
+    expect(out.source).toBe("none");
+    expect(out.warning).toContain("ChinaRxiv wrote this abstract, not the authors.");
+    expect(out.warning).toContain("The abstract is cut at 500 characters");
+  });
+
+  it("treats a text of a few characters as none", async () => {
+    const out = await fetchFulltext({ id: CN_ID }, new LRUBackend(), fakeClient(), { adapter: fakeChinaRxiv("<!-- source-page: 001 -->", RECORD).adapter });
+    expect(out.source).toBe("none");
+    expect(out.warning).toContain("ChinaRxiv has no text for this record.");
+  });
+
+  it("says what went wrong, and returns the abstract, when the text can't be read", async () => {
+    const limited = await fetchFulltext({ id: CN_ID }, new LRUBackend(), fakeClient(), {
+      adapter: fakeChinaRxiv(errors.rateLimit(30, "ChinaRxiv"), RECORD).adapter,
+    });
+    expect(limited).toMatchObject({ source: "none", fulltext: "The complete abstract." });
+    expect(limited.warning).toContain("ChinaRxiv rate-limited the request (HTTP 429).");
+    const down = await fetchFulltext({ id: CN_ID }, new LRUBackend(), fakeClient(), { adapter: fakeChinaRxiv(new Error("HTTP 503"), RECORD).adapter });
+    expect(down.warning).toContain("ChinaRxiv couldn't be reached.");
+    // Neither the record nor the text: nothing to return, and no error either.
+    const nothing = await fetchFulltext({ id: CN_ID }, new LRUBackend(), fakeClient(), { adapter: fakeChinaRxiv(null).adapter });
+    expect(nothing).toMatchObject({ source: "none" });
+    expect(nothing.fulltext).toBeUndefined();
+    expect(nothing.warning).toContain("No full text found, and no abstract is available. ChinaRxiv has no text for this record.");
+  });
+
+  it("goes on to the DOI routes when a DOI was given and ChinaRxiv has no text", async () => {
+    const out = await fetchFulltext({ id: CN_ID, doi: DOI }, new LRUBackend(), fakeClient(), {
+      adapter: fakeChinaRxiv(null, RECORD).adapter,
+      unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://oa.example/article"] }),
+      fetchUrl: async () => htmlResource("<x/>"),
+      htmlToMarkdown: async () => LONG_MARKDOWN,
+    });
+    expect(out).toMatchObject({ source: "unpaywall", doi: DOI });
+  });
+
+  it("asks the ChinaRxiv API for exactly the id's text, with the adapter's headers", async () => {
+    const urls: string[] = [];
+    const http: AdapterHttp = {
+      json: async <T>(url: string): Promise<T> => {
+        urls.push(url);
+        const paper = url.endsWith("/text") ? { id: CN_ID, title: "T", body_md: BODY, word_count: 60 } : { id: CN_ID, title: "T", authors: [], abstract: "Whole.", source: "chinaxiv", source_language: "zh", source_url: ORIGINAL };
+        return paper as T;
+      },
+      text: async () => "",
+    };
+    const adapter = new ChinaRXivAdapter(http);
+    const out = await fetchFulltext({ id: CN_ID }, new LRUBackend(), fakeClient(), { adapter: (database) => (database === "chinaxiv" ? adapter : undefined) });
+    expect(out).toMatchObject({ source: "chinarxiv", fulltext: BODY });
+    expect(out.warning).toContain(ORIGINAL);
+    expect(urls.sort()).toEqual([
+      `https://chinarxiv.org/api/v1/papers/${CN_ID}`,
+      `https://chinarxiv.org/api/v1/papers/${CN_ID}/text`,
+    ]);
+  });
+
+  it("never sends an id that isn't a ChinaRxiv id to ChinaRxiv", async () => {
+    const adapter = vi.fn();
+    for (const id of ["chinaxiv-202401.00027/../../stats", "chinaxiv-202401.00027?x=1", "https://chinarxiv.org/items/chinaxiv-202401.00027", "202401.00027", "chinaxiv-2024.00027"]) {
+      await expect(fetchFulltext({ id }, new LRUBackend(), fakeClient(), { adapter })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    }
+    expect(adapter).not.toHaveBeenCalled();
   });
 });
 

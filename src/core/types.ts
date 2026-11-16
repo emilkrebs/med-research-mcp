@@ -235,15 +235,23 @@ export interface FetchOutput {
 
 /**
  * How a full text was obtained: Europe PMC's full-text API by PMCID, an open-access copy
- * Unpaywall located, the institutional proxy, or the DOI directly. `none` means only the
- * abstract (or nothing) is available.
+ * Unpaywall located, the institutional proxy, the DOI directly, or ChinaRxiv's machine
+ * translation of a ChinaXiv or RussiaRxiv record. `none` means only the abstract (or
+ * nothing) is available.
  */
-export type FulltextSource = "europepmc" | "unpaywall" | "proxy" | "direct" | "none";
+export type FulltextSource = "europepmc" | "unpaywall" | "proxy" | "direct" | "chinarxiv" | "none";
 
 export interface FulltextInput {
-  /** A PMID, a PMCID ("PMC…"), a Europe PMC preprint id ("PPR…"), or another database's id with `doi`. */
+  /**
+   * A PMID, a PMCID ("PMC…"), a Europe PMC preprint id ("PPR…") or a ChinaXiv or RussiaRxiv id
+   * ("chinaxiv-…", "ru-…"), each on its own; or another database's id with `doi`.
+   */
   id: string;
-  /** DOI — if provided, skips the id→DOI lookup. */
+  /**
+   * DOI, as "10.…" or a https://doi.org/ link; a record's url is not one. Required for an id
+   * outside the list above. With a PMID it skips the id→DOI lookup; a PMCID or preprint id without
+   * it takes the DOI Europe PMC has for the record, if any.
+   */
   doi?: string;
   /** Character position in the full text to return it from: a previous call's `nextOffset`. Default 0. */
   offset?: number;
@@ -255,7 +263,10 @@ export interface FulltextOutput {
   id: string;
   doi?: string;
   source: FulltextSource;
-  /** Extracted full text (markdown) or, on the fallback path, the abstract. Absent if nothing was available. */
+  /**
+   * Extracted full text (markdown) or, on the fallback path, the abstract. Absent if nothing was available.
+   * With source "chinarxiv" it is a machine translation (see `warning`).
+   */
   fulltext?: string;
   format: "markdown" | "pdf";
   /** True if the text goes on past the part returned; `nextOffset` says where. */
@@ -264,7 +275,12 @@ export interface FulltextOutput {
   totalChars?: number;
   /** Set when `truncated`: pass it as `offset` to read on. */
   nextOffset?: number;
-  /** Set when the full text couldn't be retrieved: what each location answered, and what to do. */
+  /**
+   * Set when the full text couldn't be retrieved: what each location answered, and what to do. Also set,
+   * though the text was retrieved, when the text is a machine translation (source "chinarxiv"): it says so
+   * and points to the original, as the `machine-translated` flag does for a search result. Absent for an
+   * English original.
+   */
   warning?: string;
 }
 

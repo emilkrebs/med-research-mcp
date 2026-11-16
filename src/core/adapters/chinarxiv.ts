@@ -21,6 +21,24 @@
  * header, set from MED_RESEARCH_CHINAXIV_EMAIL, falling back to NCBI_EMAIL
  * (see chinaxivHeaders below).
  *
+ * Full text: `GET /papers/{id}/text` returns `{ id, title, body_md, word_count }`, the
+ * translated body as Markdown (with `<!-- source-page: 001 -->` markers), for ChinaXiv and
+ * RussiaRxiv ids alike (`chinaxiv-YYYYMM.NNNNN`, `ru-YYYYMM.NNNNN`; an unprefixed id is a
+ * 404). A record without full text gets 200 and an empty `body_md`; an unknown id gets 404.
+ * `/stats` counts text for 26,428 of 26,652 ChinaXiv records and all 25,456 RussiaRxiv
+ * records (2026-11-16). `literature_fulltext` reads it through {@link ChinaRxivApiAdapter.fetchText}.
+ * Checked before using it, 2026-11-16: the OpenAPI spec describes the endpoint ("Returns the
+ * translated body text in Markdown format") and states only the rate limits and a CC BY 4.0
+ * licence; https://chinarxiv.org/llms.txt calls the archive "free, open-access", lists
+ * `/papers/PAPER_ID/text` in its quickstart and says no authentication is required; chinarxiv.org
+ * has no terms page (/about, /terms, /license and /privacy answer 404). Its robots.txt, Cloudflare's
+ * managed block, says `Content-Signal: search=yes,ai-train=no,use=reference` and disallows named
+ * AI training crawlers (including ClaudeBot and GPTBot). This client is no crawler: it reads
+ * one record for a user's request, through the documented API, and trains nothing. `use=reference`
+ * ("Index, excerpt, and link back", Cloudflare's managed robots.txt documentation) states
+ * a preference for what a crawler keeps and reuses, so the texts are served and not kept past
+ * the process (see fulltext.ts).
+ *
  * The search endpoint cuts abstracts at 500 characters ("…outcome indic..."),
  * which often drops the Results of a long abstract. Search keeps those previews
  * (one request per search) and sets `abstractTruncated` on them; an explicit fetch
@@ -259,6 +277,20 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
       if (preview) out.push(preview);
     }
     return out;
+  }
+
+  /**
+   * The translated body of a record as Markdown, from `/papers/{id}/text`: the answer for a record
+   * with full text is a JSON object with `body_md`. `null` when the API has none (it answers 200 with an
+   * empty `body_md` for a record that lacks full text, and 404 for an unknown id, which the HTTP seam
+   * throws as an error like any other failed request). Reads one record by an id the caller checked,
+   * on this adapter's own host and headers.
+   */
+  async fetchText(id: string): Promise<string | null> {
+    const paper = await this.http.json<{ id?: unknown; body_md?: unknown }>(`${BASE}/${encodeURIComponent(id)}/text`);
+    if (paper?.id !== undefined && paper.id !== id) return null;
+    const body = typeof paper?.body_md === "string" ? paper.body_md.trim() : "";
+    return body || null;
   }
 
   protected async fetchOne(id: string): Promise<Article | null> {

@@ -412,6 +412,45 @@ describe("ChinaRXivAdapter", () => {
   });
 });
 
+describe("fetchText (the translated full text)", () => {
+  const TEXT = { id: "chinaxiv-202401.00027", title: "T", body_md: "<!-- source-page: 001 -->\n\n# T\n\nBody.\n", word_count: 1 };
+
+  it("reads /papers/{id}/text and returns the Markdown body", async () => {
+    const { http, urls } = fakeHttp(TEXT);
+    expect(await new ChinaRXivAdapter(http).fetchText("chinaxiv-202401.00027")).toBe("<!-- source-page: 001 -->\n\n# T\n\nBody.");
+    expect(urls).toEqual(["https://chinarxiv.org/api/v1/papers/chinaxiv-202401.00027/text"]);
+    const russian = fakeHttp({ ...TEXT, id: "ru-196201.58177" });
+    await new SovietRxivAdapter(russian.http).fetchText("ru-196201.58177");
+    expect(russian.urls).toEqual(["https://chinarxiv.org/api/v1/papers/ru-196201.58177/text"]);
+  });
+
+  it("returns null for a record without text, which the API answers with an empty body, or for another record's", async () => {
+    // As answered on 2026-11-16 for a record whose has_full_text is false.
+    expect(await new ChinaRXivAdapter(fakeHttp({ ...TEXT, body_md: "", word_count: 0 }).http).fetchText("chinaxiv-202401.00027")).toBeNull();
+    expect(await new ChinaRXivAdapter(fakeHttp({ ...TEXT, body_md: "  \n" }).http).fetchText("chinaxiv-202401.00027")).toBeNull();
+    expect(await new ChinaRXivAdapter(fakeHttp({ id: "chinaxiv-202401.00027", title: "T" }).http).fetchText("chinaxiv-202401.00027")).toBeNull();
+    expect(await new ChinaRXivAdapter(fakeHttp({ ...TEXT, id: "chinaxiv-202601.00001" }).http).fetchText("chinaxiv-202401.00027")).toBeNull();
+  });
+
+  it("lets a failed request through, as an error, and sends the adapter's contact header", async () => {
+    vi.stubEnv("MED_RESEARCH_CHINAXIV_EMAIL", "chinaxiv@example.com");
+    const sent: Record<string, string>[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      sent.push((init?.headers ?? {}) as Record<string, string>);
+      return sent.length === 1 ? new Response(JSON.stringify(TEXT)) : new Response("", { status: 404 });
+    });
+    try {
+      const adapter = new ChinaRXivAdapter();
+      expect(await adapter.fetchText("chinaxiv-202401.00027")).toContain("Body.");
+      await expect(adapter.fetchText("chinaxiv-209999.99999")).rejects.toMatchObject({ code: "NETWORK_ERROR" });
+      expect(sent.map((h) => h["X-API-Email"])).toEqual(["chinaxiv@example.com", "chinaxiv@example.com"]);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe("SovietRxivAdapter", () => {
   it("search() asks for the russiarxiv corpus", async () => {
     const { http, urls } = fakeHttp({ total: 1, data: [RUSSIARXIV_RECORD] });
