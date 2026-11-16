@@ -30,7 +30,7 @@
 
 - **Four databases in one search**, merged and de-duplicated.
 - **Study-design labels from NLM metadata**: each result says what kind of study it is, where that design ranks in the evidence hierarchy, and whether it was retracted or corrected. No guessing: a record without metadata says `unknown`.
-- **Full text when the abstract isn't enough**, through open access, your institution's proxy, or the DOI.
+- **Full text when the abstract isn't enough**, through open access, your institution's proxy or the DOI, and ChinaRxiv's machine translation for ChinaXiv and RussiaRxiv.
 - **Agent skills** that teach the assistant to write precise queries, read the labels and appraise evidence.
 - **No LLM calls, no accounts, no telemetry.** It runs on your machine.
 
@@ -99,7 +99,7 @@ Set these in the `env` block of your MCP client's configuration. All are optiona
 | `MED_RESEARCH_UNPAYWALL_EMAIL` | Contact email for Unpaywall, which finds open-access full texts. |
 | `MED_RESEARCH_CHINAXIV_EMAIL` | Contact email for ChinaRxiv, which serves the `chinaxiv` and `russiarxiv` sources; raises its rate limit from 30 to 300 requests per minute. |
 | `MED_RESEARCH_PROXY_PREFIX` | Your institution's EZproxy host for doi.org, e.g. `https://doi-org.ezproxy.your-university.edu`, to read paywalled papers you have access to. It works only if the proxy lets this machine in without a login, e.g. on the campus network or VPN. Use it only if your institution's licences allow it: many publishers forbid using subscription content with AI tools. |
-| `MED_RESEARCH_FULLTEXT_MAX_CHARS` | Cap on the length of returned full texts. Default `50000`. |
+| `MED_RESEARCH_FULLTEXT_MAX_CHARS` | Cap on the length of each part of a full text: a longer text is returned in parts, read on with `offset`. Default `50000`. |
 | `MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE` | `1` lets full-text fetches reach private or reserved network addresses, which the server otherwise refuses. Needed only on a personal machine behind a fake-IP DNS proxy (Clash, Surge or sing-box in TUN mode) or split-horizon DNS; never set it on a shared server. |
 | `MED_RESEARCH_CACHE_BACKEND` | `memory` (default) or `sqlite`, which keeps the cache across restarts. |
 | `MED_RESEARCH_CACHE_PATH` | The SQLite file for the `sqlite` backend. Use an absolute path: the default, `./pubmed-cache.db`, is relative to the directory your client starts the server in. |
@@ -112,7 +112,7 @@ Set these in the `env` block of your MCP client's configuration. All are optiona
 | --- | --- |
 | `literature_search` | Searches one or more databases and labels each result with its study design, design tier and integrity flags. |
 | `literature_fetch` | Returns the full record and abstract of specific papers. |
-| `literature_fulltext` | Returns a paper's full text as markdown, when an open-access or licensed copy can be found. |
+| `literature_fulltext` | Returns the full text of a paper as markdown, given a PMID, PMCID, preprint id or ChinaXiv or RussiaRxiv id: an open-access or licensed copy when one can be found, and for ChinaXiv and RussiaRxiv ids ChinaRxiv's machine translation. |
 
 The assistant usually searches first, reads the promising abstracts, and fetches the full text when it needs the methods, dosage or sample size. [docs/tools.md](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/tools.md) has every parameter.
 

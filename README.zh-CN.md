@@ -31,7 +31,7 @@
 
 - **一次检索覆盖四个数据库**，结果合并并去重。
 - **研究设计标注来自美国国家医学图书馆（NLM）的元数据**：每条结果都注明它属于哪类研究、这种设计在证据等级中处于什么位置，以及是否已被撤稿或更正。不做猜测：没有相应元数据的记录标为 `unknown`。
-- **摘要不够时可获取全文**，途径包括开放获取版本、你所在机构的代理或 DOI。
+- **摘要不够时可获取全文**，途径包括开放获取版本、你所在机构的代理或 DOI；ChinaXiv 和 RussiaRxiv 的论文还可获取 ChinaRxiv 提供的机器翻译全文。
 - **智能体技能（Agent Skills）**，教助手编写精确的检索式、解读标注并评价证据。
 - **不调用大语言模型，无需账号，不发送遥测数据**。服务器在你自己的电脑上运行。
 
@@ -105,7 +105,7 @@ npm run build
 | `MED_RESEARCH_UNPAYWALL_EMAIL` | Unpaywall 的联系邮箱。Unpaywall 用于查找开放获取的全文。 |
 | `MED_RESEARCH_CHINAXIV_EMAIL` | ChinaRxiv 的联系邮箱。ChinaRxiv 提供 `chinaxiv` 和 `russiarxiv` 两个数据源；设置后，其速率上限从每分钟 30 次请求提高到 300 次。 |
 | `MED_RESEARCH_PROXY_PREFIX` | 你所在机构用于 doi.org 的 EZproxy 地址，例如 `https://doi-org.ezproxy.your-university.edu`，用于阅读你有权访问的付费论文。仅当该代理无需登录即可放行本机时才有效，例如在校园网内或通过 VPN 连接时。请仅在机构的许可协议允许时使用：许多出版商禁止将订阅内容用于 AI 工具。 |
-| `MED_RESEARCH_FULLTEXT_MAX_CHARS` | 返回全文的最大长度（字符数）。默认为 `50000`。 |
+| `MED_RESEARCH_FULLTEXT_MAX_CHARS` | 全文每一部分的最大长度（字符数）：较长的全文分段返回，用 `offset` 接着读取。默认为 `50000`。 |
 | `MED_RESEARCH_FULLTEXT_ALLOW_PRIVATE` | 设为 `1` 时，允许获取全文的请求访问私有或保留网络地址（服务器默认拒绝）。仅当个人电脑使用 fake-IP 模式的 DNS 代理（如 TUN 模式下的 Clash、Surge 或 sing-box）或分离解析（split-horizon DNS）时才需要；切勿在共享服务器上设置。 |
 | `MED_RESEARCH_CACHE_BACKEND` | `memory`（默认）或 `sqlite`；后者在重启后仍保留缓存。 |
 | `MED_RESEARCH_CACHE_PATH` | `sqlite` 后端使用的 SQLite 文件。请使用绝对路径：默认值 `./pubmed-cache.db` 是相对于客户端启动服务器时所在目录的路径。 |
@@ -118,7 +118,7 @@ npm run build
 | --- | --- |
 | `literature_search` | 检索一个或多个数据库，并为每条结果标注研究设计、设计等级和警示标记。 |
 | `literature_fetch` | 返回指定论文的完整记录和摘要。 |
-| `literature_fulltext` | 在能找到开放获取或已获授权的版本时，以 Markdown 格式返回论文全文。 |
+| `literature_fulltext` | 输入 PMID、PMCID、预印本编号或 ChinaXiv、RussiaRxiv 编号，以 Markdown 格式返回论文全文：能找到开放获取或已获授权的版本时返回该版本，ChinaXiv 和 RussiaRxiv 的编号则返回 ChinaRxiv 的机器翻译文本。 |
 
 助手通常先检索，再阅读有价值的摘要，在需要研究方法、剂量或样本量时获取全文。全部参数见 [docs/tools.md](https://github.com/emilkrebs/med-research-mcp/blob/main/docs/tools.md)（英文）。
 
