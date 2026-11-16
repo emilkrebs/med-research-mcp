@@ -110,6 +110,66 @@ export function splitAuthors(value: unknown): string[] {
     .filter(Boolean);
 }
 
+/** An affiliation marker after a name: "<sup>1,2*</sup>", "^1^", "^1,2*^", "^1" with no closing caret, or "¹". */
+const AFFILIATION_MARKER =
+  /<sup>[^<]*<\/sup>|\s*\^\d+(?:[,;]\d+)*[*★☆△†‡§#]*\^?|\s*\^[*★☆△†‡§#]+\^?|\s*[⁰¹²³⁴⁵⁶⁷⁸⁹]+(?:[,;][⁰¹²³⁴⁵⁶⁷⁸⁹]+)*[*★☆△†‡§#]*/gi;
+/** A corresponding-author symbol on the end of a name once the numbered markers are gone ("KUANG Li★") or before it ("**Yan Xi"). */
+const TRAILING_SYMBOL = /\s*[*★☆△†‡§]+(?=\s*(?:[,;]|$))/gu;
+const LEADING_SYMBOL = /(?<=^|[,;]\s*)[*★☆△†‡§]+\s*/gu;
+/** Letters, spaces and what names carry between them; anything else (digits, ":", "@", "(", a line break) marks text that isn't a plain list of names. */
+const NAME_ONLY = /^[\p{L}\p{M}'’.·\- ]+$/u;
+/** Words that make a piece an organisation, whose own commas separate its parts: "Children's Hospital, Zhejiang University". */
+const ORGANISATION =
+  /\b(?:hospital|clinic|university|institute|institution|academy|college|school|department|laboratory|centre|center|society|association|committee|council|commission|federation|consortium|collaboration|group|team|network|section|foundation|organi[sz]ation|union|company|ministry|bureau)\b/i;
+/** A lowercase name particle ("van der Berg, Jan"): the surname may be written first, with its given name after a comma. */
+const NAME_PARTICLE = /(?:^|\s)(?:van|von|der|den|de|del|della|di|da|dos|du|la|le|ter|bin|ibn|al|el)(?:\s|$)/;
+/** An initial: "J", "J." or "J.R."; a piece of nothing else is the given name of a "Smith, J. R.", not a name of its own. */
+const INITIAL = /^(?:\p{Lu}\.)+$|^\p{Lu}$/u;
+
+/**
+ * Author names of one record, for databases that return a name list as one string.
+ * ChinaRxiv does, with affiliation markers in several forms and repeated names (checked
+ * 2026-11-16 over 437 search results of both corpora; 63 had a joined list of two names):
+ *
+ *   ["LI Ge<sup>1</sup>, ZHOU Yu<sup>2*</sup>"]   ["Lin Fang^1^, Ma Lu^2,3*^"]   ["Chen Hu ^1, Xu Zi ^1,2"]
+ *   ["Zeng Ke ^1; Wang Yu ^2"]   ["Hui Li, Qing-Wei Li, and Li-Qiang Song"]   ["G. P. Kalina, N. B. Komzolova"]
+ *   ["Qi Jing", "Cai Qing", "Qi Jing"]   ["Li, Nan", "Zhang, Xiaoguang"]   []
+ *
+ * Markers are stripped from every name, exact repeats dropped. A list of one string is
+ * split into names only when that can't cut a name in two: at semicolons, which a
+ * "Surname, Given" name doesn't contain, or at commas when every piece is a name of two
+ * or more words that isn't initials only, carries no lowercase particle and names no
+ * organisation. "Li, Nan" or "Smith, J. R." stay one name; a list that is already
+ * several elements is never split. Text that isn't a list of names ("Corresponding
+ * author: … E-mail: …") is kept as it is.
+ */
+export function cleanAuthors(value: unknown): string[] {
+  const items = strArray(value).map((s) => s.replace(AFFILIATION_MARKER, "").replace(TRAILING_SYMBOL, "").replace(LEADING_SYMBOL, "").trim());
+  const names = items.length === 1 ? splitNames(items[0]!) : items;
+  return [...new Set(names.filter(Boolean))];
+}
+
+/** The names in a string that lists them, or the string itself when it isn't certainly a list. */
+function splitNames(s: string): string[] {
+  if (s.includes(";")) {
+    const pieces = s.split(";").map((p) => p.trim()).filter(Boolean);
+    // A piece may be "Surname, Given": the comma stays.
+    return pieces.length > 1 && pieces.every((p) => NAME_ONLY.test(p.replace(/,/g, "")) && !ORGANISATION.test(p)) ? pieces : [s];
+  }
+  if (!s.includes(",")) return [s];
+  const pieces = s.split(",").map((p) => p.trim()).filter(Boolean);
+  // "A B, C D, and E F": the last piece carries the conjunction.
+  if (pieces.length > 1) pieces[pieces.length - 1] = pieces.at(-1)!.replace(/^(?:and|&)\s+/i, "");
+  const isName = (p: string): boolean => {
+    // A middle dot joins the parts of one written name ("XIEYIRE·Hamulati").
+    const words = p.split(/[\s·]+/);
+    // A particle after the initials of a "G. C. de Elía" belongs to a name written given-name first.
+    const particle = !INITIAL.test(words[0]!) && NAME_PARTICLE.test(p);
+    return NAME_ONLY.test(p) && words.length >= 2 && !words.every((w) => INITIAL.test(w)) && !particle && !ORGANISATION.test(p);
+  };
+  return pieces.length > 1 && pieces.every(isName) ? pieces : [s];
+}
+
 /**
  * Normalize a DOI to its bare form ("10.xxxx/…"), stripping `https://doi.org/`
  * and `doi:` prefixes. Case is preserved (some publisher servers are picky, and

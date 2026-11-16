@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { ChinaRXivAdapter, chinaxivHeaders, parsePapers } from "../src/core/adapters/chinarxiv";
 import { SovietRxivAdapter } from "../src/core/adapters/russiarxiv";
 import { defaultHttp, type AdapterHttp } from "../src/core/adapters/http";
+import { cleanAuthors } from "../src/core/adapters/util";
 import { LRUBackend } from "../src/core/cache";
 import { errors } from "../src/core/errors";
 import { classifyArticle } from "../src/core/grader";
@@ -160,6 +161,81 @@ describe("parsePapers", () => {
     expect(graded.studyType).toBe("unknown");
     expect(graded.designTier).toBeNull();
     expect(graded.flags).toEqual(["machine-translated", "machine-generated-abstract"]);
+  });
+
+  // Shapes of `authors` seen in real search results on 2026-11-16, with synthetic names.
+  it("strips affiliation markers and splits a name list that arrived as one string", () => {
+    const names = (authors: unknown) => cleanAuthors(authors);
+    // <sup> markers, with the corresponding-author asterisk.
+    expect(names(["LI Ge<sup>1</sup>, ZHOU Yu<sup>2</sup>, TIAN Xi<sup>3*</sup>, GAO Ying<sup>1,2*</sup>"])).toEqual([
+      "LI Ge",
+      "ZHOU Yu",
+      "TIAN Xi",
+      "GAO Ying",
+    ]);
+    // Caret markers: closed, with commas inside, and a name that carries a middle dot.
+    expect(names(["Lin Fang^1^, Ma Lu^2^, Xie Yi·Hamu^2^, Liu Fen^1,2,4*^, Zhu Bin^5*^"])).toEqual([
+      "Lin Fang",
+      "Ma Lu",
+      "Xie Yi·Hamu",
+      "Liu Fen",
+      "Zhu Bin",
+    ]);
+    // A caret with no closing one, before the comma that separates the names.
+    expect(names(["BAO Ruo ^1, LU Chao ^1, YE Chun ^2"])).toEqual(["BAO Ruo", "LU Chao", "YE Chun"]);
+    expect(names(["Chen Hu^1, Xu Zi^1, Li Yu^1,2"])).toEqual(["Chen Hu", "Xu Zi", "Li Yu"]);
+    // Semicolons, and a corresponding-author star on the name.
+    expect(names(["Zeng Ke ^1; Wang Yu ^2; Zhu Wei ^1,2"])).toEqual(["Zeng Ke", "Wang Yu", "Zhu Wei"]);
+    expect(names(["KUANG Li★, DING Xin, MA Yuan★"])).toEqual(["KUANG Li", "DING Xin", "MA Yuan"]);
+    // The conjunction of an English list, and the initials of a Russian one.
+    expect(names(["Hui Li, Qing-Wei Li, and Li-Qiang Song"])).toEqual(["Hui Li", "Qing-Wei Li", "Li-Qiang Song"]);
+    expect(names(["E. V. Shmidt, T. P. Prishchep, N. A. Chernova"])).toEqual(["E. V. Shmidt", "T. P. Prishchep", "N. A. Chernova"]);
+    expect(names(["G. P. Kalina, N. B. Komzolova"])).toEqual(["G. P. Kalina", "N. B. Komzolova"]);
+  });
+
+  it("drops exact repeats from a list, and leaves the names that only look alike", () => {
+    expect(cleanAuthors(["Qi Jing", "Cai Qing", "Wang Yan", "Qi Jing", "Yan Wang", "Wang Yan"])).toEqual([
+      "Qi Jing",
+      "Cai Qing",
+      "Wang Yan",
+      "Yan Wang",
+    ]);
+    expect(cleanAuthors(["Lin Fang^1^, Ma Lu^2^, Lin Fang^1^"])).toEqual(["Lin Fang", "Ma Lu"]);
+  });
+
+  it("doesn't split where a comma can belong to one name, an organisation or a note", () => {
+    // "Surname, Given", alone or listed.
+    expect(cleanAuthors(["Li, Nan"])).toEqual(["Li, Nan"]);
+    expect(cleanAuthors(["Li, Nan", "Zhang, Xiaoguang"])).toEqual(["Li, Nan", "Zhang, Xiaoguang"]);
+    expect(cleanAuthors(["Smith, J. R."])).toEqual(["Smith, J. R."]);
+    expect(cleanAuthors(["Van der Berg, Jan Willem"])).toEqual(["Van der Berg, Jan Willem"]);
+    expect(cleanAuthors(["Smith, John, Doe, Jane"])).toEqual(["Smith, John, Doe, Jane"]);
+    // A name list that has a semicolon between "Surname, Given" names splits there only.
+    expect(cleanAuthors(["Li, Nan; Zhang, Xiaoguang"])).toEqual(["Li, Nan", "Zhang, Xiaoguang"]);
+    // Organisations, alone or as listed elements.
+    expect(cleanAuthors(["Children’s Hospital, Zhejiang University School of Medicine"])).toEqual([
+      "Children’s Hospital, Zhejiang University School of Medicine",
+    ]);
+    expect(cleanAuthors(["Dongfang Hospital, Beijing University of Chinese Medicine", "Sleep Research Society"])).toEqual([
+      "Dongfang Hospital, Beijing University of Chinese Medicine",
+      "Sleep Research Society",
+    ]);
+    // Text that isn't a list of names.
+    const contact = "Corresponding author: Guo Tao. E-mail: guo@example.org";
+    expect(cleanAuthors([contact])).toEqual([contact]);
+    const note = 'Hu Yu\n\n(Note: In English publications, Chinese names keep their order, formatted as "Hu Yu")';
+    expect(cleanAuthors([note])).toEqual([note]);
+    // One name, and nothing.
+    expect(cleanAuthors(["G. P. GARTANEEV"])).toEqual(["G. P. GARTANEEV"]);
+    expect(cleanAuthors([])).toEqual([]);
+    expect(cleanAuthors(undefined)).toEqual([]);
+    expect(cleanAuthors(["Shi Run<sup>1</sup>"])).toEqual(["Shi Run"]);
+  });
+
+  it("cleans the authors of a record on the way in", () => {
+    const parse = (authors: unknown) => parsePapers({ data: [{ ...CHINAXIV_RECORD, authors }] }).articles[0]!.authors;
+    expect(parse(["Lin Fang^1^, Ma Lu^2*^"])).toEqual(["Lin Fang", "Ma Lu"]);
+    expect(parse([])).toEqual([]);
   });
 
   it("returns empty results for empty response", () => {

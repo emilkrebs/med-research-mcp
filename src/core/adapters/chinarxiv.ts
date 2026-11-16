@@ -40,7 +40,7 @@
 import { LRUCache } from "lru-cache";
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { cleanDoi, first, isoDateBound, pageWindow, strArray, withoutPubMedTags } from "./util.js";
+import { cleanAuthors, cleanDoi, first, isoDateBound, pageWindow, withoutPubMedTags } from "./util.js";
 import type { Cache } from "../cache.js";
 import type { Article, SearchInput } from "../types.js";
 import { envSetting } from "../version.js";
@@ -109,7 +109,7 @@ function toArticle(r: Record_): Article | null {
   const article: Article = {
     pmid: id,
     title: (first(r.title) ?? "").replace(/\.$/, ""),
-    authors: strArray(r.authors),
+    authors: cleanAuthors(r.authors),
     journal: first(r.publication_title) ?? first(r.publication) ?? (corpus === "chinaxiv" ? "ChinaXiv" : ""),
     pubDate: first(r.date) ?? "",
     publicationTypes: [],
