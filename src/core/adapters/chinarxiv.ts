@@ -9,6 +9,17 @@
  * (`chinaxiv`) or the Soviet-era Russian papers of SovietRxiv (`russiarxiv`).
  * Without it, a search mixes the corpora, so every request sets it.
  *
+ * The spec's `source` enum has a third value, `crad`, "derived from the paper ID prefix", and says
+ * "'chinaxiv' includes legacy unprefixed IDs" (checked 2026-11-16, https://chinarxiv.org/api/openapi.json;
+ * the description of the API there names only chinaxiv and russiarxiv). No record has it: `/stats`
+ * lists only chinaxiv (26,652 papers) and russiarxiv (25,456) under `by_source`, which add up to its
+ * `total_papers` of 52,108; `/papers?q=clinical&source=crad&limit=2` answers 200 with total 0; and an
+ * unknown `source` is a 422 "Must be one of: chinaxiv, russiarxiv, crad". Records carry `source` in
+ * search results and in `/papers/{id}` alike. So `toArticle` reads a record as ChinaXiv when `source`
+ * is absent or "chinaxiv", as RussiaRxiv when it is "russiarxiv", and drops any other: such a record
+ * isn't one of these adapters', so it is never labeled ChinaXiv or given a chinarxiv.org item URL,
+ * and `literature_fetch` reports its id as missing.
+ *
  * "Most records are machine-translated; some are originally in English"
  * (chinarxiv.org, checked 2026-10-19). `source_language` names the original's
  * language, and `abstract_source: "machine_generated"` marks an abstract the
@@ -125,13 +136,17 @@ export interface PaperResponse {
 }
 
 /**
- * One ChinaRxiv record (`PaperSummary` from search, `PaperDetail` from `/papers/{id}`) as an Article.
+ * One ChinaRxiv record (`PaperSummary` from search, `PaperDetail` from `/papers/{id}`) as an Article,
+ * or null for a record without an id or of a source other than chinaxiv and russiarxiv (see the header).
  * `complete` says the record comes from `/papers/{id}`, whose abstract is never cut.
  */
 function toArticle(r: Record_, complete: boolean): Article | null {
   const id = first(r.id);
   if (!id) return null;
-  const corpus: ChinaRxivCorpus = first(r.source) === "russiarxiv" ? "russiarxiv" : "chinaxiv";
+  // Absent, like a legacy row, is ChinaXiv; a source of another corpus (the spec lists "crad") is not ours.
+  const source = first(r.source) ?? "chinaxiv";
+  if (source !== "chinaxiv" && source !== "russiarxiv") return null;
+  const corpus: ChinaRxivCorpus = source;
   // zh, en, ru, de, or "mixed" (Chinese with some English); none on legacy rows.
   const sourceLanguage = first(r.source_language);
 

@@ -6,6 +6,7 @@ import { cleanAuthors } from "../src/core/adapters/util";
 import { LRUBackend } from "../src/core/cache";
 import { errors } from "../src/core/errors";
 import { classifyArticle } from "../src/core/grader";
+import { fetchLiterature } from "../src/core/literature";
 
 /** A ChinaXiv search result as the v1 API returns it (PaperSummary, abstract cut at 500 characters). */
 const CHINAXIV_RECORD = {
@@ -157,6 +158,23 @@ describe("parsePapers", () => {
     expect(soviet.journal).toBe("Doklady Akademii Nauk SSSR");
     expect(soviet.url).toBe("https://sovietrxiv.org/items/ru-196201.58177");
     expect(soviet.originalUrl).toBe("https://www.mathnet.ru/eng/dan27147");
+  });
+
+  // The spec lists a third source, `crad`; no record has it (checked 2026-11-16, see the adapter header).
+  it("reads a record's source: absent or chinaxiv is ChinaXiv, russiarxiv is RussiaRxiv, any other is dropped", () => {
+    const parse = (r: Record<string, unknown>) => parsePapers({ data: [r] }).articles;
+    const { source: _s, ...legacy } = CHINAXIV_RECORD;
+    expect(parse(legacy)[0]).toMatchObject({ database: "chinaxiv", url: "https://chinarxiv.org/items/chinaxiv-202401.00027" });
+    expect(parse({ ...CHINAXIV_RECORD, source: null })[0]?.database).toBe("chinaxiv");
+    expect(parse({ ...CHINAXIV_RECORD, source: "chinaxiv" })[0]?.database).toBe("chinaxiv");
+    expect(parse({ ...RUSSIARXIV_RECORD, source: "russiarxiv" })[0]?.database).toBe("russiarxiv");
+    for (const source of ["crad", "arxiv", "CHINAXIV"]) {
+      expect(parse({ ...CHINAXIV_RECORD, id: "crad-202401.00027", source })).toEqual([]);
+    }
+    // The count is the API's, so a dropped record leaves it as it was.
+    const mixed = parsePapers({ total: 2, data: [{ ...CHINAXIV_RECORD, source: "crad" }, RUSSIARXIV_RECORD] });
+    expect(mixed.count).toBe(2);
+    expect(mixed.articles.map((a) => a.pmid)).toEqual(["ru-196201.58177"]);
   });
 
   it("surfaces both as warning flags; the design stays unknown", () => {
@@ -323,6 +341,20 @@ describe("ChinaRXivAdapter", () => {
 
     const other = fakeHttp({ ...record, id: "chinaxiv-202601.00001" });
     expect(await new ChinaRXivAdapter(other.http).fetch(["chinaxiv-202608.00133"], new LRUBackend())).toEqual([]);
+  });
+
+  it("never presents a record of another source as ChinaXiv: search drops it and a fetch reports its id missing", async () => {
+    const crad = { ...CHINAXIV_RECORD, id: "crad-202401.00027", source: "crad" };
+    const searched = await new ChinaRXivAdapter(fakeHttp({ total: 1, data: [crad] }).http).search({ query: "exercise" });
+    expect(searched).toMatchObject({ count: 1, ids: [] });
+
+    const fetched = await fetchLiterature(
+      { ids: ["crad-202401.00027"], database: "chinaxiv" },
+      new LRUBackend(),
+      new ChinaRXivAdapter(fakeHttp(crad).http),
+    );
+    expect(fetched.articles).toEqual([]);
+    expect(fetched.missing).toEqual(["crad-202401.00027"]);
   });
 
   it("fetchFull() replaces a truncated search preview with the complete record", async () => {
