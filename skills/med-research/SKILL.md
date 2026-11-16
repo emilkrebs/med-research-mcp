@@ -9,7 +9,7 @@ Three tools, a triage-first workflow. **Always start with `literature_search`** 
 
 ## Decision flow
 
-1. Turn the question into a query (below) and call `literature_search`. Default database is `"pubmed"`; for broader coverage use `["pubmed","europepmc"]`, `["pubmed","chinaxiv"]`, or `"all"`. For a preprint or a paper outside MEDLINE search `"europepmc"` (`SRC:PPR` keeps preprints only; PubMed carries only NIH-funded ones). `"russiarxiv"` is Soviet-era papers, mostly mathematics, physics and chemistry, almost no medicine: a zero there is not "no Russian research exists".
+1. Turn the question into a query (below) and call `literature_search`. Default database is `"pubmed"`; for broader coverage use `["pubmed","europepmc"]`, `["pubmed","chinaxiv"]`, or `"all"`. For a preprint or a paper outside MEDLINE search `"europepmc"` (`SRC:PPR` keeps preprints only; PubMed has the NIH-supported ones). `"russiarxiv"` is Soviet-era papers, mostly mathematics, physics and chemistry, almost no medicine: a zero there is not "no Russian research exists".
 2. Read `flags` first. Then **read the abstract of every result whose `designTier` is `null`**: unclassified records and most meta-analyses/systematic reviews. Null means unrated, not weak.
 3. `literature_fetch` the ids you care about (with their `database`) to read whole abstracts.
 4. `literature_fulltext` **only** when the abstract isn't enough: dosage, sample sizes, methods, statistical flaws.
@@ -28,7 +28,7 @@ Three tools, a triage-first workflow. **Always start with `literature_search`** 
 - `europepmc` matches full text, so papers that only mention the words match too. On `europepmc` alone (PubMed reads these as words) limit a word to title and abstract with `TITLE_ABS:word`, and keep preprints with `SRC:PPR`; a tag covers only the next word: `TITLE_ABS:zinc TITLE_ABS:cold`.
 - `chinaxiv`/`russiarxiv` return only records containing **every** word, and read `OR` as a word: give them one or two key words.
 
-Params (`docs/tools.md` has the rest):
+Params (the tool descriptions have the rest):
 
 - `maxResults` (default 10, max 50) counts **per database and page**: two databases return up to 20.
 - `abstractMaxChars` cuts abstracts to that many characters (0 leaves them out). Ten whole abstracts run 20,000–30,000 characters: with several databases or many results set one (600 halves it). `abstractTruncated: true` (also on ChinaXiv/RussiaRxiv previews, cut at 500 characters) means `literature_fetch` the record for the whole abstract.
