@@ -48,12 +48,12 @@ The `.mcpb` is one esbuild bundle plus two exceptions ([`scripts/build-mcpb.mjs`
 
 ## CI
 
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on every push to `main` and every pull request, on Node 22.22.2, 24 and 26: typecheck, tests, both builds, a smoke test that unpacks the `.mcpb`, checks it answers `initialize` with the package version and resolves an HTML page and a PDF through it from a local server, and the benchmark harness's offline tests.
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on every push to `main` and every pull request, on Node 22.22.2, 24 and 26: typecheck, the registry metadata check, tests, both builds, a smoke test that unpacks the `.mcpb`, checks it answers `initialize` with the package version and resolves an HTML page and a PDF through it from a local server, and the benchmark harness's offline tests.
 
 ## Releasing
 
 1. Make sure CI is green on `main`.
-2. Set the version in `package.json` with `npm version <x.y.z> --no-git-tag-version`, then in `mcpb/manifest.json`, `plugin.json` and `mcp.json` (`build:mcpb` refuses a manifest version that differs from `package.json`). A pre-release has a suffix: `0.7.0-next.0`, `0.7.0-next.1`, …
+2. Set the version in `package.json` with `npm version <x.y.z> --no-git-tag-version`, then in `mcpb/manifest.json`, `plugin.json`, `mcp.json` and `server.json` (`build:mcpb` refuses a manifest version that differs from `package.json`, and `npm run check:registry` fails when `server.json` and `package.json` disagree). A pre-release has a suffix: `0.7.0-next.0`, `0.7.0-next.1`, …
 3. Run the checks the release depends on, then commit and push to `main`, or merge a pull request with the change:
 
    ```bash
@@ -82,4 +82,21 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
   | npx -y med-research-mcp@<x.y.z>
+```
+
+### Publishing the registry entry
+
+[`server.json`](../server.json) lists the server in the [official MCP registry](https://registry.modelcontextprotocol.io). `package.json`'s `mcpName` ties the npm package to that entry, and the registry fetches `med-research-mcp@<x.y.z>` from npm to check it, so publish the entry only after the release's `publish.yml` run has put the version on npm. The `io.github.emilkrebs/…` namespace is proven by logging in as the GitHub account that owns the repository.
+
+```bash
+brew install mcp-publisher   # once, or download a release binary
+mcp-publisher login github
+mcp-publisher validate server.json
+mcp-publisher publish
+```
+
+`status` takes the server name, a version and the new status; it does not list versions. To deprecate one without deleting the entry:
+
+```bash
+mcp-publisher status --status deprecated io.github.emilkrebs/med-research-mcp <x.y.z>
 ```

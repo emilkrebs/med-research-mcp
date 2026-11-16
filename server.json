@@ -4,6 +4,7 @@
   "title": "Med Research",
   "description": "PubMed, Europe PMC and ChinaRxiv search with study-design and retraction labels.",
   "repository": {
+    "id": "1299183077",
     "url": "https://github.com/emilkrebs/med-research-mcp",
     "source": "github"
   },
@@ -23,6 +24,13 @@
           "isRequired": false,
           "format": "string",
           "isSecret": false
+        },
+        {
+          "name": "NCBI_API_KEY",
+          "description": "Raises the PubMed rate limit from 3 to 10 requests per second. Create one in your NCBI account settings.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
         }
       ]
     }
