@@ -95,7 +95,7 @@ Lead with the strongest evidence, its design and how certain it is; summarize co
 
 > "What study design is PMID 22570464, and how strong is that design?"
 
-One call, no fan-out: `literature_search({query:"22570464[pmid]"})` — it returns `studyType`, `designTier`, `flags` and the abstract. If `designTier` is `null`, read the abstract: for a synthesis, find what it pooled; for `unknown`, classify it (above) and say so. Answer: *"Systematic review and meta-analysis of randomized controlled trials — 82 met the inclusion criteria, 63 were pooled (NLM tag; pooled designs from the abstract): design tier 5 of 5 (PMID 22570464)."* Stop.
+One call, no fan-out: `literature_search({query:"22570464[pmid]"})` — it returns `studyType`, `designTier`, `flags` and the abstract. If `flags` has `retracted`/`notice`/`protocol`, say so first. If `designTier` is `null`, read the abstract: for a synthesis, find what it pooled; for `unknown`, classify it (above) and say so. Answer: *"Systematic review and meta-analysis of randomized controlled trials — 82 met the inclusion criteria, 63 were pooled (NLM tag; pooled designs from the abstract): design tier 5 of 5 (PMID 22570464)."* Stop.
 
 ### 2. Evidence synthesis — compare X vs Y
 
