@@ -268,6 +268,61 @@ describe("createServer", () => {
     await server.close();
   });
 
+  it("literature_fulltext tells which ids work alone, and that a ChinaRxiv text is a machine translation", async () => {
+    const { client, server } = await connect();
+    const { tools } = await client.listTools();
+    const tool = tools.find((t) => t.name === "literature_fulltext")!;
+    const props = (tool.inputSchema as { properties: Record<string, { description?: string }> }).properties;
+    const description = tool.description ?? "";
+    expect(description).toContain("chinaxiv and russiarxiv records come from ChinaRxiv as a machine translation");
+    expect(description).toContain("originalUrl");
+    // ChinaXiv and RussiaRxiv records are no longer said to be unresolvable.
+    expect(description).not.toMatch(/can't be resolved|neither DOI nor PMCID/);
+    // Sent to the model on every session: it stays short.
+    expect(description.length).toBeLessThan(800);
+    for (const shape of ["PMID", "PMC…", "PPR…", "chinaxiv-…", "ru-…"]) expect(props.id!.description, shape).toContain(shape);
+    expect(props.id!.description).toContain("also needs doi");
+    expect(props.doi!.description).toContain("a url or originalUrl is not one");
+    await client.close();
+    await server.close();
+  });
+
+  it("literature_fulltext returns a ChinaXiv text from the ChinaRxiv API, as a machine translation", async () => {
+    const id = "chinaxiv-202401.00099";
+    const body = "# A title\n\n" + "Translated sentence. ".repeat(60);
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        urls.push(String(input));
+        if (String(input).endsWith("/text")) return new Response(JSON.stringify({ id, title: "T", body_md: body, word_count: 60 }));
+        return new Response(
+          JSON.stringify({ id, title: "T", authors: [], abstract: "Whole.", source: "chinaxiv", source_language: "zh", source_url: "https://chinaxiv.org/abs/202401.00099" }),
+        );
+      }),
+    );
+    try {
+      const { client, server } = await connect();
+      const result = await client.callTool({ name: "literature_fulltext", arguments: { id } });
+      expect(result.isError).toBeFalsy();
+      const out = JSON.parse((result.content as { text: string }[])[0]!.text) as Record<string, unknown>;
+      expect(out).toMatchObject({ id, source: "chinarxiv", format: "markdown", truncated: false, fulltext: body.trim() });
+      expect(out.warning).toContain("Machine translation into English by ChinaRxiv");
+      expect(out.warning).toContain("https://chinaxiv.org/abs/202401.00099");
+      // Only the ChinaRxiv API was asked, for this id.
+      expect(urls.sort()).toEqual([`https://chinarxiv.org/api/v1/papers/${id}`, `https://chinarxiv.org/api/v1/papers/${id}/text`]);
+
+      // A url passed as the doi of an id that needs one is named as the mistake.
+      const refused = await client.callTool({ name: "literature_fulltext", arguments: { id: "CBA:644599", doi: "https://chinaxiv.org/abs/202401.00099" } });
+      expect(refused.isError).toBe(true);
+      expect((refused.content as { text: string }[])[0]!.text).toContain("INVALID_INPUT");
+      await client.close();
+      await server.close();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("bounds search and fetch calls by callBudgetMs, and not literature_fulltext, whose fallback needs its abstract", async () => {
     vi.stubGlobal(
       "fetch",

@@ -346,15 +346,17 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     id: z
       .string()
       .describe(
-        "Article id — a PMID, a PMCID (PMC…, a record's pmcid), a Europe PMC preprint id (PPR…), or another database's " +
-          "id from literature_search together with its doi.",
+        "Article id as literature_search returns it: a PMID, a PMCID (PMC…, a record's pmcid), a Europe PMC preprint id " +
+          "(PPR…), or a chinaxiv or russiarxiv id (chinaxiv-…, ru-…); each works on its own. Any other id (a Europe PMC " +
+          "CBA:… id, say) also needs doi.",
       ),
     doi: z
       .string()
       .optional()
       .describe(
-        "The record's doi, from any database. Required when the id is not a PMID, PMCID or PPR id. With a PMID it saves " +
-          "the id→DOI lookup; a PMCID or PPR id without it is tried at Europe PMC only.",
+        "The record's doi (10.… or a https://doi.org/ link), from a search result's doi field; a url or originalUrl is " +
+          "not one. Required when the id is not one of those above. With a PMID it saves the id→DOI lookup; a PMCID or " +
+          "PPR id without it uses the doi Europe PMC has for the record.",
       ),
     offset: z
       .number()
@@ -377,11 +379,11 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       description:
         "Attempts to fetch an article's full text as markdown (plain text when format is pdf) via Europe PMC (records " +
         "with a PMCID, and PPR preprints), Unpaywall (open access), institutional proxy (if configured), and direct DOI " +
-        "access. When none of them has it, a warning says what each location answered, and for a PMID the abstract is " +
-        "returned instead. Records with neither DOI nor PMCID (all chinaxiv and russiarxiv records) can't be " +
-        "resolved; their url links the record. A long text comes in parts: truncated says that more follows (see " +
-        "offset), totalChars how long the whole text is. Use when the abstract isn't enough (verify dosage, sample " +
-        "sizes, methods).",
+        "access; chinaxiv and russiarxiv records come from ChinaRxiv as a machine translation, which the warning says: " +
+        "check the original (originalUrl) before relying on a number. When none of them has it, a warning says what " +
+        "each location answered, and the record's abstract is returned instead. A long text comes in parts: truncated " +
+        "says that more follows (see offset), totalChars how long the whole text is. Use when the abstract isn't enough " +
+        "(verify dosage, sample sizes, methods).",
       // Strict, like literature_search: a misnamed key errors instead of being stripped.
       inputSchema: z.object(literatureFulltextShape).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
