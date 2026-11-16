@@ -26,11 +26,11 @@
     },
     {
       "name": "literature_fetch",
-      "description": "Full metadata and abstracts for specific article ids."
+      "description": "Full metadata, the whole abstract and the study-design labels for specific article ids."
     },
     {
       "name": "literature_fulltext",
-      "description": "An article's full text as markdown via Europe PMC, Unpaywall, an institutional proxy or the DOI, falling back to the abstract for a PMID."
+      "description": "An article's full text as markdown via Europe PMC, Unpaywall, an institutional proxy or the DOI (ChinaXiv and RussiaRxiv texts come from ChinaRxiv as machine translations), falling back to the abstract."
     }
   ],
   "server": {

@@ -242,8 +242,9 @@ can reach your server. For the same reason, **don't host on a network with
 IP-based subscription access** (a campus network, say): the direct route
 (`https://doi.org/<DOI>`) returns whatever publishers serve the server's IP
 address, and on such a network that includes licensed full texts. On an
-ordinary cloud host, full texts come from open-access copies and free-to-read
-publisher pages.
+ordinary cloud host, full texts come from open-access copies, free-to-read
+publisher pages and, for ChinaXiv and RussiaRxiv ids, ChinaRxiv's machine
+translations.
 
 ## Rate-limit model
 
