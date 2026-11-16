@@ -267,8 +267,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         "protocol and editorial records (designTier 0), and warns of an expression of concern, an erratum (corrected), " +
         "a newer version (updated), animals-not-humans indexing, preprints, letters, machine-translated text and " +
         "machine-generated abstracts (chinaxiv, russiarxiv: check originalUrl before relying on a number). " +
-        "pmid is the database's own id, a PMID only for pubmed: cite other records by it with the database, or by " +
-        "doi/url. Results are merged, de-duplicated by DOI and sorted (see sort), a page at a time: when nextPage " +
+        "pmid is the database's own id, a PMID only when it is all digits: cite any other (PPR…, CBA:…, chinaxiv-…, ru-…) " +
+        "by it with the database, or by doi/url. Results are merged, de-duplicated by DOI and sorted (see sort), a page at a time: when nextPage " +
         "is set, more follow (see page); a record held by two databases counts twice in total. " +
         "Use literature_fetch to get full metadata for specific ids, and literature_fulltext for the article body.",
       // Strict, so a misnamed key (e.g. `databases`) errors instead of being stripped and silently searching PubMed.

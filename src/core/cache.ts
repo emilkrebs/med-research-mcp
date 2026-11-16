@@ -129,8 +129,10 @@ export class NullCache implements Cache {
  * 1 (0.6.1): PubMed abstracts lost the text of inline markup and kept character references;
  * Europe PMC titles and abstracts carried HTML; Europe PMC full texts could end in an empty
  * References heading. Up to 0.6.0 the tables had no version in their names.
+ * 2 (0.8.0): ChinaXiv and RussiaRxiv summaries held author lists as one joined string with
+ * affiliation markers, and search previews cut at 500 characters carried no `abstractTruncated`.
  */
-export const CACHE_FORMAT_VERSION = 1;
+export const CACHE_FORMAT_VERSION = 2;
 
 const SUMMARIES = `summaries_v${CACHE_FORMAT_VERSION}`;
 const ABSTRACTS = `abstracts_v${CACHE_FORMAT_VERSION}`;

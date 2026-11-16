@@ -137,7 +137,7 @@ describe("createServer", () => {
     expect(prop("literature_search", "maxResults")).toContain("with several databases a page holds up to maxResults from each");
 
     // pmid is the database's own id; a record in two databases counts twice in total.
-    expect(search).toMatch(/pmid is the database's own id, a PMID only for pubmed/);
+    expect(search).toMatch(/pmid is the database's own id, a PMID only when it is all digits/);
     expect(search).toContain("a record held by two databases counts twice in total");
 
     // Europe PMC reads full text and takes field syntax, which PubMed would read as words; RussiaRxiv is not medical.
