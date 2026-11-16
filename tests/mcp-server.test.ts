@@ -100,6 +100,111 @@ describe("createServer", () => {
     }
   });
 
+  it("literature_search takes abstractMaxChars as a whole number, 0 or more, and rejects any other", async () => {
+    const { client, server } = await connect();
+    const { tools } = await client.listTools();
+    const search = tools.find((t) => t.name === "literature_search")!;
+    const limit = (search.inputSchema as { properties: Record<string, unknown> }).properties.abstractMaxChars;
+    expect(limit).toMatchObject({ type: "integer", minimum: 0 });
+    expect((search.inputSchema as { required?: string[] }).required ?? []).not.toContain("abstractMaxChars");
+
+    for (const bad of [-1, 1.5, "600"]) {
+      const result = await client.callTool({ name: "literature_search", arguments: { query: "x", abstractMaxChars: bad } });
+      expect(result.isError, JSON.stringify(bad)).toBe(true);
+      expect((result.content as { text: string }[])[0]!.text, JSON.stringify(bad)).toContain("abstractMaxChars");
+    }
+    await client.close();
+    await server.close();
+  });
+
+  it("describes in the search and fetch tools what a model needs to read their results", async () => {
+    const { client, server } = await connect();
+    const { tools } = await client.listTools();
+    const tool = (name: string) => tools.find((t) => t.name === name)!;
+    const prop = (name: string, key: string) =>
+      ((tool(name).inputSchema as { properties: Record<string, { description?: string }> }).properties[key]!.description ?? "");
+    const search = tool("literature_search").description!;
+    const fetched = tool("literature_fetch").description!;
+
+    // literature_fetch grades, and says so; it no longer calls its articles raw.
+    expect(fetched).not.toMatch(/raw|no classification/i);
+    for (const field of ["studyType", "designTier", "flags"]) expect(fetched).toContain(field);
+    expect(fetched).toContain("whole abstract");
+
+    // The abstract limit: its size guidance, and that fetch has the whole abstract.
+    expect(prop("literature_search", "abstractMaxChars")).toMatch(/20,000-30,000 characters/);
+    expect(prop("literature_search", "abstractMaxChars")).toContain("literature_fetch returns the whole abstract");
+    expect(prop("literature_search", "maxResults")).toContain("with several databases a page holds up to maxResults from each");
+
+    // pmid is the database's own id; a record in two databases counts twice in total.
+    expect(search).toMatch(/pmid is the database's own id, a PMID only for pubmed/);
+    expect(search).toContain("a record held by two databases counts twice in total");
+
+    // Europe PMC reads full text and takes field syntax, which PubMed would read as words; RussiaRxiv is not medical.
+    expect(prop("literature_search", "database")).toContain("it searches full text");
+    expect(prop("literature_search", "database")).toContain("mostly mathematics, physics and chemistry; almost no medicine");
+    expect(prop("literature_search", "database")).not.toContain("Soviet-era papers)");
+    expect(prop("literature_search", "query")).toMatch(/On europepmc alone \(pubmed reads these as words\).*TITLE_ABS:word.*SRC:PPR/);
+    await client.close();
+    await server.close();
+  });
+
+  it("literature_fetch returns each article's grading, and literature_search says what it searched", async () => {
+    // A retracted RCT looked up by PMID: the model got no studyType, designTier or flags from fetch, and missed that the design is graded.
+    const abstract = "Creatine may improve memory in older adults, and this randomized trial tested it for twelve weeks.";
+    const efetch = `<?xml version="1.0" ?><PubmedArticleSet><PubmedArticle><MedlineCitation><PMID Version="1">11111111</PMID><Article>
+      <ArticleTitle>Creatine and memory</ArticleTitle><Abstract><AbstractText>${abstract}</AbstractText></Abstract>
+      <PublicationTypeList><PublicationType UI="D016449">Randomized Controlled Trial</PublicationType>
+      <PublicationType UI="D016441">Retracted Publication</PublicationType></PublicationTypeList></Article>
+      <MeshHeadingList><MeshHeading><DescriptorName UI="D003401" MajorTopicYN="Y">Creatine</DescriptorName></MeshHeading></MeshHeadingList>
+      </MedlineCitation></PubmedArticle></PubmedArticleSet>`;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const path = new URL(String(input)).pathname;
+        if (path.endsWith("esummary.fcgi")) return new Response(JSON.stringify({ result: { uids: ["11111111"], "11111111": { uid: "11111111", title: "Creatine and memory", pubdate: "2021" } } }));
+        if (path.endsWith("efetch.fcgi")) return new Response(efetch);
+        return new Response(JSON.stringify({ esearchresult: { count: "1", idlist: ["11111111"] } }));
+      }),
+    );
+    try {
+      const server = createServer({ cache: new LRUBackend(), ncbi: new NcbiClient({ email: "test@example.com", apiKey: "test-key" }) });
+      const client = new Client({ name: "test", version: "0.0.0" });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      await Promise.all([server.connect(st), client.connect(ct)]);
+      const call = async (name: string, args: object) => {
+        const result = await client.callTool({ name, arguments: args });
+        expect(result.isError).toBeFalsy();
+        return JSON.parse((result.content as { text: string }[])[0]!.text) as Record<string, any>;
+      };
+
+      const fetched = await call("literature_fetch", { ids: ["11111111"], database: "pubmed" });
+      expect(fetched.articles[0]).toMatchObject({
+        pmid: "11111111",
+        studyType: "randomized-controlled-trial",
+        designTier: 0,
+        flags: ["retracted"],
+        meshHeadings: ["Creatine"],
+        abstract,
+      });
+
+      const searched = await call("literature_search", { query: "creatine", dateRange: { from: "2020" }, abstractMaxChars: 40 });
+      expect(searched).toMatchObject({ databases: ["pubmed"], filters: { dateRange: { from: "2020" } }, total: 1 });
+      expect(searched.articles[0]).toMatchObject({ studyType: "randomized-controlled-trial", abstract: "Creatine may improve memory in older…", abstractTruncated: true });
+      expect(searched.articles[0]).not.toHaveProperty("meshHeadings");
+      expect(searched).not.toHaveProperty("totalByDatabase");
+      // Without the limit, the whole abstract and no flag.
+      const whole = await call("literature_search", { query: "creatine" });
+      expect(whole.articles[0]).toMatchObject({ abstract });
+      expect(whole.articles[0]).not.toHaveProperty("abstractTruncated");
+      expect(whole).not.toHaveProperty("filters");
+      await client.close();
+      await server.close();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("lists the databases a search and a fetch accept, and rejects others before searching", async () => {
     const { client, server } = await connect();
     const { tools } = await client.listTools();
