@@ -226,7 +226,7 @@ function termIn(field: string, operand: FoundOperand, wildcards: boolean): strin
   }
   if (operand.words.length !== 1) return undefined;
   const word = operand.words[0]!;
-  // Without quotes Europe PMC reads "il-6" as il AND 6 (232,653 records, against 193,835 for "il-6"; PubMed: 195,634).
+  // Without quotes Europe PMC finds 232,653 records for TITLE_ABS:il-6, against 193,835 for "il-6" (PubMed: 195,634 for il-6[tiab]).
   if (COMPOUND_WORD.test(word)) return `${field}:"${word}"`;
   if (word.includes("*")) return wildcards && WILDCARD_WORD.test(word) ? `${field}:${word}` : undefined;
   if (!PLAIN_WORD.test(word)) return undefined;
@@ -306,7 +306,8 @@ function translateTag(name: string, operand: FoundOperand): string | undefined {
  *   Unquoted words may not be a journal name PubMed knows, and an ISSN is a field of its own in Europe PMC: left out.
  * - [la] → LANG for the languages of {@link LANGUAGES} (creatine[tiab] AND eng[la]: 50,347, 49,012).
  * - [dp] → FIRST_PDATE, E_PDATE or P_PDATE in the range, for a year, a month or a range of them (creatine[tiab] AND 2024[dp]
- *   2,046, 1,990; 2024/03[dp] 197, 194). PubMed Help: its date filter includes the electronic and the print date; PMID 39680131
+ *   2,046, 1,990; 2024/03[dp] 197, 194). PubMed Help: "Date range searching includes both print and electronic dates of publication,
+ *   except for electronic publication dates occurring after the print publication date"; PMID 39680131
  *   (online 2024-12-16, print 2025-07-01) is found by 2024[dp] and by 2025[dp]. FIRST_PDATE alone finds 1,777 of the 2,046 and
  *   135 of the 197. Preprints have FIRST_PDATE only. A day is left out: Europe PMC keeps an issue date to the month (13, 8).
  * - [pmid] and [uid] → EXT_ID with SRC:MED (3, 3 for three PMIDs).
@@ -314,7 +315,8 @@ function translateTag(name: string, operand: FoundOperand): string | undefined {
  * keywords, and PubMed explodes a heading: "Sleep Apnea Syndromes"[mh] finds 50,220 records and KW 17,963 (with
  * tirzepatide[tiab], 54 and 2); only a heading with no narrower ones agrees (33,086, 32,313). Preprints carry no MeSH.
  *
- * What is removed as before, its words left to match anywhere: unquoted words before a tag (PubMed Help: "will attempt to search those terms
+ * What is removed as before, its words left to match anywhere: several unquoted words before a tag, other than a surname with
+ * initials before [au] and a publication type's name before [pt] (PubMed Help: "will attempt to search those terms
  * as a phrase"; `sleep apnea[tiab]` is the phrase "sleep apnea"[Title/Abstract], `creatine cognition[tiab]` is creatine mapped to MeSH
  * and words anywhere, AND "cognition"[Title/Abstract]), a tag after a parenthesised group (PubMed ignores it:
  * `(tirzepatide OR semaglutide)[tiab]` has no [Title/Abstract] in its translation), a quoted phrase with "*" (Europe PMC ignores
