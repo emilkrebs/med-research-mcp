@@ -141,8 +141,43 @@ interface EsummaryDoc {
   authors?: { name?: string }[];
   articleids?: { idtype?: string; value?: string }[];
   pubtype?: string[];
+  /** The record's CommentsCorrections links (see {@link ESUMMARY_REFTYPES}). */
+  references?: { reftype?: string; pmid?: number | string }[];
   /** Present on NCBI's ERROR-DOC shape for uids it doesn't recognize, e.g. a nonexistent PMID. */
   error?: string;
+}
+
+/**
+ * esummary's `reftype` (lower case) of the links efetch calls RefType and {@link extractCorrections} keeps, as the
+ * RefType names. Checked live 2026-11-16: esummary of PMID 33247380 has `references: [{refsource: "Biol Trace Elem Res.
+ * 2025 Jan;203(1):589. doi: 10.1007/s12011-024-04150-3.", reftype: "Retraction in", pmid: 38512453, note: ""}]` next to
+ * its "Retracted Publication" type; that of PMID 27578231 has no such type and `reftype: "Expression of concern in"`
+ * with `pmid: 42781840`. In esummary of up to 300 records each of PubMed's `hasretractionin`, `haserratumin`,
+ * `hasupdatein`, `hasupdateof` and `hasexpressionofconcernin` (100 each from three places of the pub_date order), the
+ * five names below came as "Retraction in", "Erratum in", "Update in", "Update of" and "Expression of concern in",
+ * and `pmid` was a number, or "" for a link to a record PubMed doesn't hold (3 of 334 "Erratum in" links, 37 of 344
+ * "Retraction in", 17 of 318 "Update of", none of 303 "Update in" and 205 "Expression of concern in"). The other
+ * links seen ("Comment in", "Comment on", "Erratum for", "Retraction of", "Republished in" and "from", "Original
+ * report in", "Summary for patients in", "Dataset described in", "Dataset use reported in") are not kept, as in efetch.
+ */
+const ESUMMARY_REFTYPES: Readonly<Record<string, CorrectionType>> = {
+  "retraction in": "RetractionIn",
+  "expression of concern in": "ExpressionOfConcernIn",
+  "erratum in": "ErratumIn",
+  "update in": "UpdateIn",
+  "update of": "UpdateOf",
+};
+
+/** The correction links of an esummary record, in its order, as the efetch path gives them: `id` only for a link to a PMID. */
+function esummaryCorrections(references: EsummaryDoc["references"]): Correction[] {
+  const out: Correction[] = [];
+  for (const ref of toArray(references)) {
+    const type = ESUMMARY_REFTYPES[String(ref?.reftype ?? "").trim().toLowerCase()];
+    if (!type) continue;
+    const id = String(ref?.pmid ?? "").trim();
+    out.push({ type, ...(/^\d+$/.test(id) ? { id } : {}) });
+  }
+  return out;
 }
 
 /** What efetch adds to an esummary record. */
@@ -167,6 +202,109 @@ interface PmidList {
   count: number;
   pmids: string[];
   depth: number;
+  /** Words PubMed found in no record, when there are any (see {@link UnknownTerms}). */
+  unknown?: UnknownTerms;
+}
+
+/**
+ * Terms esearch reports as found in no PubMed record (a quoted phrase: as no phrase), in two lists. Checked 2026-11-16 on 34
+ * queries for the first and 25 for the second.
+ *
+ * `errorlist.phrasesnotfound` names a word as written, without quotes. None of ten real queries (BRCA1, COVID-19, 5-HT,
+ * vitamin D3, hs-CRP, ...) had a false report. In a query of plain words esearch drops such a word and searches the rest
+ * (`sleep apnea qzxvbnmk` found 71,644 records, as `sleep apnea` does, and its `querytranslation` leaves the word out),
+ * so the word is `ignored`; in a field-tagged term (`fooxx[tiab]`), an `AND` operand, or a query of unknown words only
+ * (`qzxvbnmk wrtyplkj`), the term stays in the query (`querytranslation` has it) and the search finds nothing: it is
+ * `blocking`. A misspelling that some record contains is not reported (`tirzepatid obesity` found 4 records).
+ *
+ * `warninglist.quotedphrasesnotfound` names a quoted term with its quotes, and with its field tag when it has one
+ * (`"qzxvbnmk"[tiab]`); `errorlist` is absent when only a quoted term is unknown. The list's neighbour `phrasesignored`
+ * was empty in all 25 queries, and `outputmessages` held only "No items found." for a count of 0. None of ten real
+ * quoted queries (`"sleep apnea"` 66,630 records, `"BRCA1"`, `"COVID-19"`, `"vitamin D3"`, `"hs-CRP"`, `"sleep apnea"[tiab]`,
+ * `"Kreider R"[au]`, `"N Engl J Med"[ta] AND 2021[dp]`, `"Sleep Apnea Syndromes"[mh]`, `"intranasal corticosteroid*"[tiab]`)
+ * had a warninglist or an errorlist. Two cases:
+ * a quoted word or phrase that no record contains stays in the query and the search finds nothing, so it is `blocking`
+ * (`"qzxvbnmk"`, `sleep apnea "qzxvbnmk"`, `"qzxvbnmk" "wrtyplkj"`, `"qzxvbnmk wrtyplkj"` and `"apnea tirzepatide sleep"[tiab]`
+ * found 0 records, each with the term in its `querytranslation`; `sleep apnea NOT "qzxvbnmk"` found 71,648, the term
+ * kept as a NOT operand, which a missing term doesn't harm). But a quoted phrase of words that all exist, for which PubMed
+ * finds no phrase, is reported too, and esearch searches its words separately, unquoted and ANDed:
+ * `"apnea tirzepatide sleep"` and `"sleep tirzepatide apnea"` found 173 records and `"obesity apnea tirzepatide"` 143,
+ * each `querytranslation` being the three words with their variants, without the phrase; `"sleep qzxvbnmk"` found 373,649,
+ * its translation `sleep` alone, the unknown word dropped as in a plain query. Such a phrase is `asWords`. Nothing was
+ * seen of a quoted single word that the translation left out; it would count as `ignored`. A word can be in both lists
+ * (`qzxvbnmk "qzxvbnmk"` has `qzxvbnmk` in one and `"qzxvbnmk"` in the other, and found 0): it is named once.
+ */
+interface UnknownTerms {
+  ignored: string[];
+  blocking: string[];
+  /** Quoted phrases PubMed has no phrase for, searched as their words instead. */
+  asWords: string[];
+}
+
+/** `"a"`, `"a" and "b"`, `"a", "b" and "c"`. */
+function quotedList(terms: string[], joiner = "and"): string {
+  const quoted = terms.map((t) => `"${t}"`);
+  return quoted.length < 2 ? quoted.join("") : `${quoted.slice(0, -1).join(", ")} ${joiner} ${quoted.at(-1)}`;
+}
+
+/** The strings of a list esearch returned, which may be absent, one string or an array. */
+function termList(value: unknown): string[] {
+  return toArray(value as string[] | undefined).filter((t): t is string => typeof t === "string" && t.trim() !== "");
+}
+
+/** A quoted term as `quotedphrasesnotfound` gives it: without its quotes and its field tag (`"qzxvbnmk"[tiab]` is `qzxvbnmk`). */
+function unquoted(term: string): string {
+  return (/^"(.*)"(?:\[[^\]]*\])?$/s.exec(term.trim())?.[1] ?? term).trim();
+}
+
+/**
+ * The terms esearch reported as found in no record (`notFound`, from `errorlist.phrasesnotfound`; `quotedNotFound`, from
+ * `warninglist.quotedphrasesnotfound`), sorted by `querytranslation` into ignored, blocking and searched as words, each
+ * term named once; undefined when there are none.
+ */
+function unknownTerms(notFound: unknown, quotedNotFound: unknown, translation: string | undefined): UnknownTerms | undefined {
+  const terms = termList(notFound);
+  const quoted = termList(quotedNotFound).map(unquoted).filter(Boolean);
+  // Without the translation we can't tell whether the term was left out, so we say nothing.
+  if ((terms.length === 0 && quoted.length === 0) || !translation) return undefined;
+  const kept = translation.toLowerCase();
+  const unknown: UnknownTerms = { ignored: [], blocking: [], asWords: [] };
+  // A term in both lists is named once, as the first list has it.
+  const named = new Set<string>();
+  const isNew = (term: string): boolean => {
+    const key = term.toLowerCase();
+    if (named.has(key)) return false;
+    named.add(key);
+    return true;
+  };
+  for (const term of terms) if (isNew(term)) (kept.includes(term.toLowerCase()) ? unknown.blocking : unknown.ignored).push(term);
+  for (const term of quoted) {
+    if (!isNew(term)) continue;
+    // A quoted term that stays in the query keeps its quotes in the translation; a phrase searched as words is gone from it.
+    if (kept.includes(`"${term.toLowerCase()}"`)) unknown.blocking.push(term);
+    else (/\s/.test(term) ? unknown.asWords : unknown.ignored).push(term);
+  }
+  return unknown;
+}
+
+/**
+ * What the unknown terms mean for a search, in a sentence: a word PubMed left out, always (the records come from the
+ * rest of the query); a phrase it searched as words, always (the records need not hold the words together); a term it
+ * kept, only when the search found nothing (otherwise it was a NOT or OR operand, which a missing term doesn't harm).
+ */
+function unknownWarning(unknown: UnknownTerms | undefined, count: number): string | undefined {
+  if (!unknown) return undefined;
+  const { ignored, blocking, asWords } = unknown;
+  const sentences: string[] = [];
+  if (ignored.length > 0) {
+    const them = ignored.length > 1 ? "them" : "it";
+    sentences.push(`PubMed ignored ${quotedList(ignored)}: no record contains ${them}, so it searched without ${them}.`);
+  }
+  if (asWords.length > 0) {
+    sentences.push(`PubMed has no phrase ${quotedList(asWords, "or")}, so it searched the words separately: a record need not hold them together.`);
+  }
+  if (blocking.length > 0 && count === 0) sentences.push(`No PubMed record contains ${quotedList(blocking, "or")}.`);
+  return sentences.length > 0 ? sentences.join(" ") : undefined;
 }
 
 export class NcbiClient {
@@ -235,7 +373,9 @@ export class NcbiClient {
    * With `sort: "date"`, the PMIDs are those first published last, newest first (see
    * {@link newest}). An identical search within `searchTtlMs` returns the same PMIDs, and
    * its later pages are cut from the same list. A search matching more than PubMed's first 9,999
-   * records gets a warning from the page that reaches the 9,999th on, and no PMIDs past it.
+   * records gets a warning from the page that reaches the 9,999th on, and no PMIDs past it. A word
+   * that no record contains gets one on every page (see {@link UnknownTerms}), as esearch leaves such a
+   * word out of a plain query without saying so in the records it returns.
    */
   async esearch(input: SearchInput): Promise<{ count: number; pmids: string[]; more: boolean; warning?: string }> {
     const { offset, size } = pageWindow(input);
@@ -260,11 +400,15 @@ export class NcbiClient {
     }
     const end = Math.min(offset + size, ESEARCH_LIMIT);
     const list = await this.searchList(key, end, (known) => (byDate ? this.newest(params, end, offset, known) : this.relevant(params, end, known)));
+    const warnings = [
+      ...(offset + size >= ESEARCH_LIMIT && list.count > ESEARCH_LIMIT ? [CAP_WARNING] : []),
+      ...[unknownWarning(list.unknown, list.count)].filter((w) => w !== undefined),
+    ];
     return {
       count: list.count,
       pmids: list.pmids.slice(offset, end),
       more: list.count > end && end < ESEARCH_LIMIT,
-      ...(offset + size >= ESEARCH_LIMIT && list.count > ESEARCH_LIMIT ? { warning: CAP_WARNING } : {}),
+      ...(warnings.length > 0 ? { warning: warnings.join(" ") } : {}),
     };
   }
 
@@ -304,10 +448,16 @@ export class NcbiClient {
     const block = new URLSearchParams(params);
     if (from > 0) block.set("retstart", String(from));
     block.set("retmax", String(to - from));
-    const { count, pmids } = await this.runEsearch(block);
+    const { count, pmids, unknown } = await this.runEsearch(block);
     const have = known?.pmids ?? [];
     const seen = new Set(have);
-    return { count, pmids: [...have, ...pmids.filter((pmid) => !seen.has(pmid))], depth: Math.min(count, to) };
+    const found = known?.unknown ?? unknown;
+    return {
+      count,
+      pmids: [...have, ...pmids.filter((pmid) => !seen.has(pmid))],
+      depth: Math.min(count, to),
+      ...(found ? { unknown: found } : {}),
+    };
   }
 
   /**
@@ -368,12 +518,23 @@ export class NcbiClient {
     // Otherwise a larger pool could still bring in newer records than all but the first finalDepth of this one.
     const whole = issued.count <= pool || pool === ESEARCH_LIMIT;
     const depth = whole ? pmids.length : Math.max(kept.length, finalDepth(pool));
-    return { count: issued.count, pmids, depth };
+    const notFound = known?.unknown ?? issued.unknown;
+    return { count: issued.count, pmids, depth, ...(notFound ? { unknown: notFound } : {}) };
   }
 
-  private async runEsearch(params: URLSearchParams): Promise<{ count: number; pmids: string[] }> {
+  private async runEsearch(params: URLSearchParams): Promise<{ count: number; pmids: string[]; unknown?: UnknownTerms }> {
     const body = await this.request("esearch.fcgi", params);
-    let data: { esearchresult?: { count?: string; idlist?: string[]; ERROR?: string }; ERROR?: string };
+    let data: {
+      esearchresult?: {
+        count?: string;
+        idlist?: string[];
+        querytranslation?: string;
+        errorlist?: { phrasesnotfound?: unknown };
+        warninglist?: { quotedphrasesnotfound?: unknown };
+        ERROR?: string;
+      };
+      ERROR?: string;
+    };
     try {
       data = JSON.parse(body) as typeof data;
     } catch (err) {
@@ -388,7 +549,9 @@ export class NcbiClient {
     if (count > this.broadThreshold) {
       throw errors.queryTooBroad(count);
     }
-    return { count, pmids: toArray(data.esearchresult?.idlist) };
+    const { errorlist, warninglist, querytranslation } = data.esearchresult ?? {};
+    const unknown = unknownTerms(errorlist?.phrasesnotfound, warninglist?.quotedphrasesnotfound, querytranslation);
+    return { count, pmids: toArray(data.esearchresult?.idlist), ...(unknown ? { unknown } : {}) };
   }
 
   /** Fetches article metadata (no abstract). Preserves nothing about order. */
@@ -434,7 +597,7 @@ export class NcbiClient {
     const doi = doc.articleids?.find((a) => a.idtype === "doi")?.value;
     const pmcid = doc.articleids?.find((a) => a.idtype === "pmc")?.value;
     const article: Article = {
-      pmid,
+      id: pmid,
       title: (doc.title ?? "").replace(/\.$/, ""),
       authors: toArray(doc.authors)
         .map((a) => a.name ?? "")
@@ -446,6 +609,10 @@ export class NcbiClient {
     if (doc.epubdate?.trim()) article.epubDate = doc.epubdate.trim();
     if (doi) article.doi = doi;
     if (pmcid && /^PMC\d+$/i.test(pmcid)) article.pmcid = pmcid.toUpperCase();
+    // The links, so that a record known only from esummary shows an expression of concern, and the notice's id, as one from
+    // efetch does. efetch's replace them (applyEfetch), and are the ones cached.
+    const corrections = esummaryCorrections(doc.references);
+    if (corrections.length > 0) article.corrections = corrections;
     return article;
   }
 
@@ -544,7 +711,8 @@ const CORRECTION_SET: ReadonlySet<string> = new Set(CORRECTION_TYPES);
 /**
  * Retraction, expression-of-concern, erratum and update links from a
  * CommentsCorrectionsList (RefType names per NLM's MEDLINE/PubMed XML element
- * descriptions). Comment and citation links are dropped.
+ * descriptions). UpdateIn and UpdateOf include a preprint's link to its journal article and
+ * the article's link back (see grader.ts). Comment and citation links are dropped.
  */
 function extractCorrections(ccl: unknown): Correction[] {
   if (!ccl || typeof ccl !== "object") return [];
@@ -562,9 +730,9 @@ function extractCorrections(ccl: unknown): Correction[] {
 
 /**
  * Copy efetch's publication types, MeSH and correction links onto a summary.
- * efetch is the only source of MeSH and correction links and is at least as
- * fresh as a cached summary, so its values replace older ones (a later
- * RetractionIn must not be hidden behind an earlier ErratumIn).
+ * efetch is the only source of MeSH, and its publication types and correction links are
+ * at least as fresh as a cached summary's or esummary's (see {@link ESUMMARY_REFTYPES}), so
+ * they replace older ones (a later RetractionIn must not be hidden behind an earlier ErratumIn).
  */
 function applyEfetch(article: Article, data: EfetchData): void {
   if (data.publicationTypes.length > 0) article.publicationTypes = data.publicationTypes;
@@ -575,7 +743,8 @@ function applyEfetch(article: Article, data: EfetchData): void {
 }
 
 /**
- * Search PubMed and return results classified from their NLM metadata.
+ * Search PubMed and return results classified from their NLM metadata. Unlike `searchLiterature`'s, the
+ * result names no `databases` and echoes no `filters`: it is always PubMed's.
  *
  * @param cache reused across calls to avoid re-fetching summaries/abstracts.
  * @param client injectable NCBI client; defaults to one configured from env.
@@ -584,7 +753,7 @@ export async function searchPubMed(
   input: SearchInput,
   cache: Cache = new LRUBackend(),
   client: NcbiClient = new NcbiClient(),
-): Promise<SearchOutput> {
+): Promise<Omit<SearchOutput, "databases">> {
   // As in searchLiterature: what the filter leaves out is said whatever PubMed returns.
   const warnings = filterWarnings(input.studyTypes, input.minDesignTier);
   if (input.page !== undefined && (!Number.isInteger(input.page) || input.page < 1)) {
@@ -626,9 +795,9 @@ export async function searchPubMed(
   }
 
   // efetch for missing abstracts, and for every freshly fetched summary: only
-  // efetch carries MeSH and retraction/correction links. A summary is cached
-  // only once efetch has succeeded for it; caching it earlier would hide its
-  // retraction links for SUMMARY_TTL_MS after a failed efetch.
+  // efetch carries MeSH, and its links and publication types are the freshest. A summary is cached
+  // only once efetch has succeeded for it; caching it earlier would keep its MeSH headings from
+  // being loaded for SUMMARY_TTL_MS after a failed efetch.
   const abstracts = new Map<string, string>();
   const needEfetch: string[] = [];
   for (const pmid of pmids) {
@@ -651,7 +820,7 @@ export async function searchPubMed(
       }
     } catch (err) {
       // Abstracts are best-effort: degrade with a warning.
-      warnings.push("Some abstracts could not be fetched; those articles lack abstracts, MeSH headings and retraction/correction links.");
+      warnings.push("Some abstracts could not be fetched; those articles lack abstracts and MeSH headings.");
     }
   }
 
@@ -685,14 +854,14 @@ export async function searchPubMed(
 
 /**
  * Fetch full metadata + abstracts for one or more PMIDs.
- * Pure data tool — no grading. The calling agent does its own
- * analysis on the returned NcbiArticle objects.
+ * Pure data tool — no grading, unlike `fetchLiterature`, which classifies what its adapters fetch with this.
+ * The calling agent does its own analysis on the returned NcbiArticle objects.
  */
 export async function fetchPubMed(
   input: FetchInput,
   cache: Cache = new LRUBackend(),
   client: NcbiClient = new NcbiClient(),
-): Promise<FetchOutput> {
+): Promise<Omit<FetchOutput, "articles"> & { articles: Article[] }> {
   const warnings: string[] = [];
   const allArticles = new Map<string, Article>();
   const missing: string[] = [];
@@ -718,7 +887,7 @@ export async function fetchPubMed(
   }
 
   // Abstracts (best-effort, cache-aware). efetch also runs for every freshly
-  // fetched summary: only efetch carries MeSH and retraction/correction links.
+  // fetched summary: only efetch carries MeSH, and its links and publication types are the freshest.
   // As in searchPubMed, a summary is cached only once efetch has succeeded for it.
   const pmidsWithSummary = [...allArticles.keys()];
   for (const pmid of pmidsWithSummary) {
@@ -740,7 +909,7 @@ export async function fetchPubMed(
         cache.setSummary(pmid, article);
       }
     } catch {
-      warnings.push("Some abstracts could not be fetched; those articles lack abstracts, MeSH headings and retraction/correction links.");
+      warnings.push("Some abstracts could not be fetched; those articles lack abstracts and MeSH headings.");
     }
   }
 

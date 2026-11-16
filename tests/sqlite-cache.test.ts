@@ -8,7 +8,7 @@ import { FULLTEXT_TTL_MS, SUMMARY_TTL_MS } from "../src/core/cache";
 import type { FulltextData, NcbiArticle } from "../src/core/types";
 
 const ARTICLE: NcbiArticle = {
-  pmid: "12345678",
+  id: "12345678",
   title: "Creatine and cognition",
   abstract: "A trial abstract.",
   authors: ["Doe J", "Roe R"],
@@ -118,6 +118,31 @@ describe("SQLiteBackend persistence", () => {
     raw.close();
   });
 
+  it("never serves a summary of format 2, which holds the id of a record under pmid, and empties its tables", () => {
+    const path = freshPath();
+    const raw = new Database(path);
+    raw.exec(`
+      CREATE TABLE summaries_v2 (pmid TEXT PRIMARY KEY, article TEXT NOT NULL, fetched_at INTEGER NOT NULL);
+      CREATE TABLE abstracts_v2 (pmid TEXT PRIMARY KEY, abstract TEXT NOT NULL, fetched_at INTEGER NOT NULL);
+      CREATE TABLE fulltexts_v2 (pmid TEXT PRIMARY KEY, source TEXT NOT NULL, fulltext TEXT NOT NULL, format TEXT NOT NULL, fetched_at INTEGER NOT NULL);
+    `);
+    const { id, ...rest } = ARTICLE;
+    raw.prepare("INSERT INTO summaries_v2 VALUES (?, ?, ?)").run(id, JSON.stringify({ pmid: id, ...rest }), Date.now());
+    raw.prepare("INSERT INTO abstracts_v2 VALUES (?, ?, ?)").run(id, "an abstract", Date.now());
+    raw.close();
+
+    const upgraded = new SQLiteBackend(path);
+    expect(upgraded.getSummary(id)).toBeNull();
+    expect(upgraded.getAbstract(id)).toBeNull();
+    upgraded.setSummary(id, ARTICLE);
+    expect(upgraded.getSummary(id)?.id).toBe(id);
+    upgraded.close();
+    const after = new Database(path);
+    expect(after.prepare("SELECT COUNT(*) AS n FROM summaries_v2").get()).toEqual({ n: 0 });
+    expect(after.prepare("SELECT COUNT(*) AS n FROM abstracts_v2").get()).toEqual({ n: 0 });
+    after.close();
+  });
+
   it("never serves what 0.6.0 writes while it runs on the same file", () => {
     const path = freshPath();
     const old = writtenBy060(path);
@@ -133,7 +158,7 @@ describe("SQLiteBackend persistence", () => {
   it("leaves a newer version's tables alone", () => {
     const path = freshPath();
     const raw = new Database(path);
-    raw.exec(`CREATE TABLE abstracts_v${CACHE_FORMAT_VERSION + 1} (pmid TEXT PRIMARY KEY, abstract TEXT NOT NULL, fetched_at INTEGER NOT NULL)`);
+    raw.exec(`CREATE TABLE abstracts_v${CACHE_FORMAT_VERSION + 1} (id TEXT PRIMARY KEY, abstract TEXT NOT NULL, fetched_at INTEGER NOT NULL)`);
     raw.prepare(`INSERT INTO abstracts_v${CACHE_FORMAT_VERSION + 1} VALUES (?, ?, ?)`).run("12345678", "newer abstract", Date.now());
     raw.close();
 
@@ -221,7 +246,7 @@ describe("SQLiteBackend resilience", () => {
     // Seed the schema via the backend, then inject invalid JSON directly.
     new SQLiteBackend(path).close();
     const raw = new Database(path);
-    raw.prepare(`INSERT OR REPLACE INTO summaries_v${CACHE_FORMAT_VERSION} (pmid, article, fetched_at) VALUES (?, ?, ?)`).run(
+    raw.prepare(`INSERT OR REPLACE INTO summaries_v${CACHE_FORMAT_VERSION} (id, article, fetched_at) VALUES (?, ?, ?)`).run(
       "bad",
       "{ not valid json",
       Date.now(),

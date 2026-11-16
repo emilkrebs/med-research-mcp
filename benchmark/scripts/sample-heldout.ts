@@ -104,7 +104,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ChinaRXivAdapter, fetchPubMed, htmlToText, NcbiClient, NullCache } from "../lib/core.js";
-import { readFulltext } from "../lib/fulltext.js";
+import { readFulltext, standingOf } from "../lib/fulltext.js";
 import { seededRandom } from "../lib/stats.js";
 import type { Category } from "../lib/types.js";
 
@@ -642,7 +642,7 @@ export async function chinaxivIds(query: string, adapter: ChinaRXivAdapter = new
     const res = await adapter.search({ query, maxResults: 50, page });
     count = res.count;
     // The adapter keeps the page's records in memory, so this reads them without another request.
-    const articles = new Map((await adapter.fetch(res.ids, cache)).map((a) => [a.pmid, a] as const));
+    const articles = new Map((await adapter.fetch(res.ids, cache)).map((a) => [a.id, a] as const));
     for (const id of res.ids) {
       const a = articles.get(id);
       if (!a) throw new Error(`ChinaXiv record ${id} is in the search page but could not be read`);
@@ -754,7 +754,7 @@ export function chinaxivRow(name: string, order: number, id: string, r: Record<s
 /** Title, journal, dates and abstract of PubMed candidates, for the query writer. Never committed. */
 async function pubmedRows(ncbi: NcbiClient, name: string, pmids: string[], firstOrder = 1, allAuthors = false): Promise<Record<string, unknown>[]> {
   const { articles } = await fetchPubMed({ ids: pmids }, new NullCache(), ncbi);
-  const byId = new Map(articles.map((a) => [a.pmid, a] as const));
+  const byId = new Map(articles.map((a) => [a.id, a] as const));
   return pmids.map((pmid, i) => {
     const a = byId.get(pmid);
     return {
@@ -772,7 +772,11 @@ async function pubmedRows(ncbi: NcbiClient, name: string, pmids: string[], first
   });
 }
 
-/** A PubMed candidate's row with the full text as the library returns it, or the note that none is available. */
+/**
+ * A PubMed candidate's row with the full text as the library returns it, or the note that none is available.
+ * A text whose record the library flags (retracted, a notice, an expression of concern) also has `fulltextStanding`,
+ * the library's own words, so that the query writer sees it with the text.
+ */
 async function fulltextRows(ncbi: NcbiClient, name: string, pmids: string[], firstOrder: number): Promise<Record<string, unknown>[]> {
   const rows = await pubmedRows(ncbi, name, pmids, firstOrder, true);
   const out: Record<string, unknown>[] = [];
@@ -782,9 +786,10 @@ async function fulltextRows(ncbi: NcbiClient, name: string, pmids: string[], fir
     const row = { id: pmid, ...base };
     try {
       const ft = await readFulltext(pmid);
+      const standing = standingOf(ft.warning);
       out.push(
         ft.text !== undefined
-          ? { ...row, fulltextSource: ft.source, fulltextFormat: ft.format, fulltextChars: ft.text.length, fulltext: ft.text }
+          ? { ...row, fulltextSource: ft.source, fulltextFormat: ft.format, fulltextChars: ft.text.length, ...(standing ? { fulltextStanding: standing } : {}), fulltext: ft.text }
           : { ...row, fulltextSource: "none", fulltextNote: `no full text available through the library's full-text function${ft.warning ? `: ${ft.warning}` : ""}` },
       );
     } catch (err) {

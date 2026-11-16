@@ -121,17 +121,34 @@ export const errors = {
     });
   },
 
-  /** A non-PubMed id reached a DOI-based lookup without a DOI. */
-  noDoi(id: string): ResearchApiException {
+  /**
+   * An id that no database record backs, and no DOI was given. `looked`: Europe PMC was asked for its record and had none
+   * (or couldn't be reached); otherwise the id is none that literature_fulltext looks up.
+   */
+  noDoi(id: string, looked = false): ResearchApiException {
     return new ResearchApiException({
       code: "NOT_FOUND",
-      message: `No DOI for non-PubMed id ${id}`,
+      message: looked ? `No Europe PMC record or DOI for id ${id}` : `No DOI for unrecognized id ${id}`,
       userMessage:
-        `"${id}" is not a PMID, PMCID or Europe PMC preprint id, and no DOI was given. Full text is found through the ` +
-        `DOI: pass the doi from the literature_search result. Records without one (all ChinaXiv and RussiaRxiv records, ` +
-        `some Europe PMC records) can't be resolved, unless they have a pmcid to pass as the id; open their url instead.`,
+        (looked
+          ? `Europe PMC has no record of "${id}" (or couldn't be reached), and no doi was given. `
+          : `"${id}" is not an id literature_fulltext looks up: not a PMID (digits), a PMCID (PMC…), an id of Europe PMC ` +
+            `(PPR…, CBA:…, IND…) or a ChinaXiv or RussiaRxiv id (chinaxiv-…, ru-…), and no doi was given. `) +
+        `Pass the id of a literature_search result, with any prefix (CBA:644599), or the doi of that result; a ` +
+        `record without a doi can't be fetched, so open its url instead. A url or originalUrl is not a doi: don't pass one ` +
+        `as doi.`,
       recoverable: false,
     });
+  },
+
+  /** A `doi` that isn't one (a record's url, say) where the id can't be resolved without it. */
+  notADoi(value: string): ResearchApiException {
+    const shown = JSON.stringify(value.length > 200 ? `${value.slice(0, 200)}…` : value);
+    return errors.invalidInput(
+      `doi ${shown} is not a DOI. A DOI starts with 10. and a number, then a slash ("10.1234/abc"), alone or as a ` +
+        `https://doi.org/10.1234/abc link. A record's url or originalUrl is not a doi: pass the doi field of the ` +
+        `literature_search result. This id can't be resolved without one.`,
+    );
   },
 
   /** doi.org has no record of the DOI. */

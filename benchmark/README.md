@@ -105,7 +105,7 @@ An earlier version combined accuracy, evidence, fabrication, speed and cost into
 | --- | --- |
 | `values` | the record exists; each quoted passage is in its title or abstract; each expected number is in the quote; an expected PMID or record id is the source's and is not in the prompt. A study type read from an abstract cannot be checked this way and is a warning. Development keys that name a study type and evidence score are also checked against the record's live NLM design and `DESIGN_TIER` |
 | `preprint`, `regional` | the first expected field is `record: <id>`; the record's title is not the title of a PubMed record (a published version under another title is not caught) |
-| `fulltext` | the passage is in the full text the library's full-text function returns (every part read), the figure is in the passage, and no number of the title or abstract equals it |
+| `fulltext` | the passage is in the full text the library's full-text function returns (every part read), the figure is in the passage, and no number of the title or abstract equals it. A source the function flags as retracted, a notice or an expression of concern is a warning, which quotes the flag; the passage is still checked |
 | `reject` | a PMID in the prompt does not resolve; the `probe` PubMed search returns no hit (a hit is a warning, listed with its title) |
 | `accept` | the PMID resolves; the named author is one of its authors; the named year is within one of its year; the prompt names both and not the PMID |
 

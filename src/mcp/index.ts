@@ -4,7 +4,7 @@
  *
  * Exposes three stdio tools:
  *   - literature_search   — multi-database search, study designs labeled from NLM metadata (no LLM calls)
- *   - literature_fetch    — fetch full metadata + abstracts for given ids (pure data)
+ *   - literature_fetch    — fetch full metadata + abstracts for given ids, graded like search results
  *   - literature_fulltext — resolve and return an article's full text as markdown
  *
  * All logic lives in ../core; the server is built in ./server.ts. This file is

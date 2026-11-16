@@ -29,6 +29,7 @@ import {
 } from "../core/index.js";
 import { withDeadline } from "../core/request.js";
 import { envSetting, packageVersion } from "../core/version.js";
+import { printedResult } from "./output.js";
 
 /** Re-exported for the HTTP entry and tests, which import it from here. */
 export { packageVersion };
@@ -126,6 +127,32 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
 
   // ─── literature_search ──────────────────────────────────────────
 
+  // Facts the descriptions below rest on, all checked 2026-11-16:
+  // - russiarxiv: the ChinaRxiv API counts 25,456 records for source=russiarxiv, from five journals: Doklady
+  //   Akademii Nauk SSSR 14,915, Izvestiya Tomskogo Politekhnicheskogo Instituta 7,228, Uspekhi Fizicheskikh Nauk 2,733,
+  //   Differentsial'nye Uravneniya 481 and Gigiena i Sanitariya 99 (/api/v1/publications). By subject, Mathematics 5,847,
+  //   Chemistry 4,600, Physics 2,226. Word counts (q=): sleep 0, rhodiola 0, eleutherococcus 0, cancer 1, rat 2,
+  //   patients 5, therapy 7, disease 9, clinical 11, blood 14, water 1,381.
+  // - Europe PMC matches a plain query against full text: for "melatonin sleep elderly" 5,719 hits, 250 with TITLE_ABS: on
+  //   each word, and PMC13329461, with none of the three in its title or abstract, matches through BODY:. TITLE_ABS:word
+  //   is exactly TITLE:word OR ABSTRACT:word (38,133 hits for one word, none in either difference). A tag covers the next
+  //   word only: TITLE:melatonin sleep is TITLE:melatonin AND sleep (5,345), TITLE:(melatonin sleep) both in the title
+  //   (1,302). SRC:PPR keeps preprints (melatonin 1,079 of 90,398; SRC:MED 85,634). Field names are listed by the API's
+  //   /fields; europepmc.org's own help pages answered 403 (Cloudflare) from here, so the syntax is as the API behaves.
+  // - PubMed reads that syntax as words: esearch turned TITLE:melatonin into "title"[All Fields] AND melatonin (77 hits,
+  //   not 25,414 title hits) and SRC:PPR into "SRC"[All Fields] AND ("plan pract res"[Journal] OR … OR "ppr"[All Fields]),
+  //   0 hits. So Europe PMC's own syntax is for a search of europepmc alone; with pubmed in it, it empties that half.
+  // - Europe PMC reads PubMed tags since toEuropePmcQuery (util.ts; the counts of each tag are in its comment). Bare words
+  //   `tirzepatide apnea` find 1,560 records there; tirzepatide[tiab] AND apnea[tiab] is sent as TITLE_ABS:tirzepatide AND
+  //   TITLE_ABS:apnea, 142 (PubMed: 144). Translated: [tiab] [ti] [au] [pt] [ta] [la] [dp] [pmid]. Removed: every other tag, [mh]
+  //   among them ("Sleep Apnea Syndromes"[mh] 50,220 records in PubMed, KW:"Sleep Apnea Syndromes" 17,963: Europe PMC has no
+  //   MeSH field and does not explode a heading). A tag after several unquoted words is removed too: PubMed searches them as a
+  //   phrase only if its phrase index holds it (`sleep apnea[tiab]` is the phrase, `creatine cognition[tiab]` is creatine
+  //   mapped to MeSH AND "cognition"[Title/Abstract]), hence the advice to quote a phrase. The ChinaRxiv adapter sends words only.
+  // - Size: for four generic queries, ten PubMed results came to 25,115-28,106 characters of JSON (PubMed's own answers run
+  //   through searchLiterature), 12,760-13,330 with abstractMaxChars 600 and 6,577-7,154 with 0. The abstract text alone
+  //   was 18,404-21,545 characters, about 2,000 per record.
+
   const literatureSearchShape = {
     query: z
       .string()
@@ -133,11 +160,12 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .min(1, "The query is empty.")
       .describe(
         "Search query: 2-5 keywords, not a sentence. Every space-separated word is required (ANDed), so each extra word " +
-          "narrows the results and a long phrase finds nothing. If 0 results come back, retry with fewer keywords before " +
+          "narrows the results. On 0 results a warning names the word whose removal gives hits; retry without it before " +
           "concluding that no evidence exists. OR (upper case) joins alternatives on pubmed and europepmc; chinaxiv and " +
           "russiarxiv read it as one more required word. " +
-          "PubMed field tags ([tiab], [mesh], [au]) apply to the pubmed database; for other databases they are removed, " +
-          "leaving their words to match anywhere. " +
+          "PubMed field tags apply on pubmed. europepmc reads [tiab] [ti] [au] [pt] [ta] [la] [dp] [pmid] (quote a phrase " +
+          'before its tag: "sleep apnea"[tiab]) and drops other tags such as [mh], keeping the words they tag; chinaxiv ' +
+          "and russiarxiv ignore tags. On europepmc alone, SRC:PPR keeps preprints. " +
           "The query is sent to third-party databases: never include names, dates of birth, record numbers or other details that " +
           "identify a person; describe the condition or intervention instead.",
       ),
@@ -148,11 +176,30 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .optional()
       .describe(
         'Database(s) to search: a single id, an array of ids, or "all". Default "pubmed". ' +
-          "Options: pubmed, europepmc (PubMed's records plus preprints and other sources), chinaxiv (Chinese preprints) " +
-          "and russiarxiv (Soviet-era papers), both via ChinaRxiv, a third-party service that machine-translates them " +
-          "into English.",
+          "Options: pubmed, europepmc (PubMed's records plus preprints and other sources; it searches full text, so " +
+          "papers that only mention the words match too), chinaxiv (Chinese preprints) and russiarxiv " +
+          "(Soviet-era papers, mostly mathematics, physics and chemistry; almost no medicine), both via ChinaRxiv, a " +
+          "third-party service that machine-translates them into English.",
       ),
-    maxResults: z.number().int().min(1).max(50).optional().describe("Results per database and page. Default 10, max 50."),
+    maxResults: z
+      .number()
+      .int()
+      .min(1)
+      .max(50)
+      .optional()
+      .describe(
+        "Records per database and page: with several databases a page holds up to maxResults from each. Default 10, max 50.",
+      ),
+    abstractMaxChars: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe(
+        "Cut abstracts to at most this many characters, at a word boundary, ending in … and abstractTruncated true; 0 " +
+          "leaves them out. Default: whole abstracts. A page of 10 full abstracts is roughly 20,000-30,000 characters " +
+          "(600 halves it), so set one when searching several databases. literature_fetch returns the whole abstract.",
+      ),
     page: z
       .number()
       .int()
@@ -217,20 +264,21 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     {
       title: "Search scientific literature (multi-database)",
       description:
-        "Search one or more scientific databases (PubMed, Europe PMC, ChinaXiv, RussiaRxiv) and return results with " +
-        "their study design. " +
+        "Search PubMed, Europe PMC, ChinaXiv and RussiaRxiv; each result has its study design. " +
         "studyType comes only from NLM PublicationType tags (PubMed, Europe PMC; assigned by NLM's automated indexing, " +
-        "with human review of some records). Records without one that names a design are 'unknown' with designTier null. " +
+        "with human review of some records). Records with none naming a design are 'unknown', designTier null. " +
         "designTier (0-5) ranks the design for 'does this intervention help?' by the OCEBM 2011 levels; it is not an " +
         "appraisal. A meta-analysis or systematic review ranks with the studies it pooled, which the tags don't say, so " +
-        "its designTier is null unless it is tagged Network Meta-Analysis (5). For a null tier, read the abstract to judge " +
-        "the design, or to see what a review pooled. flags marks retracted, notice, " +
+        "its designTier is null unless it is tagged Network Meta-Analysis (5). For a null tier, read the abstract for " +
+        "the design or for what a review pooled. flags marks retracted, notice, " +
         "protocol and editorial records (designTier 0), and warns of an expression of concern, an erratum (corrected), " +
-        "a newer version (updated), animals-not-humans indexing, preprints, letters, machine-translated text and " +
-        "machine-generated abstracts (chinaxiv, russiarxiv: check originalUrl before relying on a number). Results are " +
-        "merged, de-duplicated by DOI and sorted (see sort), a page at a time: when nextPage is set, more follow (see page). " +
-        "Always cheap — no LLM calls. " +
-        "Use literature_fetch to get full metadata for specific ids, and literature_fulltext for the article body.",
+        "a newer version (updated; for a preprint, its published article, id in corrections), animals-not-humans indexing, " +
+        "preprints, letters, machine-translated text and machine-generated abstracts (chinaxiv, russiarxiv: check originalUrl " +
+        "before relying on a number). " +
+        "id is the database's own id; pmid is set only for a PMID: cite any other (PPR…, CBA:…, chinaxiv-…, ru-…) " +
+        "by id with the database, or by doi/url. Results are merged, de-duplicated by DOI and sorted, a page at a time: " +
+        "when nextPage is set, more follow; a record held by two databases counts twice in total. " +
+        "Use literature_fetch for full metadata of given ids, literature_fulltext for the article body.",
       // Strict, so a misnamed key (e.g. `databases`) errors instead of being stripped and silently searching PubMed.
       inputSchema: z.object(literatureSearchShape).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
@@ -239,7 +287,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       try {
         const result = await budgeted(() => searchLiterature(args, cache, resolveAdapters(args.database)));
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(printedResult(result), null, 2) }],
         };
       } catch (err) {
         const payload = isMedResearchError(err)
@@ -261,8 +309,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .min(1)
       .max(50)
       .describe(
-        "Database-specific ids to fetch, as literature_search returns them in pmid (the database's own id, whichever " +
-          "the database): PMIDs for pubmed; PMIDs, PMCIDs or prefixed ids (e.g. CBA:644599, PPR… preprints) for europepmc; " +
+        "Database-specific ids to fetch, each a literature_search result's id: PMIDs for pubmed; PMIDs, PMCIDs or prefixed ids (e.g. CBA:644599, PPR… preprints) for europepmc; " +
           "the ids literature_search returned for chinaxiv and russiarxiv.",
       ),
     database: z.enum(DATABASES).describe(`Which database the ids belong to: ${DATABASES.join(", ")}.`),
@@ -273,10 +320,9 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     {
       title: "Fetch scientific articles (multi-database)",
       description:
-        "Fetch full metadata and abstracts for one or more ids from a specific database. " +
-        "Returns raw article objects, with no classification: pubmed and europepmc records carry publication types, " +
-        "MeSH headings and retraction/correction links, and non-PubMed records database, url and language. Ids that " +
-        "could not be fetched are listed in missing. " +
+        "Fetch full metadata and the whole abstract for one or more ids from a specific database. Each article is " +
+        "graded as in literature_search (studyType, designTier, flags) and, for pubmed and europepmc, carries MeSH " +
+        "headings and retraction/correction links. Ids that could not be fetched are listed in missing. " +
         "Use after literature_search to drill into specific papers.",
       // Strict, like literature_search: a misnamed key errors instead of being stripped.
       inputSchema: z.object(literatureFetchShape).strict(),
@@ -288,7 +334,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
           fetchLiterature({ ids: args.ids, database: args.database }, cache, resolveAdapter(args.database)),
         );
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(printedResult(result), null, 2) }],
         };
       } catch (err) {
         const payload = isMedResearchError(err)
@@ -308,15 +354,17 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     id: z
       .string()
       .describe(
-        "Article id — a PMID, a PMCID (PMC…, a record's pmcid), a Europe PMC preprint id (PPR…), or another database's " +
-          "id from literature_search together with its doi.",
+        "A literature_search result's id: a PMID, a PMCID (PMC…, a record's pmcid), an id of Europe PMC " +
+          "(PPR…, CBA:… with its prefix, IND…) or a chinaxiv or russiarxiv id (chinaxiv-…, ru-…). Each works alone; doi is for " +
+          "any other id.",
       ),
     doi: z
       .string()
       .optional()
       .describe(
-        "The record's doi, from any database. Required when the id is not a PMID, PMCID or PPR id. With a PMID it saves " +
-          "the id→DOI lookup; a PMCID or PPR id without it is tried at Europe PMC only.",
+        "The record's doi (10.… or a https://doi.org/ link), from a search result's doi field; a url or originalUrl is " +
+          "not one. Needed only for an id outside those above. With a PMID it saves the id→DOI lookup; a Europe PMC id " +
+          "without it uses the doi of Europe PMC's record.",
       ),
     offset: z
       .number()
@@ -337,13 +385,13 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     {
       title: "Fetch full text for a scientific article (multi-database)",
       description:
-        "Attempts to fetch an article's full text as markdown (plain text when format is pdf) via Europe PMC (records " +
-        "with a PMCID, and PPR preprints), Unpaywall (open access), institutional proxy (if configured), and direct DOI " +
-        "access. When none of them has it, a warning says what each location answered, and for a PMID the abstract is " +
-        "returned instead. Records with neither DOI nor PMCID (all chinaxiv and russiarxiv records) can't be " +
-        "resolved; their url links the record. A long text comes in parts: truncated says that more follows (see " +
-        "offset), totalChars how long the whole text is. Use when the abstract isn't enough (verify dosage, sample " +
-        "sizes, methods).",
+        "Fetches an article's full text as markdown (plain text when format is pdf) via Europe PMC (a PMCID or PPR " +
+        "preprint), Unpaywall (open access), institutional proxy (if configured) and direct DOI access; chinaxiv and " +
+        "russiarxiv records come from ChinaRxiv as a machine translation (check originalUrl before relying on a number). " +
+        "The warning opens with RETRACTED, NOTICE or EXPRESSION OF CONCERN when the record has that flag (see " +
+        "literature_search); a retracted paper is no evidence. Without the text it says what each location answered, " +
+        "and the abstract is returned. A long text comes in parts: see truncated, totalChars, offset. Use when the " +
+        "abstract isn't enough (dosage, sample sizes, methods).",
       // Strict, like literature_search: a misnamed key errors instead of being stripped.
       inputSchema: z.object(literatureFulltextShape).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },

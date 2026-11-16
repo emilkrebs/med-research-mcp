@@ -36,9 +36,11 @@ export type StudyType = (typeof STUDY_TYPES)[number];
 /**
  * Facts about a record, read from its database metadata. `retracted`, `notice`,
  * `protocol` and `editorial` mean the record is not usable as evidence, so its
- * `designTier` is 0; the rest are warnings that leave the tier alone.
- * `machine-translated` and `machine-generated-abstract` describe the text of a
- * ChinaXiv or RussiaRxiv record, not the study.
+ * `designTier` is 0; the rest are warnings that leave the tier alone. `updated`:
+ * a newer version exists, which `corrections` names (an updated review; for a
+ * preprint, its published article). `machine-translated` and
+ * `machine-generated-abstract` describe the text of a ChinaXiv or RussiaRxiv
+ * record, not the study.
  */
 export const RECORD_FLAGS = [
   "retracted",
@@ -58,24 +60,44 @@ export const RECORD_FLAGS = [
 export type RecordFlag = (typeof RECORD_FLAGS)[number];
 
 /**
- * Links from a record to notices about it, as PubMed's CommentsCorrections
- * RefType names (Europe PMC's "Retraction in" etc. are mapped to these).
+ * Links from a record to the records that correct, retract or supersede it, and the one link back, as
+ * PubMed's CommentsCorrections RefType names (Europe PMC's "Retraction in" etc. are mapped to these).
+ * NLM's definitions: "UpdateIn cites the reference containing an update to the article", "UpdateOf cites
+ * the article being updated" (see grader.ts). PubMed uses the pair for a preprint and its journal article
+ * too: the preprint has `UpdateIn` with the article's PMID, the article `UpdateOf` with the preprint's
+ * (checked 2026-11-16, see grader.ts), and Europe PMC's "Preprint of" and "Preprint in" are mapped to them.
+ * `UpdateOf` is the one link that is no notice about the record: the record is the newer one, and has no flag.
  */
-export const CORRECTION_TYPES = ["RetractionIn", "ExpressionOfConcernIn", "ErratumIn", "UpdateIn"] as const;
+export const CORRECTION_TYPES = ["RetractionIn", "ExpressionOfConcernIn", "ErratumIn", "UpdateIn", "UpdateOf"] as const;
 
 export type CorrectionType = (typeof CORRECTION_TYPES)[number];
 
 export interface Correction {
   type: CorrectionType;
-  /** Id of the notice or newer version in the same database; absent for one-way links. */
+  /**
+   * Id of the linked record, in the form its database gives it: the notice (`RetractionIn`, `ExpressionOfConcernIn`,
+   * `ErratumIn`), the newer version (`UpdateIn`: for a preprint, the journal article) or the earlier one
+   * (`UpdateOf`: for a journal article, its preprint). A PMID or a Europe PMC id such as "PPR1312266";
+   * absent for a link to a record the database doesn't hold.
+   */
   id?: string;
 }
 
 /** Raw article metadata as returned by NCBI (esummary + efetch merged). */
 export interface Article {
-  pmid: string;
+  /**
+   * The record's own id in its database, as the database gives it: a PMID ("12345678") for PubMed and for Europe PMC's
+   * MEDLINE records, Europe PMC's own id for its other records ("PPR1244531", "CBA:521529", "PMC…"), "chinaxiv-…" for
+   * ChinaXiv and "ru-…" for RussiaRxiv. `isPmidRecord` (exported by the core) tells the records whose id is a PMID.
+   */
+  id: string;
   title: string;
   abstract?: string;
+  /**
+   * The abstract is cut short: a ChinaXiv or RussiaRxiv search preview, or a search that asked
+   * for shortened abstracts. `literature_fetch` returns the whole abstract.
+   */
+  abstractTruncated?: boolean;
   authors: string[];
   journal: string;
   /** Publication date as reported by the source database (e.g. "2021 Mar 15" or "2021"): the issue date when there is one. */
@@ -91,7 +113,10 @@ export interface Article {
   publicationTypes: string[];
   /** MeSH descriptor names assigned by NLM (PubMed, Europe PMC). Absent until a record is MEDLINE-indexed. */
   meshHeadings?: string[];
-  /** Retraction, expression of concern, erratum or newer version linked to this record (PubMed, Europe PMC). */
+  /**
+   * Retraction, expression of concern, erratum, newer version (for a preprint, its published article) or
+   * earlier version (for a published article, its preprint) linked to this record (PubMed, Europe PMC).
+   */
   corrections?: Correction[];
   /** IDs cited by this article in the source database. */
   references?: string[];
@@ -100,7 +125,7 @@ export interface Article {
    * Source database — one of the adapter ids ("pubmed", "europepmc", "chinaxiv",
    * "russiarxiv"). Treated as "pubmed" when absent, so all
    * existing code keeps working without setting it. Non-PubMed adapters
-   * always set it. When set, `pmid` holds the database-specific id.
+   * always set it. When set, `id` holds the database-specific id.
    */
   database?: string;
   /** Direct URL to the article page on the source database. */
@@ -171,13 +196,35 @@ export interface SearchInput {
    * "ru" searches the Russian collection. Ignored by the others.
    */
   language?: string;
+  /**
+   * The most characters an abstract keeps in the results; a whole number, 0 or more. Longer ones are cut at a
+   * word boundary and end with "…" (within the limit), and the article gets `abstractTruncated`. 0 leaves
+   * abstracts out. Default: whole abstracts. `literature_fetch` always returns the whole abstract.
+   */
+  abstractMaxChars?: number;
 }
+
+/** The filters a search was given, as {@link SearchOutput.filters} echoes them. */
+export type SearchFilters = Pick<SearchInput, "dateRange" | "studyTypes" | "minDesignTier">;
 
 export interface SearchOutput {
   articles: GradedArticle[];
-  /** Hits reported by the databases searched, summed, before paging (of the narrowed query, with a design filter). */
+  /**
+   * Hits reported by the databases searched, summed, before paging and de-duplication (of the narrowed query,
+   * with a design filter): a record that two databases hold counts twice, so `total` can exceed what
+   * the pages hold. With several databases, `totalByDatabase` has each one's count.
+   */
   total: number;
+  /** Each database's own hit count, by adapter id; set when more than one database was searched. A failed one is left out. */
+  totalByDatabase?: Record<string, number>;
   query: string;
+  /**
+   * Ids of the databases searched, in order. A database skipped because a design filter would keep none of its
+   * records is not in it; one that failed is, with a warning saying so.
+   */
+  databases: string[];
+  /** What the search filtered by, as given; absent when it gave no dateRange, studyTypes or minDesignTier. */
+  filters?: SearchFilters;
   page: number;
   /** The records per database the page holds: ask for nextPage with it, as pages of another size start elsewhere. */
   maxResults: number;
@@ -199,7 +246,8 @@ export interface LiteratureFetchInput {
 }
 
 export interface FetchOutput {
-  articles: Article[];
+  /** Classified like search results (studyType, designTier, flags), with MeSH headings kept. */
+  articles: GradedArticle[];
   /** IDs that could not be found or fetched. */
   missing: string[];
   warnings?: string[];
@@ -207,15 +255,24 @@ export interface FetchOutput {
 
 /**
  * How a full text was obtained: Europe PMC's full-text API by PMCID, an open-access copy
- * Unpaywall located, the institutional proxy, or the DOI directly. `none` means only the
- * abstract (or nothing) is available.
+ * Unpaywall located, the institutional proxy, the DOI directly, or ChinaRxiv's machine
+ * translation of a ChinaXiv or RussiaRxiv record. `none` means only the abstract (or
+ * nothing) is available.
  */
-export type FulltextSource = "europepmc" | "unpaywall" | "proxy" | "direct" | "none";
+export type FulltextSource = "europepmc" | "unpaywall" | "proxy" | "direct" | "chinarxiv" | "none";
 
 export interface FulltextInput {
-  /** A PMID, a PMCID ("PMC…"), a Europe PMC preprint id ("PPR…"), or another database's id with `doi`. */
+  /**
+   * A PMID, a PMCID ("PMC…"), an id of Europe PMC's other records as `literature_search` returns it ("PPR…"
+   * preprints, "CBA:…", "IND…", with any prefix) or a ChinaXiv or RussiaRxiv id ("chinaxiv-…", "ru-…"), each
+   * on its own. A bare number is a PMID. An id none of them knows needs `doi`.
+   */
   id: string;
-  /** DOI — if provided, skips the id→DOI lookup. */
+  /**
+   * DOI, as "10.…" or a https://doi.org/ link; a record's url is not one. Needed only for an id outside
+   * the list above, which Europe PMC has no record of. With a PMID it skips the id→DOI lookup; any
+   * Europe PMC id without it takes the DOI of Europe PMC's record, if it has one.
+   */
   doi?: string;
   /** Character position in the full text to return it from: a previous call's `nextOffset`. Default 0. */
   offset?: number;
@@ -227,7 +284,10 @@ export interface FulltextOutput {
   id: string;
   doi?: string;
   source: FulltextSource;
-  /** Extracted full text (markdown) or, on the fallback path, the abstract. Absent if nothing was available. */
+  /**
+   * Extracted full text (markdown) or, on the fallback path, the abstract. Absent if nothing was available.
+   * With source "chinarxiv" it is a machine translation (see `warning`).
+   */
   fulltext?: string;
   format: "markdown" | "pdf";
   /** True if the text goes on past the part returned; `nextOffset` says where. */
@@ -236,7 +296,17 @@ export interface FulltextOutput {
   totalChars?: number;
   /** Set when `truncated`: pass it as `offset` to read on. */
   nextOffset?: number;
-  /** Set when the full text couldn't be retrieved: what each location answered, and what to do. */
+  /**
+   * What to know before relying on `fulltext`, in this order. First, when a record of the article is known
+   * (cached from a search or fetch, or looked up on the way) and carries the flag: "RETRACTED" (flag `retracted`,
+   * with the linked notice's id when the record has it), "NOTICE" (the record is a notice about another paper) or
+   * "EXPRESSION OF CONCERN" (flag `expression-of-concern`). It is set whether or not the text was retrieved, and
+   * read from the records at each call, so a retraction recorded after a text was cached is reported with it;
+   * from a record that doesn't carry the flag, or none, nothing is said. Then, when the full text couldn't be
+   * retrieved: what each location answered, and what to do. Also, though the text was retrieved, when it is a
+   * machine translation (source "chinarxiv"): it says so and points to the original, as the `machine-translated`
+   * flag does for a search result. Absent when none applies (an English original of a record without a flag).
+   */
   warning?: string;
 }
 

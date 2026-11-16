@@ -72,7 +72,7 @@ If the user (or their team) runs the HTTP entry (`npm run start:http`, see `docs
   }
 }
 ```
-There is no public instance. On an HTTP instance, full texts resolve through open access only (no institutional proxy).
+There is no public instance. An HTTP instance should have no institutional proxy, so its full texts come from open-access copies, free-to-read publisher pages and, for ChinaXiv/RussiaRxiv records, ChinaRxiv's machine translation.
 
 ### Direct library import (any Node project)
 `npm install med-research-mcp`, then `import { searchLiterature, fetchLiterature, fetchFulltext, createCache } from "med-research-mcp/core"`. The build ships ESM and CommonJS, so `import` and `require` both work.
@@ -95,7 +95,7 @@ Find the absolute path (`pwd`) and use `node <REPO>/dist/mcp/index.js` as the co
 | `NCBI_API_KEY` | optional | Raises the NCBI rate limit from 3 to 10 req/s |
 | `MED_RESEARCH_CHINAXIV_EMAIL` | optional | Contact email sent to ChinaRxiv (`chinaxiv`, `russiarxiv`); raises its limit from 30 to 300 requests/minute. Falls back to `NCBI_EMAIL`. |
 | `MED_RESEARCH_UNPAYWALL_EMAIL` | optional | Contact email for Unpaywall lookups (`literature_fulltext`). Falls back to `NCBI_EMAIL`, then to the project's contact address. |
-| `MED_RESEARCH_UNPAYWALL` | optional | `0` turns the Unpaywall lookups off, so no DOI is sent there; full texts then come only from Europe PMC, the proxy and the DOI itself. |
+| `MED_RESEARCH_UNPAYWALL` | optional | `0` turns the Unpaywall lookups off, so no DOI is sent there; full texts then come only from Europe PMC, ChinaRxiv, the proxy and the DOI itself. |
 | `MED_RESEARCH_PROXY_PREFIX` | optional | EZproxy-style DOI prefix for off-campus full text — `literature_fulltext` prepends it to the DOI, e.g. `https://doi-org.ezproxy.your-university.edu`. Works only if the proxy lets the machine in without a login (campus network or VPN); a proxy login in the browser isn't used. Use only if the institution's licences allow it: many publishers forbid using subscription content with AI tools. |
 | `MED_RESEARCH_CACHE_BACKEND` | optional | `memory` (default) or `sqlite` (persistent, survives restarts). `sqlite` needs `better-sqlite3`, an optional native dependency; if it isn't installed or fails to load, the server warns and uses `memory`. `.mcpb` installs always use `memory`. |
 | `MED_RESEARCH_CACHE_PATH` | optional | SQLite file path when the backend is `sqlite` (default `./pubmed-cache.db`, relative to the directory the client starts the server in, so use an absolute path; `:memory:` for ephemeral). |

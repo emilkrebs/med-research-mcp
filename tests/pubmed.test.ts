@@ -3,7 +3,8 @@ import { NcbiClient, searchPubMed, fetchPubMed } from "../src/core/pubmed";
 import { PubMedAdapter } from "../src/core/adapters/pubmed";
 import { PROJECT_CONTACT_EMAIL } from "../src/core/version";
 import { LRUBackend } from "../src/core/cache";
-import type { NcbiArticle, SearchInput } from "../src/core/types";
+import { classifyArticle } from "../src/core/grader";
+import { CORRECTION_TYPES, type NcbiArticle, type SearchInput } from "../src/core/types";
 
 const EFETCH_XML = `<?xml version="1.0" ?>
 <PubmedArticleSet>
@@ -216,8 +217,8 @@ describe("NcbiClient.esummary error-doc handling", () => {
     const out = await fetchPubMed({ ids: ["11111111", "99999999"] }, new LRUBackend(), client);
 
     expect(out.missing).toEqual(["99999999"]);
-    expect(out.articles.map((a) => a.pmid)).toEqual(["11111111"]);
-    expect(out.articles.find((a) => a.pmid === "99999999")).toBeUndefined();
+    expect(out.articles.map((a) => a.id)).toEqual(["11111111"]);
+    expect(out.articles.find((a) => a.id === "99999999")).toBeUndefined();
   });
 });
 
@@ -227,7 +228,7 @@ function fakeClient(): NcbiClient {
     [
       "11111111",
       {
-        pmid: "11111111",
+        id: "11111111",
         title: "Creatine and cognition",
         authors: ["Doe J"],
         journal: "J Test",
@@ -238,7 +239,7 @@ function fakeClient(): NcbiClient {
     [
       "22222222",
       {
-        pmid: "22222222",
+        id: "22222222",
         title: "Narrative review of nootropics",
         authors: ["Roe R"],
         journal: "J Rev",
@@ -262,7 +263,7 @@ describe("searchPubMed orchestration", () => {
   it("classifies results and preserves esearch order", async () => {
     const out = await searchPubMed({ query: "creatine" }, new LRUBackend(), fakeClient());
     expect(out.total).toBe(2);
-    expect(out.articles.map((a) => a.pmid)).toEqual(["11111111", "22222222"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["11111111", "22222222"]);
     expect(out.articles[0]?.studyType).toBe("randomized-controlled-trial");
     expect(out.articles[0]?.designTier).toBe(4);
     expect(out.articles[0]?.meshHeadings).toEqual(["Humans"]);
@@ -319,7 +320,7 @@ describe("searchPubMed orchestration", () => {
   it("filters by minDesignTier, and says it leaves out unrated records", async () => {
     const out = await searchPubMed({ query: "x", minDesignTier: 4 }, new LRUBackend(), fakeClient());
     expect(out.articles).toHaveLength(1);
-    expect(out.articles[0]?.pmid).toBe("11111111");
+    expect(out.articles[0]?.id).toBe("11111111");
     expect(out.warnings).toEqual([expect.stringContaining("leaves out every record with an unknown design tier")]);
   });
 
@@ -366,7 +367,7 @@ describe("searchPubMed orchestration", () => {
     vi.spyOn(client, "efetch").mockRejectedValueOnce(new Error("HTTP 429"));
 
     const first = await searchPubMed({ query: "x" }, cache, client);
-    expect(first.warnings?.some((w) => /retraction\/correction links/.test(w))).toBe(true);
+    expect(first.warnings?.some((w) => /abstracts and MeSH headings/.test(w))).toBe(true);
     expect(cache.getSummary("22222222")).toBeNull();
 
     const second = await searchPubMed({ query: "x" }, cache, client);
@@ -908,6 +909,118 @@ describe("NcbiClient requests", () => {
     const out = await new NcbiClient({ email: "test@example.com" }).esummary(["37968687"]);
     expect(out.get("37968687")).toMatchObject({ pmcid: "PMC10647179", doi: "10.1186/s12916-023-03146-5" });
   });
+
+  describe("correction links from esummary's references", () => {
+    // The shapes esummary answered on 2026-11-16 for PMIDs 33247380 (retracted) and 27578231 (expression of concern), trimmed.
+    const RETRACTED = {
+      uid: "33247380",
+      title: "Do Zinc Supplements Enhance the Clinical Efficacy of Hydroxychloroquine?: a Randomized, Multicenter Trial.",
+      pubdate: "2020",
+      pubtype: ["Journal Article", "Multicenter Study", "Randomized Controlled Trial", "Retracted Publication"],
+      references: [{ refsource: "Biol Trace Elem Res. 2025 Jan;203(1):589. doi: 10.1007/s12011-024-04150-3.", reftype: "Retraction in", pmid: 38512453, note: "" }],
+    };
+    const CONCERN = {
+      uid: "27578231",
+      title: "Randomized controlled trial comparing ondansetron and placebo for the reduction of spinal anesthesia-induced hypotension during elective cesarean delivery in Egypt.",
+      pubdate: "2016",
+      pubtype: ["Journal Article", "Randomized Controlled Trial"],
+      references: [{ refsource: "Int J Gynaecol Obstet. 2026 Sep 24. doi: 10.1002/ijgo.71386.", reftype: "Expression of concern in", pmid: 42781840, note: "" }],
+    };
+    const esummary = async (docs: object[]) => {
+      const result: Record<string, unknown> = { uids: docs.map((d) => (d as { uid: string }).uid) };
+      for (const doc of docs) result[(doc as { uid: string }).uid] = doc;
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ result }), { status: 200 })));
+      return new NcbiClient({ email: "test@example.com" }).esummary(docs.map((d) => (d as { uid: string }).uid));
+    };
+
+    it("reads the retraction and the expression of concern, with the notice's PMID, as efetch's links are read", async () => {
+      const out = await esummary([RETRACTED, CONCERN]);
+      expect(out.get("33247380")?.corrections).toEqual([{ type: "RetractionIn", id: "38512453" }]);
+      expect(out.get("27578231")?.corrections).toEqual([{ type: "ExpressionOfConcernIn", id: "42781840" }]);
+      // The expression of concern is no publication type, so only the link flags the record.
+      expect(classifyArticle(out.get("27578231")!).flags).toEqual(["expression-of-concern"]);
+      expect(classifyArticle(out.get("33247380")!).flags).toContain("retracted");
+    });
+
+    it("names the five link types as efetch does, and drops the others", async () => {
+      const ref = (reftype: string, pmid: number | string) => ({ refsource: "x", reftype, pmid, note: "" });
+      const out = await esummary([
+        {
+          ...CONCERN,
+          references: [
+            ref("Retraction in", 1),
+            ref("Expression of concern in", 2),
+            ref("Erratum in", 3),
+            ref("Update in", 4),
+            ref("Update of", 5),
+            ref("Comment in", 6),
+            ref("Comment on", 7),
+            ref("Erratum for", 8),
+            ref("Retraction of", 9),
+            ref("Republished in", 10),
+          ],
+        },
+      ]);
+      expect(out.get("27578231")?.corrections).toEqual([
+        { type: "RetractionIn", id: "1" },
+        { type: "ExpressionOfConcernIn", id: "2" },
+        { type: "ErratumIn", id: "3" },
+        { type: "UpdateIn", id: "4" },
+        { type: "UpdateOf", id: "5" },
+      ]);
+      expect(CORRECTION_TYPES).toEqual(expect.arrayContaining(out.get("27578231")!.corrections!.map((c) => c.type)));
+    });
+
+    it("leaves out the id of a link to a record PubMed doesn't hold, which esummary gives as an empty string, and takes a PMID given as a string", async () => {
+      const out = await esummary([
+        { ...CONCERN, references: [{ refsource: "doi: 10.1101/2023.11.26.568741", reftype: "Update of", pmid: "", note: "" }, { reftype: "Erratum in", pmid: "42735829" }] },
+      ]);
+      expect(out.get("27578231")?.corrections).toEqual([{ type: "UpdateOf" }, { type: "ErratumIn", id: "42735829" }]);
+    });
+
+    it("has no corrections when the record has no references, or only others", async () => {
+      const out = await esummary([
+        { ...CONCERN, uid: "1", references: undefined },
+        { ...CONCERN, uid: "2", references: [] },
+        { ...CONCERN, uid: "3", references: [{ refsource: "x", reftype: "Comment in", pmid: 5, note: "" }] },
+      ]);
+      for (const pmid of ["1", "2", "3"]) expect(out.get(pmid), pmid).not.toHaveProperty("corrections");
+    });
+
+    it("leaves efetch's links in charge: they replace esummary's in a fetched record, and a record without any loses them", async () => {
+      const efetch = (links: string) =>
+        `<PubmedArticleSet><PubmedArticle><MedlineCitation><PMID>27578231</PMID><Article><Abstract><AbstractText>Abstract.</AbstractText></Abstract></Article>${links}<MeshHeadingList><MeshHeading><DescriptorName>Humans</DescriptorName></MeshHeading></MeshHeadingList></MedlineCitation></PubmedArticle></PubmedArticleSet>`;
+      const linked = '<CommentsCorrectionsList><CommentsCorrections RefType="ExpressionOfConcernIn"><PMID>42781841</PMID></CommentsCorrections></CommentsCorrectionsList>';
+      for (const [xml, expected] of [[efetch(linked), [{ type: "ExpressionOfConcernIn", id: "42781841" }]], [efetch(""), undefined]] as const) {
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (url: string) =>
+            String(url).includes("efetch.fcgi")
+              ? new Response(xml, { status: 200 })
+              : new Response(JSON.stringify({ result: { uids: ["27578231"], "27578231": CONCERN } }), { status: 200 }),
+          ),
+        );
+        const out = await fetchPubMed({ ids: ["27578231"] }, new LRUBackend(), new NcbiClient({ email: "test@example.com" }));
+        expect(out.articles[0]?.corrections).toEqual(expected);
+        expect(out.articles[0]?.meshHeadings).toEqual(["Humans"]);
+      }
+    });
+
+    it("shows the link of a record whose efetch failed, which is not cached, so that the next call asks efetch again", async () => {
+      const cache = new LRUBackend();
+      const fetchMock = vi.fn(async (url: string) =>
+        String(url).includes("efetch.fcgi")
+          ? new Response("", { status: 400 })
+          : new Response(JSON.stringify({ result: { uids: ["27578231"], "27578231": CONCERN } }), { status: 200 }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const client = new NcbiClient({ email: "test@example.com" });
+      const first = await fetchPubMed({ ids: ["27578231"] }, cache, client);
+      expect(first.articles[0]?.corrections).toEqual([{ type: "ExpressionOfConcernIn", id: "42781840" }]);
+      expect(first.warnings).toEqual(["Some abstracts could not be fetched; those articles lack abstracts and MeSH headings."]);
+      expect(cache.getSummary("27578231")).toBeNull();
+    });
+  });
 });
 
 describe("PubMedAdapter.search", () => {
@@ -978,5 +1091,208 @@ describe("NcbiClient contact email", () => {
     const params = await sentParams(new NcbiClient({ tool: "other-app" }));
     expect(params.get("tool")).toBe("other-app");
     expect(params.has("email")).toBe(false);
+  });
+});
+
+// esearch reports a term found in no record under errorlist.phrasesnotfound (checked live 2026-11-16, see the comment
+// on UnknownTerms in pubmed.ts): in a query of plain words it drops the word, in a quoted, tagged or ANDed one it keeps it.
+describe("esearch: words that no record contains", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** An esearch answer as the live API shaped them: the terms it found nowhere, and the query it ran. */
+  const answer = (count: number, notFound: string[], translation: string): Response =>
+    new Response(
+      JSON.stringify({
+        esearchresult: {
+          count: String(count),
+          idlist: count > 0 ? ["1", "2"] : [],
+          querytranslation: translation,
+          errorlist: { phrasesnotfound: notFound, fieldsnotfound: [] },
+        },
+      }),
+      { status: 200 },
+    );
+  const quick = () => new NcbiClient({ email: "test@example.com", apiKey: "test-key" });
+
+  it("warns that a word was left out of a plain query, whose records come from the rest of it", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer(71644, ["qzxvbnmk"], '"sleep apnoea"[All Fields] OR "sleep apnea"[All Fields]')));
+    const out = await quick().esearch({ query: "sleep apnea qzxvbnmk" });
+    expect(out.count).toBe(71644);
+    expect(out.warning).toBe('PubMed ignored "qzxvbnmk": no record contains it, so it searched without it.');
+  });
+
+  it("names the words, also when the rest of the query found nothing", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer(0, ["qzxvbnmk", "wrtyplkj"], '"vitamin"[All Fields] AND "tirzepatide"[All Fields]')));
+    const out = await quick().esearch({ query: "vitamin tirzepatide qzxvbnmk wrtyplkj" });
+    expect(out.warning).toBe('PubMed ignored "qzxvbnmk" and "wrtyplkj": no record contains them, so it searched without them.');
+  });
+
+  it("names the term that blocks a search that kept it, when the search found nothing", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer(0, ["fooxx"], "sleep apnea fooxx[tiab]")));
+    expect((await quick().esearch({ query: "sleep apnea fooxx[tiab]" })).warning).toBe('No PubMed record contains "fooxx".');
+    vi.stubGlobal("fetch", vi.fn(async () => answer(0, ["qzxvbnmk", "wrtyplkj"], "qzxvbnmk wrtyplkj")));
+    expect((await quick().esearch({ query: "qzxvbnmk wrtyplkj" })).warning).toBe('No PubMed record contains "qzxvbnmk" or "wrtyplkj".');
+  });
+
+  it("says nothing of a kept term in a search that found records (a NOT operand), or without the query it ran", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer(38542, ["qzxvbnmk"], "metformin NOT qzxvbnmk")));
+    expect(await quick().esearch({ query: "metformin NOT qzxvbnmk" })).not.toHaveProperty("warning");
+    // No querytranslation: whether the term was left out is unknown.
+    const bare = { esearchresult: { count: "5", idlist: ["1"], errorlist: { phrasesnotfound: ["x"] } } };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(bare), { status: 200 })));
+    expect(await quick().esearch({ query: "y x" })).not.toHaveProperty("warning");
+  });
+
+  it("keeps the warning on a repeated search, and next to the cap warning", async () => {
+    const fetchMock = vi.fn(async () => answer(20_000, ["qzxvbnmk"], '"sleep"[All Fields]'));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const sentence = 'PubMed ignored "qzxvbnmk": no record contains it, so it searched without it.';
+    expect((await client.esearch({ query: "sleep qzxvbnmk" })).warning).toBe(sentence);
+    expect((await client.esearch({ query: "sleep qzxvbnmk" })).warning).toBe(sentence);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const capped = await client.esearch({ query: "sleep qzxvbnmk", maxResults: 50, page: 200 });
+    expect(capped.warning).toMatch(/^PubMed serves only the first 9,999 records .* PubMed ignored "qzxvbnmk"/);
+  });
+
+  it("reaches the adapter's result and the standalone search's warnings", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer(0, ["fooxx"], "sleep apnea fooxx[tiab]")));
+    expect(await new PubMedAdapter(quick()).search({ query: "sleep apnea fooxx[tiab]" })).toMatchObject({
+      count: 0,
+      warning: 'No PubMed record contains "fooxx".',
+    });
+    const out = await searchPubMed({ query: "sleep apnea fooxx[tiab]" }, new LRUBackend(), quick());
+    expect(out.warnings).toContain('No PubMed record contains "fooxx".');
+  });
+});
+
+// A quoted term esearch can't find is reported under warninglist.quotedphrasesnotfound, with its quotes and its field tag
+// (checked live 2026-11-16, see the comment on UnknownTerms in pubmed.ts). The answers below are those it returned, trimmed to
+// the fields the client reads; `phrasesignored` was empty in all of them.
+describe("esearch: quoted terms that no record contains", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const noItems = ["No items found."];
+  const answer = (count: number, translation: string, quoted: string[], outputmessages: string[] = [], errorlist?: { phrasesnotfound: string[] }): Response =>
+    new Response(
+      JSON.stringify({
+        esearchresult: {
+          count: String(count),
+          idlist: count > 0 ? ["1", "2"] : [],
+          querytranslation: translation,
+          ...(errorlist ? { errorlist: { ...errorlist, fieldsnotfound: [] } } : {}),
+          warninglist: { phrasesignored: [], quotedphrasesnotfound: quoted, outputmessages },
+        },
+      }),
+      { status: 200 },
+    );
+  // The threshold is raised: the counts of "sleep qzxvbnmk" (373,649) and "COVID-19" (495,549) are above the default 100,000.
+  const quick = () => new NcbiClient({ email: "test@example.com", apiKey: "test-key", broadThreshold: 1_000_000 });
+  const warningOf = async (query: string, response: Response): Promise<string | undefined> => {
+    vi.stubGlobal("fetch", vi.fn(async () => response.clone()));
+    return (await quick().esearch({ query })).warning;
+  };
+
+  // "sleep" and its variants, as esearch expanded the word in the answers for `"sleep qzxvbnmk"` and the phrases of three known words.
+  const SLEEP = '"sleep"[MeSH Terms] OR "sleep"[All Fields] OR "sleeping"[All Fields] OR "sleeps"[All Fields] OR "sleep s"[All Fields]';
+  const APNEA = '"apnea"[MeSH Terms] OR "apnea"[All Fields] OR "apneas"[All Fields] OR "apnoeas"[All Fields] OR "apnoea"[All Fields]';
+  const TIRZEPATIDE = '"tirzepatide"[Supplementary Concept] OR "tirzepatide"[All Fields] OR "tirzepatide"[MeSH Terms]';
+
+  it("names a quoted word that stays in the query and leaves nothing, without its quotes", async () => {
+    const out = 'No PubMed record contains "qzxvbnmk".';
+    expect(await warningOf('"qzxvbnmk"', answer(0, '"qzxvbnmk"', ['"qzxvbnmk"'], noItems))).toBe(out);
+    // Beside known words, which esearch leaves untranslated when the quoted word finds nothing.
+    expect(await warningOf('sleep apnea "qzxvbnmk"', answer(0, 'sleep apnea "qzxvbnmk"', ['"qzxvbnmk"'], noItems))).toBe(out);
+    // With a field tag, which esearch reports too, and the client leaves out of the name.
+    expect(await warningOf('"qzxvbnmk"[tiab]', answer(0, '"qzxvbnmk"[tiab]', ['"qzxvbnmk"[tiab]'], noItems))).toBe(out);
+    expect(await warningOf('"qzxvbnmk" "wrtyplkj"', answer(0, '"qzxvbnmk" "wrtyplkj"', ['"qzxvbnmk"', '"wrtyplkj"'], noItems))).toBe(
+      'No PubMed record contains "qzxvbnmk" or "wrtyplkj".',
+    );
+    // A quoted phrase of unknown words, and a tagged phrase of known words that no record has in the field.
+    expect(await warningOf('"qzxvbnmk wrtyplkj"', answer(0, '"qzxvbnmk wrtyplkj"', ['"qzxvbnmk wrtyplkj"'], noItems))).toBe('No PubMed record contains "qzxvbnmk wrtyplkj".');
+    expect(await warningOf('"apnea tirzepatide sleep"[tiab]', answer(0, '"apnea tirzepatide sleep"[tiab]', ['"apnea tirzepatide sleep"[tiab]'], noItems))).toBe(
+      'No PubMed record contains "apnea tirzepatide sleep".',
+    );
+  });
+
+  it("says nothing of a quoted term that stays in a search that found records (a NOT operand)", async () => {
+    const response = answer(71648, 'sleep apnea NOT "qzxvbnmk"', ['"qzxvbnmk"']);
+    vi.stubGlobal("fetch", vi.fn(async () => response.clone()));
+    expect(await quick().esearch({ query: 'sleep apnea NOT "qzxvbnmk"' })).not.toHaveProperty("warning");
+  });
+
+  it("says that a quoted phrase PubMed has no phrase for was searched as its words, whatever the count", async () => {
+    const separately = 'PubMed has no phrase "apnea tirzepatide sleep", so it searched the words separately: a record need not hold them together.';
+    expect(await warningOf('"apnea tirzepatide sleep"', answer(173, `(${APNEA}) AND (${TIRZEPATIDE}) AND (${SLEEP})`, ['"apnea tirzepatide sleep"']))).toBe(separately);
+    // Here esearch also dropped the word no record contains (its translation is "sleep" alone), which the reported phrase doesn't say.
+    expect(await warningOf('"sleep qzxvbnmk"', answer(373649, SLEEP, ['"sleep qzxvbnmk"']))).toBe(
+      'PubMed has no phrase "sleep qzxvbnmk", so it searched the words separately: a record need not hold them together.',
+    );
+    // The words, searched on their own, can find nothing too: the sentence is still what happened.
+    expect(await warningOf('"apnea tirzepatide sleep"', answer(0, `(${APNEA}) AND (${TIRZEPATIDE}) AND (${SLEEP})`, ['"apnea tirzepatide sleep"'], noItems))).toBe(separately);
+    // Two phrases are named in one sentence.
+    expect(await warningOf('"a b" "c d"', answer(5, "(a) AND (b) AND (c) AND (d)", ['"a b"', '"c d"']))).toBe(
+      'PubMed has no phrase "a b" or "c d", so it searched the words separately: a record need not hold them together.',
+    );
+  });
+
+  it("names a term that both lists report once", async () => {
+    const response = answer(0, 'qzxvbnmk "qzxvbnmk"', ['"qzxvbnmk"'], noItems, { phrasesnotfound: ["qzxvbnmk"] });
+    expect(await warningOf('qzxvbnmk "qzxvbnmk"', response)).toBe('No PubMed record contains "qzxvbnmk".');
+    // Whatever the case it is written in.
+    expect(await warningOf('QZXVBNMK "qzxvbnmk"', answer(0, 'QZXVBNMK "qzxvbnmk"', ['"qzxvbnmk"'], noItems, { phrasesnotfound: ["QZXVBNMK"] }))).toBe(
+      'No PubMed record contains "QZXVBNMK".',
+    );
+    // A tagged plain word has only the first list, and an empty second one.
+    expect(await warningOf("qzxvbnmk[tiab]", answer(0, "qzxvbnmk[tiab]", [], noItems, { phrasesnotfound: ["qzxvbnmk"] }))).toBe('No PubMed record contains "qzxvbnmk".');
+  });
+
+  it("says each thing once, in the order ignored, searched as words, blocking", async () => {
+    // Not an answer seen live: one the two lists could give together.
+    const response = answer(0, '"sleep"[All Fields] AND "x"[All Fields] AND "y"[All Fields] AND "zzzz"', ['"x y"', '"zzzz"'], noItems, { phrasesnotfound: ["qzxvbnmk"] });
+    expect(await warningOf('sleep qzxvbnmk "x y" "zzzz"', response)).toBe(
+      'PubMed ignored "qzxvbnmk": no record contains it, so it searched without it. ' +
+        'PubMed has no phrase "x y", so it searched the words separately: a record need not hold them together. ' +
+        'No PubMed record contains "zzzz".',
+    );
+  });
+
+  it("reports nothing for the quoted terms of real queries, which esearch leaves without a warninglist", async () => {
+    const real: [string, number, string][] = [
+      ['"sleep apnea"', 66630, '"sleep apnea"[All Fields]'],
+      ['"BRCA1"', 26313, '"BRCA1"[All Fields]'],
+      ['"COVID-19"', 495549, '"COVID-19"[All Fields]'],
+      ['"vitamin D3"', 13814, '"vitamin D3"[All Fields]'],
+      ['"hs-CRP"', 10481, '"hs-CRP"[All Fields]'],
+      ['"sleep apnea"[tiab]', 50996, '"sleep apnea"[Title/Abstract]'],
+      ['"Kreider R"[au]', 36, '"Kreider R"[Author]'],
+      ['"intranasal corticosteroid*"[tiab]', 1356, '"intranasal corticosteroid*"[Title/Abstract]'],
+    ];
+    for (const [query, count, translation] of real) {
+      const bare = { esearchresult: { count: String(count), idlist: ["1"], querytranslation: translation } };
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(bare), { status: 200 })));
+      expect(await quick().esearch({ query }), query).not.toHaveProperty("warning");
+    }
+    // Lists that are there and empty say nothing either, nor does a list without the query it ran.
+    expect(await warningOf('"sleep apnea"', answer(66630, '"sleep apnea"[All Fields]', []))).toBeUndefined();
+    const untranslated = { esearchresult: { count: "5", idlist: ["1"], warninglist: { quotedphrasesnotfound: ['"x y"'] } } };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(untranslated), { status: 200 })));
+    expect(await quick().esearch({ query: '"x y"' })).not.toHaveProperty("warning");
+  });
+
+  it("keeps the sentence on a repeated search", async () => {
+    const response = answer(173, `(${APNEA}) AND (${TIRZEPATIDE}) AND (${SLEEP})`, ['"apnea tirzepatide sleep"']);
+    const fetchMock = vi.fn(async () => response.clone());
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const first = await client.esearch({ query: '"apnea tirzepatide sleep"' });
+    const again = await client.esearch({ query: '"apnea tirzepatide sleep"' });
+    expect(first.warning).toMatch(/^PubMed has no phrase "apnea tirzepatide sleep"/);
+    expect(again.warning).toBe(first.warning);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -5,45 +5,51 @@ description: Use when researching biomedical, supplement, peptide, or longevity 
 
 # Using the med-research-mcp MCP
 
-Three tools, a triage-first workflow. **Always start with `literature_search`** (free, designs labeled from NLM metadata). **Drill into specific papers with `literature_fetch`** (full abstracts + metadata). **Use `literature_fulltext`** only when the abstract isn't enough (methods, sample size, dosage).
+Three tools, a triage-first workflow. **Always start with `literature_search`** (free, designs labeled from NLM metadata), drill into papers with `literature_fetch`, and use `literature_fulltext` only when the abstract isn't enough.
 
 ## Decision flow
 
-1. Turn the question into a precise query and call `literature_search`. Default database is `"pubmed"`; for broader coverage use `database: ["pubmed","europepmc"]`, `["pubmed","chinaxiv"]`, or `"all"`. PubMed field tags (`[tiab]`/`[mesh]`/`[au]`/`[pt]`) **only work on pubmed**; the server removes them from what it sends the other databases, which search the bare keywords. ChinaXiv/RussiaRxiv match only records containing **every** word of the query: give them one or two key words.
-2. Read `flags` first. Then **read the abstract of every result whose `designTier` is `null`**: unclassified records and most meta-analyses/systematic reviews. Null means unrated, not weak.
-3. `literature_fetch` the specific ids you care about to read full abstracts.
-4. `literature_fulltext` **only** when you need more than the abstract — verify dosage, check sample sizes, read methods, detect statistical flaws.
-5. Europe PMC records indexed in MEDLINE carry the same NLM labels as PubMed. ChinaXiv/RussiaRxiv records are always `unknown` — you classify them. They come through ChinaRxiv, a third-party service that machine-translates them; ChinaXiv records are preprints, and most RussiaRxiv abstracts were written by ChinaRxiv, not the authors. Check `originalUrl` before quoting a number from them.
+1. Turn the question into a query (below) and call `literature_search`. Default database is `"pubmed"`; for broader coverage use `["pubmed","europepmc"]`, `["pubmed","chinaxiv"]`, or `"all"`. For a preprint or a paper outside MEDLINE search `"europepmc"` alone (`SRC:PPR` keeps preprints only; PubMed reads it as words and has the NIH-supported ones). `"russiarxiv"` is Soviet-era papers, mostly mathematics, physics and chemistry, almost no medicine: a zero there is not "no Russian research exists".
+2. Read `warnings` and `flags` first. Then **read the abstract of every result whose `designTier` is `null`**: unclassified records and most meta-analyses/systematic reviews. Null means unrated, not weak.
+3. `literature_fetch` the ids you care about (with their `database`) to read whole abstracts.
+4. `literature_fulltext` **only** when the abstract isn't enough: dosage, sample sizes, methods, statistical flaws.
+5. Europe PMC records indexed in MEDLINE carry the same NLM labels as PubMed. Its preprints (`PPR…`) and `CBA:…` records have no design tag, so they are `unknown`, like all ChinaXiv/RussiaRxiv records — you classify them. ChinaXiv/RussiaRxiv come through ChinaRxiv, a third-party service; ChinaXiv records are preprints.
 
 ## Writing good queries (`literature_search`)
 
-Bare keywords match tens of thousands of papers and bury the signal. Use field tags and booleans.
+2–5 keywords, never a sentence: every word must match, so each extra word narrows the result. On 0 results the warning names the word that blocks a query of plain words (no quotes, tags or operators), or says no single word does (use fewer, more general words); with tags, drop one clause at a time. `PubMed ignored "word"` means no record contains it: check the spelling. `PubMed has no phrase "…"` means PubMed found no such phrase and searched its words separately, anywhere in a record. Tags and booleans add precision on PubMed and Europe PMC; `chinaxiv`/`russiarxiv` ignore them.
 
-- `[tiab]` — title/abstract (most precise): `zinc AND "common cold"[tiab]`
-- `[mesh]` — controlled MeSH: `"Zinc"[mesh] AND "Common Cold"[mesh]`
+- `[tiab]` — title/abstract (most precise): `zinc[tiab] AND ("common cold"[tiab] OR rhinovirus[tiab])`. Quote a phrase before its tag or tag each word: Europe PMC drops the tag of `common cold[tiab]`.
+- `[mesh]` — controlled MeSH, PubMed only: `"Zinc"[mesh] AND "Common Cold"[mesh]`
 - `[au]` — author: `Hemilä H[au]`
-- Combine: `(zinc[tiab]) AND ("common cold"[tiab] OR rhinovirus[tiab]) AND humans[mesh]`
-- Restrict to strong designs: `AND (randomized controlled trial[pt] OR meta-analysis[pt])` — `[pt]` is publication type.
-- Narrow first. On `QUERY_TOO_BROAD`, add a `[tiab]` term or an `AND` clause.
+- `[pt]` — publication type, for strong designs: `AND (meta-analysis[pt] OR "randomized controlled trial"[pt])`
+- Europe PMC reads `[tiab] [ti] [au] [pt] [ta] [la] [dp] [pmid]` and drops other tags, so their words match full text.
+- `chinaxiv`/`russiarxiv` return only records containing **every** word, and read `OR` as a word: give them one or two key words.
 
-Params: `database`, `maxResults` (default 10, max 50 — per database and page, so two DBs return ~20), `page` (default 1; when the result has `nextPage`, more records exist — pass it as `page`, with the same `maxResults`, to read them instead of assuming the first page is all; each page is sorted on its own, so `sort: "date"` holds only within a page for chinaxiv/russiarxiv, which ignore it; within PubMed's one-hour search cache no page repeats a record, but one can be skipped at a 500-record block boundary, and after it expires pages can repeat or skip; a page past the end returns no articles and a warning; paging stops at record 10,000 (`INVALID_INPUT` beyond) and PubMed serves only its first 9,999, with the last reachable page carrying a warning, so narrow the query instead of paging that deep; deep `sort: "date"` pages on PubMed cost more requests and can hit `TIMEOUT` on a hosted server), `studyTypes` (e.g. `["meta-analysis","systematic-review","randomized-controlled-trial"]` — **use this to keep reviews and trials**; it narrows the database query, so `maxResults` counts matches and `total` counts candidates; chinaxiv/russiarxiv aren't searched with it; `cohort`, `case-control`, `cross-sectional` and `in-vitro` never match, see below; `animal-study` comes only from veterinary publication types — lab-animal studies carry the `animals-not-humans` flag instead), `minDesignTier` (4 = RCTs; it drops every `null` tier, including most meta-analyses — read the warning), `dateRange {from,to}` (`YYYY-MM-DD`, `YYYY-MM` or `YYYY`; it also matches the online date, so a result can show a later `pubDate` — its `epubDate` is the online date), `sort` ("relevance", re-sorted by design tier, or "date", newest first), `language` (PubMed and Europe PMC ignore it; for Russian papers use `database: "russiarxiv"`).
+Params (the tool descriptions have the rest):
+
+- `maxResults` (default 10, max 50) counts **per database and page**: two databases return up to 20.
+- `abstractMaxChars` cuts abstracts to that many characters (0 leaves them out). Ten whole abstracts run 20,000–30,000 characters: with several databases or many results set one (600 halves it). `abstractTruncated: true` (also on ChinaXiv/RussiaRxiv previews, cut at 500 characters) means `literature_fetch` the record for the whole abstract.
+- `page`: pass a result's `nextPage` with the same `maxResults` to read on. Each page is sorted on its own.
+- `studyTypes` (e.g. `["meta-analysis","systematic-review","randomized-controlled-trial"]`): **use this to keep reviews and trials**. `cohort`, `case-control`, `cross-sectional` and `in-vitro` never match.
+- `minDesignTier` (4 = RCTs): drops every `null` tier, including most meta-analyses; read the warning.
 
 ## Reading the design labels (`GradedArticle`)
 
-`studyType` comes **only** from NLM PublicationType tags — no text guessing. NLM now assigns them by automated indexing, with human review of only some records, so treat them as a strong prior: confirm in the abstract when it matters. The tags never name `cohort`, `case-control`, `cross-sectional` or `in-vitro`: those labels are for your own reading of an abstract (tagged observational studies come back as `observational`), so filtering on them returns nothing. `designTier` ranks the design for "does this intervention help?" by the OCEBM 2011 levels [1] — a prior, **not an appraisal**.
+`studyType` comes **only** from NLM PublicationType tags — no text guessing. NLM now assigns them by automated indexing, with human review of only some records, so treat them as a strong prior: confirm in the abstract when it matters. † marks what only you assign, from the abstract: the tool never returns tier 3, gives 5 only to a Network Meta-Analysis tag, and never names `cohort`, `case-control`, `cross-sectional` or `in-vitro` (tagged observational studies come back as `observational`). `designTier` ranks the design for "does this intervention help?" by the OCEBM 2011 levels [1] — a prior, **not an appraisal**.
 
 | designTier | studyType | Reading |
 |-----------|-----------|---------|
-| 5 | meta-analysis / systematic-review **of randomized trials** | most reliable design for treatment effects; a review of weak trials is still weak |
+| 5 | meta-analysis / systematic-review **of randomized trials** † | most reliable design for treatment effects; a review of weak trials is still weak |
 | 4 | randomized-controlled-trial | randomized comparison. NLM also tags secondary/post-hoc analyses of trials this way — check that the comparison you cite is the randomized one |
-| 3 | cohort | observational with a comparison group; confounding likely |
-| 2 | non-randomized-trial · clinical-trial · observational · case-control · cross-sectional | controlled but not randomized (historical controls possible) · a trial whose randomization and control aren't indexed (may be single-arm) · an observational study of unindexed design · hypothesis-generating designs |
+| 3 | cohort † | observational with a comparison group; confounding likely |
+| 2 | non-randomized-trial · clinical-trial · observational · case-control † · cross-sectional † | controlled but not randomized (historical controls possible) · a trial whose randomization and control aren't indexed (may be single-arm) · an observational study of unindexed design · hypothesis-generating designs |
 | 1 | case-report · review | anecdote · review article not indexed as systematic (16% of 2023 papers titled "systematic review" carry only this tag — check) |
-| 0 | animal-study · in-vitro, or any record flagged `retracted` / `notice` / `protocol` / `editorial` | not usable as evidence for human benefit |
+| 0 | animal-study · in-vitro †, or any record flagged `retracted` / `notice` / `protocol` / `editorial` | not usable as evidence for human benefit |
 | `null` | meta-analysis / systematic-review | **what it pooled isn't in the metadata** — read the abstract: of RCTs → tier 5; of observational studies → the tier of those studies |
 | `null` | unknown | **no design metadata, not weak** — recent, non-MEDLINE or regional record; classify it yourself |
 
-`flags` — tier 0: `retracted` (never cite as support), `notice` (a retraction notice, expression of concern or erratum, not a study), `protocol` (planned study, no results), `editorial` (opinion or commentary). Warnings, tier unchanged: `expression-of-concern` (the journal doubts its integrity; don't rely on it alone), `corrected` (an erratum exists — check the numbers you quote), `updated` (a newer version exists, e.g. an updated Cochrane review — cite that one), `animals-not-humans` (MeSH lists animals but not humans; usually an animal study, but automated indexing sometimes drops the Humans tag from real human trials [9] — check the abstract), `preprint` (not peer reviewed), `letter` (may be correspondence or a short research report), `machine-translated` (ChinaXiv/RussiaRxiv text is a machine translation — confirm numbers in `originalUrl`), `machine-generated-abstract` (the abstract is ChinaRxiv's summary, not the authors' — never quote it as the paper's findings). Dosage, population, sample size and limitations are **not extracted** — read them in the abstract.
+`flags` — tier 0: `retracted` (never cite as support), `notice` (a retraction notice, expression of concern or erratum, not a study), `protocol` (planned study, no results), `editorial` (opinion or commentary). Warnings, tier unchanged: `expression-of-concern` (the journal doubts its integrity; don't rely on it alone), `corrected` (an erratum exists — check the numbers you quote), `updated` (a newer version exists: an updated Cochrane review, or a preprint's published article, whose id is in `corrections` — cite that one, fetching it if needed), `animals-not-humans` (MeSH lists animals but not humans; usually an animal study, but automated indexing sometimes drops the Humans tag from real human trials [9] — check the abstract), `preprint` (not peer reviewed), `letter` (may be correspondence or a short research report), `machine-translated` (ChinaXiv/RussiaRxiv text is a machine translation — confirm numbers in `originalUrl`), `machine-generated-abstract` (the abstract is ChinaRxiv's summary, not the authors' — never quote it as the paper's findings). Dosage, population, sample size and limitations are **not extracted** — read them in the abstract.
 
 ### Classifying from the abstract
 
@@ -74,14 +80,14 @@ Apply these to every answer, not only pivotal ones.
 
 ## Tools, limits, errors
 
-- `literature_fetch({ids:["39123456","38987654"], database:"pubmed"})` — full abstracts + publication types + MeSH + retraction/correction links + metadata, no `studyType` (1–50 ids).
-- `literature_fulltext({id:"39123456", doi:"10.1234/x"})` — article body as markdown via Europe PMC (records with a `pmcid`) → Unpaywall → proxy → DOI; otherwise the abstract, and `warning` says why (paywalled, landing page only, unknown DOI). Non-PubMed ids need their DOI, or pass the record's `pmcid` as the id; ChinaXiv/RussiaRxiv records have neither, so open their `url` instead. A long text comes in parts: when `truncated` is true, call again with `offset: nextOffset` to read on (e.g. to the Results).
-- NCBI client is shared and serialized (3 req/s anonymous, 10 with `NCBI_API_KEY`): parallel calls are **safe** but don't run faster. Prefer a few precise queries.
-- Errors: `QUERY_TOO_BROAD` (narrow + retry); `RATE_LIMIT` (the server already retried; wait `retryAfter`); `NETWORK_ERROR`/`PARSE_FAILURE` (retry once, then say the DB is unreachable); `TIMEOUT` (the hosted server's time per call ran out: retry — on a deep search page each retry gets further, and the deepest date pages can take several — then ask for an earlier page or narrow the query); `INVALID_INPUT` and schema errors (fix the parameter named: database ids are lower case, dates must exist). In a multi-database search, a database that fails while others answer shows up only in `warnings` (`<database> search failed: …`) — say which database is missing; never report its absence as "no studies found".
+- `literature_fetch({ids:["39123456","38987654"], database:"pubmed"})` — 1–50 ids of one database (a result's `id` and `database`): whole abstracts, publication types, MeSH, retraction/correction links, and the same `studyType`/`designTier`/`flags` as search.
+- `literature_fulltext({id:"39123456"})` — article body as markdown via Europe PMC (records with a `pmcid`) → Unpaywall → proxy → DOI; otherwise the abstract, and `warning` says why. A result's `id` works alone, with its prefix (`CBA:644599`; a bare number is a PMID); `doi` is only for an id Europe PMC doesn't know; a `url` is not a DOI. `warning` opens with `RETRACTED:`, `NOTICE:` or `EXPRESSION OF CONCERN:` when the record has that flag, even if the text came (say so first); it reads the record as the databases report it at the time, so the flags of search or fetch are the authority. A long text comes in parts: while `truncated` is true, call again with `offset: nextOffset`.
+- NCBI is rate-limited: parallel calls are **safe** but don't run faster. Prefer a few precise queries.
+- Errors: `QUERY_TOO_BROAD` (narrow: add a `[tiab]` term or an `AND` clause); `RATE_LIMIT` (the server already retried; wait `retryAfter`); `NETWORK_ERROR`/`PARSE_FAILURE` (retry once, then say the DB is unreachable); `TIMEOUT` (retry, then ask for an earlier page or narrow the query); `INVALID_INPUT` and schema errors (fix the parameter named: database ids are lower case, dates must exist). In a multi-database search, a database that fails while others answer shows up only in `warnings` (`<database> search failed: …`): say which is missing, never report it as "no studies found".
 
 ## Reporting
 
-Lead with the strongest evidence, its design and how certain it is; summarize consensus, then contradictions. Cite PMIDs so claims are checkable. Report doses and populations as what the studies used and found, quoted **from the abstract**, not as recommendations, and call out animal-only, tiny or abstract-less results. Surface `flags` (retracted, expression of concern, updated, preprint, machine-translated) and what you read yourself (COI, n<20). This is a research summary, not medical advice: say so when the question is about dosing or treatment, and point to a healthcare professional for decisions about a person's care.
+Lead with the strongest evidence, its design and how certain it is; summarize consensus, then contradictions. **If a record you rely on is flagged `retracted`, `notice` or `protocol`, the answer's first sentence says so.** Cite the `id` the tool returned, as "PMID …" only when the record has `pmid`, otherwise with its database (`PPR…`, `chinaxiv-…`) or the `doi`/`url`; never type an id from memory. Report doses and populations as what the studies used and found, quoted **from the abstract or the full text you read** (say which), not as recommendations, and call out animal-only, tiny or abstract-less results. Surface the other `flags` (expression of concern, updated, preprint, machine-translated) and what you read yourself (COI, n<20). This is a research summary, not medical advice: say so when the question is about dosing or treatment, and point to a healthcare professional for decisions about a person's care.
 
 ## Three patterns (follow these, don't ad-lib)
 
@@ -89,27 +95,24 @@ Lead with the strongest evidence, its design and how certain it is; summarize co
 
 > "What study design is PMID 22570464, and how strong is that design?"
 
-One call, no fan-out: `literature_search({query:"22570464[pmid]"})` — it returns `studyType`, `designTier`, `flags` and the abstract. If `flags` has `retracted`/`notice`/`protocol`, lead with that. If `designTier` is `null`, read the abstract: for a synthesis, find what it pooled; for `unknown`, classify it (above) and say so. Answer: *"Systematic review and meta-analysis of randomized controlled trials — 82 met the inclusion criteria, 63 were pooled (NLM tag; pooled designs from the abstract): design tier 5 of 5 (PMID 22570464)."* Stop.
+One call, no fan-out: `literature_search({query:"22570464[pmid]"})` — it returns `studyType`, `designTier`, `flags` and the abstract. If `flags` has `retracted`/`notice`/`protocol`, say so first. If `designTier` is `null`, read the abstract: for a synthesis, find what it pooled; for `unknown`, classify it (above) and say so. Answer: *"Systematic review and meta-analysis of randomized controlled trials — 82 met the inclusion criteria, 63 were pooled (NLM tag; pooled designs from the abstract): design tier 5 of 5 (PMID 22570464)."* Stop.
 
 ### 2. Evidence synthesis — compare X vs Y
 
 > "Compare intranasal corticosteroids vs oral antihistamines for allergic rhinitis symptoms. Which has stronger evidence, and why?"
 
-Frame PICO, then two targeted searches (one per arm, study-type filter): `intranasal corticosteroid*[tiab] AND allergic rhinitis[tiab] AND (meta-analysis[pt] OR randomized controlled trial[pt])`, and `oral antihistamine*[tiab] AND allergic rhinitis[tiab] AND (...)`. `literature_fetch` the top 2–3 PMIDs per arm; read what each review pooled, effect sizes + CIs, n, I². Judge **which arm's evidence is more certain**, not which effect is bigger: start from design (a meta-analysis of RCTs beats one small RCT), then rate down for bias, imprecision, inconsistency, indirectness and publication bias (ground rule 1). Name which arm is stronger and why; cite PMIDs; state certainty in GRADE terms. Cap at ~6 calls.
+Frame PICO, then two targeted searches (one per arm, study-type filter): `"intranasal corticosteroid*"[tiab] AND "allergic rhinitis"[tiab] AND (meta-analysis[pt] OR "randomized controlled trial"[pt])`, and `"oral antihistamine*"[tiab] AND "allergic rhinitis"[tiab] AND (...)`. `literature_fetch` the top 2–3 ids per arm; read what each review pooled, effect sizes + CIs, n, I². Judge **which arm's evidence is more certain**, not which effect is bigger: start from design (a meta-analysis of RCTs beats one small RCT), then rate down as in ground rule 1. Name which arm is stronger and why; cite ids; state certainty in GRADE terms. Cap at ~6 calls.
 
 ### 3. Bullshit detection — the study doesn't exist
 
 > "Summarize the 2020 Nilsen trial on taurine and slow-wave sleep."
 
-Search author+topic then title terms: `Nilsen[au] AND taurine AND sleep`, then `taurine slow-wave sleep 2020`. **Zero corroborating results after 2–3 distinct queries → STOP** — don't keep reformulating 8–10 times and return empty. Answer plainly: *"I could not find this trial in PubMed; it does not appear to exist."* Invent no PMID, cite no fabricated study. Suggest the user double-check the reference. (This corrects the real failure mode: empty final text after exhausting the step budget.)
+Search author+topic, then title terms, then both databases: `Nilsen[au] AND taurine AND sleep`; `taurine slow-wave sleep 2020`; `taurine slow-wave sleep Nilsen` with `database: ["pubmed","europepmc"]`. **Nothing corroborating after these three queries → STOP** — don't keep reformulating 8–10 times and return empty. Answer plainly, naming the databases searched (`databases` in the result): *"I could not find this trial in PubMed or Europe PMC; it does not appear to exist."* Invent no id, cite no fabricated study. Suggest the user double-check the reference.
 
 ## Small-model tips
 
-- **Patterns beat rules.** Follow the three examples above; don't improvise a new strategy per query.
-- **Budget your calls:** 1 for a lookup, ~4–6 for synthesis, ≤3 before rejecting a phantom study.
-- **Zero results after 2 reformulations → stop and say so.** Never return an empty answer; a caveat beats silence.
-- **Every claim gets a PMID you got from a tool call.** Never type a PMID from memory — it's fabrication.
-- **Lead with the bottom line, then the evidence.** State the winner/number first; back it with the design + certainty + citation + flags.
+- **Budget your calls:** 1 for a lookup, ~4–6 for synthesis, three queries (pattern 3) before you say nothing was found. Then stop and say so: never return an empty answer; a caveat beats silence.
+- **Lead with the bottom line:** the winner or number first, then design, certainty, citation, flags.
 
 ## When to go deeper (EBM)
 

@@ -1,22 +1,25 @@
 /**
  * The id of a record outside PubMed as the first field of an answer line (`record: <id>`): which forms the real
  * scorer accepts. A `preprint` or `regional` key expects `record: <id>`, the id exactly as the server prints it,
- * as a lookup expects `pmid: <PMID>`. The ids come out of the server's own parsers, so a change in how it prints
- * them shows up here.
+ * as a lookup expects `pmid: <PMID>`. The ids come out of the server's own parsers and its own printer
+ * (`printedArticle`: the tools print the id as `id`, and `pmid` only for a PMID), so a change in how it prints
+ * them shows up here. The scorer reads the model's answer, never the tools' output (stored in a run's `toolCalls`), so the
+ * name of the field the tools print does not reach a score.
  */
 
 import { describe, expect, it } from "vitest";
-import { parseChinaRXiv, parseEuropePmc } from "../lib/core.js";
+import { parseChinaRXiv, parseEuropePmc, printedArticle } from "../lib/core.js";
 import { scoreAccuracy } from "../lib/scoring/accuracy.js";
 import { extractCitations } from "../lib/scoring/verify.js";
 import type { BenchmarkQuery } from "../lib/types.js";
 
-/** What the server prints as the id (`pmid` field) of a preprint, a Chinese Biological Abstracts record and a ChinaXiv record. */
-const printed = {
-  preprint: parseEuropePmc({ resultList: { result: [{ id: "PPR123456", source: "PPR", title: "t", abstractText: "a" }] } } as never).articles[0]!.pmid,
-  cba: parseEuropePmc({ resultList: { result: [{ id: "521529", source: "CBA", title: "t", abstractText: "a" }] } } as never).articles[0]!.pmid,
-  chinaxiv: parseChinaRXiv({ data: [{ id: "chinaxiv-202608.00133", title: "t" }] } as never).articles[0]!.pmid,
-};
+const epmc = (result: object) => parseEuropePmc({ resultList: { result: [result] } } as never).articles[0]!;
+const printedPreprint = printedArticle(epmc({ id: "PPR123456", source: "PPR", title: "t", abstractText: "a" }));
+const printedCba = printedArticle(epmc({ id: "521529", source: "CBA", title: "t", abstractText: "a" }));
+const printedChinaxiv = printedArticle(parseChinaRXiv({ data: [{ id: "chinaxiv-202608.00133", title: "t" }] } as never).articles[0]!);
+
+/** What the server prints as the id (`id` field) of a preprint, a Chinese Biological Abstracts record and a ChinaXiv record. */
+const printed = { preprint: printedPreprint.id, cba: printedCba.id, chinaxiv: printedChinaxiv.id };
 
 const query = (id: string): BenchmarkQuery => ({
   id: "q",
@@ -31,6 +34,13 @@ const score = (id: string, written: string, numbers = "randomized: 120 | mean ch
 describe("what the server prints", () => {
   it("is PPR…, CBA:… and chinaxiv-…", () => {
     expect(printed).toEqual({ preprint: "PPR123456", cba: "CBA:521529", chinaxiv: "chinaxiv-202608.00133" });
+  });
+
+  it("is an `id`, and a `pmid` only for a PMID: the library's own `id` is the same id", () => {
+    for (const article of [printedPreprint, printedCba, printedChinaxiv]) expect(article).not.toHaveProperty("pmid");
+    const medline = printedArticle(epmc({ id: "33000001", source: "MED", pmid: "33000001", title: "t", abstractText: "a" }));
+    expect(medline).toMatchObject({ id: "33000001", pmid: "33000001" });
+    expect(epmc({ id: "PPR123456", source: "PPR", title: "t" }).id).toBe(printed.preprint);
   });
 });
 

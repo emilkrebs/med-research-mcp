@@ -3,7 +3,7 @@ import { pubmedTools } from "../lib/tools/pubmed.js";
 import type { GradedArticle } from "../lib/core.js";
 
 const article: GradedArticle = {
-  pmid: "27633186",
+  id: "27633186",
   title: "Semaglutide and Cardiovascular Outcomes in Patients with Type 2 Diabetes",
   authors: ["Marso SP"],
   journal: "The New England journal of medicine",
@@ -42,6 +42,9 @@ describe("pubmedTools (the plain PubMed baseline)", () => {
     expect(out.warnings).toEqual(["w"]);
     const [record] = out.articles;
     expect(record.pmid).toBe("27633186");
+    // The baseline prints the PMID as `pmid`, first, as it always has: the library's `id` is not what the model reads.
+    expect(Object.keys(record)[0]).toBe("pmid");
+    expect("id" in record).toBe(false);
     expect(record.publicationTypes).toContain("Randomized Controlled Trial"); // PubMed's own tag stays
     expect(record.abstract).toContain("3297");
     for (const added of ["studyType", "designTier", "flags"]) expect(added in record).toBe(false);
@@ -56,9 +59,11 @@ describe("pubmedTools (the plain PubMed baseline)", () => {
 
   it("fetches records by PMID", async () => {
     const { studyType: _s, designTier: _d, flags: _f, ...raw } = article;
-    const tools = pubmedTools({ fetch: async ({ ids }) => ({ articles: ids.includes(raw.pmid) ? [raw] : [], missing: ids.filter((i) => i !== raw.pmid) }) });
+    const tools = pubmedTools({ fetch: async ({ ids }) => ({ articles: ids.includes(raw.id) ? [raw] : [], missing: ids.filter((i) => i !== raw.id) }) });
     const out = JSON.parse(await run(tools.pubmed_fetch, { pmids: ["27633186", "99999999"] }));
     expect(out.articles.map((a: { pmid: string }) => a.pmid)).toEqual(["27633186"]);
+    expect(Object.keys(out.articles[0])[0]).toBe("pmid");
+    expect("id" in out.articles[0]).toBe(false);
     expect(out.missing).toEqual(["99999999"]);
   });
 

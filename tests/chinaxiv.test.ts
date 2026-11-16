@@ -2,9 +2,11 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { ChinaRXivAdapter, chinaxivHeaders, parsePapers } from "../src/core/adapters/chinarxiv";
 import { SovietRxivAdapter } from "../src/core/adapters/russiarxiv";
 import { defaultHttp, type AdapterHttp } from "../src/core/adapters/http";
+import { cleanAuthors } from "../src/core/adapters/util";
 import { LRUBackend } from "../src/core/cache";
 import { errors } from "../src/core/errors";
 import { classifyArticle } from "../src/core/grader";
+import { fetchLiterature } from "../src/core/literature";
 
 /** A ChinaXiv search result as the v1 API returns it (PaperSummary, abstract cut at 500 characters). */
 const CHINAXIV_RECORD = {
@@ -40,6 +42,9 @@ const RUSSIARXIV_RECORD = {
 };
 
 const RESPONSE = { total: 1, limit: 10, next_cursor: null, data: [CHINAXIV_RECORD] };
+
+/** An abstract as the search endpoint cuts it: 497 characters of the whole one and "...", 500 in all. */
+const PREVIEW = "Objective: ".padEnd(497, "w") + "...";
 
 function fakeHttp(payload: unknown): { http: AdapterHttp; urls: string[] } {
   const urls: string[] = [];
@@ -123,7 +128,7 @@ describe("parsePapers", () => {
     const { count, articles } = parsePapers(RESPONSE);
     expect(count).toBe(1);
     const a = articles[0]!;
-    expect(a.pmid).toBe("chinaxiv-202401.00027");
+    expect(a.id).toBe("chinaxiv-202401.00027");
     expect(a.title).toBe("Clinical Characteristics and Influencing Factors of Gastrointestinal Dysfunction");
     expect(a.authors).toEqual(["Li Jing", "Ma Leilei"]);
     expect(a.pubDate).toBe("2024-01-03");
@@ -155,11 +160,122 @@ describe("parsePapers", () => {
     expect(soviet.originalUrl).toBe("https://www.mathnet.ru/eng/dan27147");
   });
 
+  // The spec lists a third source, `crad`; no record has it (checked 2026-11-16, see the adapter header).
+  it("reads a record's source: absent or chinaxiv is ChinaXiv, russiarxiv is RussiaRxiv, any other is dropped", () => {
+    const parse = (r: Record<string, unknown>) => parsePapers({ data: [r] }).articles;
+    const { source: _s, ...legacy } = CHINAXIV_RECORD;
+    expect(parse(legacy)[0]).toMatchObject({ database: "chinaxiv", url: "https://chinarxiv.org/items/chinaxiv-202401.00027" });
+    expect(parse({ ...CHINAXIV_RECORD, source: null })[0]?.database).toBe("chinaxiv");
+    expect(parse({ ...CHINAXIV_RECORD, source: "chinaxiv" })[0]?.database).toBe("chinaxiv");
+    expect(parse({ ...RUSSIARXIV_RECORD, source: "russiarxiv" })[0]?.database).toBe("russiarxiv");
+    for (const source of ["crad", "arxiv", "CHINAXIV"]) {
+      expect(parse({ ...CHINAXIV_RECORD, id: "crad-202401.00027", source })).toEqual([]);
+    }
+    // The count is the API's, so a dropped record leaves it as it was.
+    const mixed = parsePapers({ total: 2, data: [{ ...CHINAXIV_RECORD, source: "crad" }, RUSSIARXIV_RECORD] });
+    expect(mixed.count).toBe(2);
+    expect(mixed.articles.map((a) => a.id)).toEqual(["ru-196201.58177"]);
+  });
+
   it("surfaces both as warning flags; the design stays unknown", () => {
     const graded = classifyArticle(parsePapers({ data: [RUSSIARXIV_RECORD] }).articles[0]!);
     expect(graded.studyType).toBe("unknown");
     expect(graded.designTier).toBeNull();
     expect(graded.flags).toEqual(["machine-translated", "machine-generated-abstract"]);
+  });
+
+  it("flags an abstract the search endpoint cut at 500 characters, and not a complete one", () => {
+    const parse = (abstract: string) => parsePapers({ data: [{ ...CHINAXIV_RECORD, abstract }] }).articles[0]!;
+    // Shapes seen on 2026-11-16: a cut abstract is 497 characters and "...", a complete one is shorter.
+    expect(PREVIEW).toHaveLength(500);
+    expect(parse(PREVIEW).abstractTruncated).toBe(true);
+    expect(parse(PREVIEW).abstract).toBe(PREVIEW);
+    expect(parse("Objective: complete and short.").abstractTruncated).toBeUndefined();
+    // Short and ending in "...": not a cut.
+    expect(parse("Objective: the trial was stopped early...").abstractTruncated).toBeUndefined();
+    expect(parse("a".repeat(490)).abstractTruncated).toBeUndefined();
+    expect(parse("a".repeat(499) + "!").abstractTruncated).toBeUndefined();
+    // A record without an abstract has none to cut.
+    const { abstract: _a, ...bare } = CHINAXIV_RECORD;
+    expect(parsePapers({ data: [bare] }).articles[0]!.abstractTruncated).toBeUndefined();
+    // The detail endpoint's abstract is whole, even when it is long and ends in "...".
+    const detail = parsePapers({ data: [{ ...CHINAXIV_RECORD, abstract: PREVIEW }] }, { complete: true }).articles[0]!;
+    expect(detail.abstractTruncated).toBeUndefined();
+  });
+
+  // Shapes of `authors` seen in real search results on 2026-11-16, with synthetic names.
+  it("strips affiliation markers and splits a name list that arrived as one string", () => {
+    const names = (authors: unknown) => cleanAuthors(authors);
+    // <sup> markers, with the corresponding-author asterisk.
+    expect(names(["LI Ge<sup>1</sup>, ZHOU Yu<sup>2</sup>, TIAN Xi<sup>3*</sup>, GAO Ying<sup>1,2*</sup>"])).toEqual([
+      "LI Ge",
+      "ZHOU Yu",
+      "TIAN Xi",
+      "GAO Ying",
+    ]);
+    // Caret markers: closed, with commas inside, and a name that carries a middle dot.
+    expect(names(["Lin Fang^1^, Ma Lu^2^, Xie Yi·Hamu^2^, Liu Fen^1,2,4*^, Zhu Bin^5*^"])).toEqual([
+      "Lin Fang",
+      "Ma Lu",
+      "Xie Yi·Hamu",
+      "Liu Fen",
+      "Zhu Bin",
+    ]);
+    // A caret with no closing one, before the comma that separates the names.
+    expect(names(["BAO Ruo ^1, LU Chao ^1, YE Chun ^2"])).toEqual(["BAO Ruo", "LU Chao", "YE Chun"]);
+    expect(names(["Chen Hu^1, Xu Zi^1, Li Yu^1,2"])).toEqual(["Chen Hu", "Xu Zi", "Li Yu"]);
+    // Semicolons, and a corresponding-author star on the name.
+    expect(names(["Zeng Ke ^1; Wang Yu ^2; Zhu Wei ^1,2"])).toEqual(["Zeng Ke", "Wang Yu", "Zhu Wei"]);
+    expect(names(["KUANG Li★, DING Xin, MA Yuan★"])).toEqual(["KUANG Li", "DING Xin", "MA Yuan"]);
+    // The conjunction of an English list, and the initials of a Russian one.
+    expect(names(["Hui Li, Qing-Wei Li, and Li-Qiang Song"])).toEqual(["Hui Li", "Qing-Wei Li", "Li-Qiang Song"]);
+    expect(names(["E. V. Shmidt, T. P. Prishchep, N. A. Chernova"])).toEqual(["E. V. Shmidt", "T. P. Prishchep", "N. A. Chernova"]);
+    expect(names(["G. P. Kalina, N. B. Komzolova"])).toEqual(["G. P. Kalina", "N. B. Komzolova"]);
+  });
+
+  it("drops exact repeats from a list, and leaves the names that only look alike", () => {
+    expect(cleanAuthors(["Qi Jing", "Cai Qing", "Wang Yan", "Qi Jing", "Yan Wang", "Wang Yan"])).toEqual([
+      "Qi Jing",
+      "Cai Qing",
+      "Wang Yan",
+      "Yan Wang",
+    ]);
+    expect(cleanAuthors(["Lin Fang^1^, Ma Lu^2^, Lin Fang^1^"])).toEqual(["Lin Fang", "Ma Lu"]);
+  });
+
+  it("doesn't split where a comma can belong to one name, an organisation or a note", () => {
+    // "Surname, Given", alone or listed.
+    expect(cleanAuthors(["Li, Nan"])).toEqual(["Li, Nan"]);
+    expect(cleanAuthors(["Li, Nan", "Zhang, Xiaoguang"])).toEqual(["Li, Nan", "Zhang, Xiaoguang"]);
+    expect(cleanAuthors(["Smith, J. R."])).toEqual(["Smith, J. R."]);
+    expect(cleanAuthors(["Van der Berg, Jan Willem"])).toEqual(["Van der Berg, Jan Willem"]);
+    expect(cleanAuthors(["Smith, John, Doe, Jane"])).toEqual(["Smith, John, Doe, Jane"]);
+    // A name list that has a semicolon between "Surname, Given" names splits there only.
+    expect(cleanAuthors(["Li, Nan; Zhang, Xiaoguang"])).toEqual(["Li, Nan", "Zhang, Xiaoguang"]);
+    // Organisations, alone or as listed elements.
+    expect(cleanAuthors(["Children’s Hospital, Zhejiang University School of Medicine"])).toEqual([
+      "Children’s Hospital, Zhejiang University School of Medicine",
+    ]);
+    expect(cleanAuthors(["Dongfang Hospital, Beijing University of Chinese Medicine", "Sleep Research Society"])).toEqual([
+      "Dongfang Hospital, Beijing University of Chinese Medicine",
+      "Sleep Research Society",
+    ]);
+    // Text that isn't a list of names.
+    const contact = "Corresponding author: Guo Tao. E-mail: guo@example.org";
+    expect(cleanAuthors([contact])).toEqual([contact]);
+    const note = 'Hu Yu\n\n(Note: In English publications, Chinese names keep their order, formatted as "Hu Yu")';
+    expect(cleanAuthors([note])).toEqual([note]);
+    // One name, and nothing.
+    expect(cleanAuthors(["G. P. GARTANEEV"])).toEqual(["G. P. GARTANEEV"]);
+    expect(cleanAuthors([])).toEqual([]);
+    expect(cleanAuthors(undefined)).toEqual([]);
+    expect(cleanAuthors(["Shi Run<sup>1</sup>"])).toEqual(["Shi Run"]);
+  });
+
+  it("cleans the authors of a record on the way in", () => {
+    const parse = (authors: unknown) => parsePapers({ data: [{ ...CHINAXIV_RECORD, authors }] }).articles[0]!.authors;
+    expect(parse(["Lin Fang^1^, Ma Lu^2*^"])).toEqual(["Lin Fang", "Ma Lu"]);
+    expect(parse([])).toEqual([]);
   });
 
   it("returns empty results for empty response", () => {
@@ -227,6 +343,20 @@ describe("ChinaRXivAdapter", () => {
     expect(await new ChinaRXivAdapter(other.http).fetch(["chinaxiv-202608.00133"], new LRUBackend())).toEqual([]);
   });
 
+  it("never presents a record of another source as ChinaXiv: search drops it and a fetch reports its id missing", async () => {
+    const crad = { ...CHINAXIV_RECORD, id: "crad-202401.00027", source: "crad" };
+    const searched = await new ChinaRXivAdapter(fakeHttp({ total: 1, data: [crad] }).http).search({ query: "exercise" });
+    expect(searched).toMatchObject({ count: 1, ids: [] });
+
+    const fetched = await fetchLiterature(
+      { ids: ["crad-202401.00027"], database: "chinaxiv" },
+      new LRUBackend(),
+      new ChinaRXivAdapter(fakeHttp(crad).http),
+    );
+    expect(fetched.articles).toEqual([]);
+    expect(fetched.missing).toEqual(["crad-202401.00027"]);
+  });
+
   it("fetchFull() replaces a truncated search preview with the complete record", async () => {
     const full = { ...CHINAXIV_RECORD, abstract: "Objective: … Results: 38 studies were included." };
     const urls: string[] = [];
@@ -278,6 +408,78 @@ describe("ChinaRXivAdapter", () => {
     before = urls.length;
     expect((await adapter.fetchFull(ids, cache))[0]?.abstract).toContain("38 studies");
     expect(urls.length - before).toBe(1);
+  });
+
+  it("marks a search preview as cut, the complete record not, and keeps the mark on a preview fetchFull falls back to", async () => {
+    const whole = PREVIEW.slice(0, 497) + " and the rest of it, with Results: 38 studies were included.";
+    const preview = { ...CHINAXIV_RECORD, abstract: PREVIEW };
+    let detailUp = true;
+    const http: AdapterHttp = {
+      json: async <T>(url: string): Promise<T> => {
+        if (url.includes("/papers?")) return { total: 1, data: [preview] } as T;
+        if (!detailUp) throw new Error("HTTP 503");
+        return { ...CHINAXIV_RECORD, abstract: whole } as T;
+      },
+      text: async () => "",
+    };
+    const adapter = new ChinaRXivAdapter(http);
+    const cache = new LRUBackend();
+    const { ids } = await adapter.search({ query: "tcm" });
+    expect((await adapter.fetch(ids, cache))[0]).toMatchObject({ abstract: PREVIEW, abstractTruncated: true });
+
+    // A fetch of a record the search never saw goes to /papers/{id}: complete, no mark.
+    const cold = await new ChinaRXivAdapter(http).fetch(ids, new LRUBackend());
+    expect(cold[0]?.abstract).toBe(whole);
+    expect(cold[0]).not.toHaveProperty("abstractTruncated");
+
+    const full = (await adapter.fetchFull(ids, cache))[0]!;
+    expect(full.abstract).toBe(whole);
+    expect(full).not.toHaveProperty("abstractTruncated");
+
+    // The detail endpoint is down: the preview stays a preview.
+    detailUp = false;
+    const warm = new ChinaRXivAdapter(http);
+    await warm.search({ query: "tcm" });
+    expect((await warm.fetchFull(ids, new LRUBackend()))[0]).toMatchObject({ abstract: PREVIEW, abstractTruncated: true });
+  });
+});
+
+describe("fetchText (the translated full text)", () => {
+  const TEXT = { id: "chinaxiv-202401.00027", title: "T", body_md: "<!-- source-page: 001 -->\n\n# T\n\nBody.\n", word_count: 1 };
+
+  it("reads /papers/{id}/text and returns the Markdown body", async () => {
+    const { http, urls } = fakeHttp(TEXT);
+    expect(await new ChinaRXivAdapter(http).fetchText("chinaxiv-202401.00027")).toBe("<!-- source-page: 001 -->\n\n# T\n\nBody.");
+    expect(urls).toEqual(["https://chinarxiv.org/api/v1/papers/chinaxiv-202401.00027/text"]);
+    const russian = fakeHttp({ ...TEXT, id: "ru-196201.58177" });
+    await new SovietRxivAdapter(russian.http).fetchText("ru-196201.58177");
+    expect(russian.urls).toEqual(["https://chinarxiv.org/api/v1/papers/ru-196201.58177/text"]);
+  });
+
+  it("returns null for a record without text, which the API answers with an empty body, or for another record's", async () => {
+    // As answered on 2026-11-16 for a record whose has_full_text is false.
+    expect(await new ChinaRXivAdapter(fakeHttp({ ...TEXT, body_md: "", word_count: 0 }).http).fetchText("chinaxiv-202401.00027")).toBeNull();
+    expect(await new ChinaRXivAdapter(fakeHttp({ ...TEXT, body_md: "  \n" }).http).fetchText("chinaxiv-202401.00027")).toBeNull();
+    expect(await new ChinaRXivAdapter(fakeHttp({ id: "chinaxiv-202401.00027", title: "T" }).http).fetchText("chinaxiv-202401.00027")).toBeNull();
+    expect(await new ChinaRXivAdapter(fakeHttp({ ...TEXT, id: "chinaxiv-202601.00001" }).http).fetchText("chinaxiv-202401.00027")).toBeNull();
+  });
+
+  it("lets a failed request through, as an error, and sends the adapter's contact header", async () => {
+    vi.stubEnv("MED_RESEARCH_CHINAXIV_EMAIL", "chinaxiv@example.com");
+    const sent: Record<string, string>[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      sent.push((init?.headers ?? {}) as Record<string, string>);
+      return sent.length === 1 ? new Response(JSON.stringify(TEXT)) : new Response("", { status: 404 });
+    });
+    try {
+      const adapter = new ChinaRXivAdapter();
+      expect(await adapter.fetchText("chinaxiv-202401.00027")).toContain("Body.");
+      await expect(adapter.fetchText("chinaxiv-209999.99999")).rejects.toMatchObject({ code: "NETWORK_ERROR" });
+      expect(sent.map((h) => h["X-API-Email"])).toEqual(["chinaxiv@example.com", "chinaxiv@example.com"]);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
+    }
   });
 });
 
@@ -408,7 +610,7 @@ describe("ChinaRxiv paging", () => {
     // Remembering all 21 walked pages would overflow the memo and wipe the first page's records.
     await adapter.search({ query: "anxiety", maxResults: 50, page: 22 });
     urls.length = 0;
-    expect((await adapter.fetch(first.ids, cache)).map((a) => a.pmid)).toEqual(first.ids);
+    expect((await adapter.fetch(first.ids, cache)).map((a) => a.id)).toEqual(first.ids);
     expect(urls).toHaveLength(0);
   });
 

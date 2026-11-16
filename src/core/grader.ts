@@ -10,6 +10,27 @@
  * ChinaXiv or RussiaRxiv record's text: machine-translated, or an abstract the
  * database wrote itself.
  *
+ * A preprint and the journal article it became are two records, linked both ways (checked live,
+ * 2026-11-16). PubMed: the preprint's CommentsCorrections hold `UpdateIn` with the article's PMID, the
+ * article's `UpdateOf` with the preprint's (efetch of PMIDs 42238413 and 42745487). Of 300 preprints
+ * with an UpdateIn link (esearch, sort=pub_date), none had another RefType, every target was a record
+ * without the Preprint type, and every target held the UpdateOf back; `preprint[pt] AND hasupdatein`
+ * finds 42,493 of the 72,073 preprints, `preprint[pt] AND hasupdateof` none. NLM's element descriptions
+ * don't mention preprints ("UpdateIn cites the reference containing an update to the article", "UpdateOf
+ * cites the article being updated"), nor does the DTD efetch declares (pubmed_250101.dtd) have a
+ * preprint RefType. Europe PMC has its own pair: "Preprint of" on the PPR record, linking the article
+ * (source MED), "Preprint in" on the article, linking the PPR record; all 57 preprints of `SRC:PPR AND
+ * HAS_PUBLISHED_VERSION:y AND tirzepatide` and all 179 articles of `HAS_PREPRINT:y AND tirzepatide AND
+ * SRC:MED` carry one. They are mapped to UpdateIn and UpdateOf, so that the same situation reads the same
+ * in both databases: a preprint with a published version gets `updated`, as it already did in PubMed (the
+ * skill reads `updated` as "cite the newer version", which is right here), and the article, which is
+ * nothing but the newer record, gets the link and no flag. Europe PMC's links are mostly its own matches
+ * of title and first author, not the preprint server's (806 of the first 1,000 preprints with a published
+ * version; the titles of 149 of 150 such pairs were identical, one similar), and the article side lists
+ * one preprint where several versions link to it (three PsyArXiv versions link PMID 42950493, which lists one).
+ * A preprint PubMed holds is also in Europe PMC under two ids (MED 42238413 and PPR1237523, one DOI), so
+ * its article lists both.
+ *
  * These labels are NLM's, but not hand-curated: since 2022 NLM indexes MEDLINE
  * automatically (MTIA, then the neural MTIX), with human curation of selected
  * records, and has been adding publication types to that automation [NLM-2021,
@@ -51,7 +72,9 @@
  *   evidence — indirectness. J Clin Epidemiol 2011;64:1303-10. PMID 21802903.
  * - [MeSH] NLM MeSH publication-type records (definition, tree position,
  *   history), https://id.nlm.nih.gov/mesh/<UI>.json — UIs cited inline.
- * - [NLM-XML] NLM, MEDLINE/PubMed XML element descriptions, CommentsCorrections.
+ * - [NLM-XML] NLM, MEDLINE/PubMed XML element descriptions, CommentsCorrections. The page's own URL
+ *   (https://www.nlm.nih.gov/bsd/licensee/elements_descriptions.html) now only redirects to this copy of
+ *   20 Feb 2024 (checked 2026-11-16). It lists UpdateIn and UpdateOf and no preprint RefType:
  *   https://wayback.archive-it.org/org-350/20240220194809/https://www.nlm.nih.gov/bsd/licensee/elements_descriptions.html
  * - [NLM-2021] NLM Technical Bulletin 2021 Nov–Dec, "MEDLINE 2022 Initiative:
  *   Transition to Automated Indexing".
@@ -65,7 +88,7 @@
  */
 
 import { RECORD_FLAGS } from "./types.js";
-import type { Article, GradedArticle, RecordFlag, StudyType } from "./types.js";
+import type { Article, Correction, GradedArticle, RecordFlag, StudyType } from "./types.js";
 
 type Design = Exclude<StudyType, "unknown">;
 
@@ -300,7 +323,8 @@ export function classifyDesign(
   // An expression of concern is linked only, never tagged, on the article itself [NLM-XML].
   if (links.has("ExpressionOfConcernIn")) flags.push("expression-of-concern");
   if (links.has("ErratumIn")) flags.push("corrected");
-  // UpdateIn: a newer version exists, e.g. an updated Cochrane review [NLM-XML].
+  // UpdateIn: a newer version exists, e.g. an updated Cochrane review [NLM-XML], or a preprint's journal
+  // article (see the header). UpdateOf, the link back from the newer record, is no warning: nothing is wrong with it.
   if (links.has("UpdateIn")) flags.push("updated");
   // Only a warning: automated indexing drops the Humans tag from human trials
   // often enough that "Animals NOT Humans" wrongly excluded human RCTs 7× as
@@ -337,14 +361,40 @@ export function rankKey(article: GradedArticle): number {
 }
 
 /**
+ * The links of two records of the same paper together: the first's, then the second's that it lacks. A link
+ * without an id adds nothing to a record that has one of its type, as the id-less link is the same notice
+ * seen from a database that doesn't hold the record. Undefined when there are none.
+ */
+function mergeCorrections(kept: Correction[] | undefined, other: Correction[] | undefined): Correction[] | undefined {
+  if (!other?.length) return kept;
+  const seen = new Set((kept ?? []).map((c) => `${c.type}:${c.id ?? ""}`));
+  const held = new Set((kept ?? []).map((c) => c.type));
+  const added = other.filter((c) => {
+    const key = `${c.type}:${c.id ?? ""}`;
+    if (seen.has(key) || (!c.id && held.has(c.type))) return false;
+    seen.add(key);
+    return true;
+  });
+  return added.length > 0 ? [...(kept ?? []), ...added] : kept;
+}
+
+/**
  * Merge two records of the same paper (same DOI): keep the higher-ranked one (the first on a tie) and
- * add the other's paper-level flags, so a retraction known to only one database is not lost.
+ * add the other's paper-level flags and the links (`corrections`) it has that the kept one lacks, so a
+ * retraction, or the published version of a preprint, known to only one database is not lost.
  */
 export function mergeDuplicate(first: GradedArticle, second: GradedArticle): GradedArticle {
   const [kept, other] = rankKey(second) > rankKey(first) ? [second, first] : [first, second];
   const flags = RECORD_FLAGS.filter((f) => kept.flags?.includes(f) || (PAPER_FLAGS.has(f) && other.flags?.includes(f)));
-  if (flags.length === (kept.flags?.length ?? 0)) return kept;
-  return { ...kept, flags, ...(flags.some((f) => NOT_EVIDENCE.has(f)) ? { designTier: 0 } : {}) };
+  const corrections = mergeCorrections(kept.corrections, other.corrections);
+  const moreFlags = flags.length > (kept.flags?.length ?? 0);
+  const moreLinks = corrections !== kept.corrections;
+  if (!moreFlags && !moreLinks) return kept;
+  return {
+    ...kept,
+    ...(moreFlags ? { flags, ...(flags.some((f) => NOT_EVIDENCE.has(f)) ? { designTier: 0 } : {}) } : {}),
+    ...(moreLinks ? { corrections } : {}),
+  };
 }
 
 /**

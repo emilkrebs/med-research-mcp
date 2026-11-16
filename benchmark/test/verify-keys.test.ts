@@ -240,6 +240,48 @@ describe("fulltext keys: a figure that only the full text states", () => {
     expect(r.messages.join()).toContain("returns no body for 34728476 (Europe PMC has the abstract only)");
   });
 
+  describe("the standing of the source, from the full-text function's warning", () => {
+    const retracted = 'RETRACTED: this record is flagged "retracted" (as in literature_search): do not use its findings as evidence. Linked notice: pubmed 38512453 (literature_fetch).';
+    const notice = 'NOTICE: this record is a retraction notice (flag "notice"), not a study: its text is no evidence for a claim.';
+    const concern = 'EXPRESSION OF CONCERN: one is linked to this record (flag "expression-of-concern"): read the notice before relying on its findings. Linked notice: pubmed 42781840 (literature_fetch).';
+    const translation = "Machine translation into English by ChinaRxiv, a third-party service, not the authors' wording: check numbers and claims against the original before relying on them.";
+    const warned = (warning: string | undefined) => lookups(FULL, paper, { fetchFulltext: async () => ({ text: FULL, source: "europepmc", ...(warning ? { warning } : {}) }) });
+
+    it("WARN, with the standing in the message, for each of the three; the key is not a mismatch", async () => {
+      for (const standing of [retracted, notice, concern]) {
+        const r = await checkQuery(query(), warned(standing));
+        expect(r.status).toBe("WARN");
+        expect(r.messages).toEqual([`source pubmed 34728476 is flagged by the full-text function: ${standing}`]);
+        expect(exitCodeFor([r])).toBe(0);
+      }
+    });
+
+    it("still checks the passage: a MISMATCH outranks the warning, and both are reported", async () => {
+      const r = await checkQuery(query({ fullTextQuote: "The median follow-up was 18 months in the control arm." }), warned(retracted));
+      expect(r.status).toBe("MISMATCH");
+      expect(r.messages.join("\n")).toContain("is flagged by the full-text function: RETRACTED:");
+      expect(r.messages.join("\n")).toContain("passage is not in the full text (europepmc)");
+    });
+
+    it("reports only the standing of a warning that goes on with a note on the text", async () => {
+      const r = await checkQuery(query(), warned(`${retracted} ${translation}`));
+      expect(r.status).toBe("WARN");
+      expect(r.messages).toEqual([`source pubmed 34728476 is flagged by the full-text function: ${retracted}`]);
+    });
+
+    it("OK, with nothing reported, for any other warning or none", async () => {
+      expect(await checkQuery(query(), warned(translation))).toEqual({ queryId: "t-fulltext-01", status: "OK", messages: [] });
+      expect(await checkQuery(query(), warned("Some other note on the text."))).toEqual({ queryId: "t-fulltext-01", status: "OK", messages: [] });
+      expect(await checkQuery(query(), warned(undefined))).toEqual({ queryId: "t-fulltext-01", status: "OK", messages: [] });
+    });
+
+    it("counts in the run's warnings, and does not fail it", async () => {
+      const results = await checkAll([query()], warned(retracted));
+      expect(results.map((r) => r.status)).toEqual(["WARN"]);
+      expect(exitCodeFor(results)).toBe(0);
+    });
+  });
+
   it("ERROR, not a verdict on the key, when the full text cannot be fetched; WARN when this check has no way to", async () => {
     const down = lookups(FULL, paper, {
       fetchFulltext: async () => {
@@ -350,6 +392,19 @@ describe("readWithRetry", () => {
   it("gives up after its tries and returns the last answer as it is, so a key without a body still fails", async () => {
     const s = sequence(unreached);
     expect(await readWithRetry(s.read, { tries: 3, sleep: noSleep })).toEqual(unreached);
+    expect(s.calls()).toBe(3);
+  });
+
+  it("does not repeat a read that has a text, whatever its warning says", async () => {
+    const warned = sequence({ text: "the body", source: "europepmc", warning: `RETRACTED: this record is flagged "retracted". ${unreached.warning}` });
+    expect(await readWithRetry(warned.read, { sleep: noSleep })).toEqual({ text: "the body", source: "europepmc", warning: `RETRACTED: this record is flagged "retracted". ${unreached.warning}` });
+    expect(warned.calls()).toBe(1);
+  });
+
+  it("repeats a read with no body that opens with a standing and says a source was not reached", async () => {
+    const flagged = { source: "none", warning: `RETRACTED: this record is flagged "retracted". ${unreached.warning}` };
+    const s = sequence(flagged, flagged, { text: "the body", source: "europepmc", warning: flagged.warning });
+    expect(await readWithRetry(s.read, { sleep: noSleep })).toEqual({ text: "the body", source: "europepmc", warning: flagged.warning });
     expect(s.calls()).toBe(3);
   });
 

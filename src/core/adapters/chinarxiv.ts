@@ -9,6 +9,17 @@
  * (`chinaxiv`) or the Soviet-era Russian papers of SovietRxiv (`russiarxiv`).
  * Without it, a search mixes the corpora, so every request sets it.
  *
+ * The spec's `source` enum has a third value, `crad`, "derived from the paper ID prefix", and says
+ * "'chinaxiv' includes legacy unprefixed IDs" (checked 2026-11-16, https://chinarxiv.org/api/openapi.json;
+ * the description of the API there names only chinaxiv and russiarxiv). No record has it: `/stats`
+ * lists only chinaxiv (26,652 papers) and russiarxiv (25,456) under `by_source`, which add up to its
+ * `total_papers` of 52,108; `/papers?q=clinical&source=crad&limit=2` answers 200 with total 0; and an
+ * unknown `source` is a 422 "Must be one of: chinaxiv, russiarxiv, crad". Records carry `source` in
+ * search results and in `/papers/{id}` alike. So `toArticle` reads a record as ChinaXiv when `source`
+ * is absent or "chinaxiv", as RussiaRxiv when it is "russiarxiv", and drops any other: such a record
+ * isn't one of these adapters', so it is never labeled ChinaXiv or given a chinarxiv.org item URL,
+ * and `literature_fetch` reports its id as missing.
+ *
  * "Most records are machine-translated; some are originally in English"
  * (chinarxiv.org, checked 2026-10-19). `source_language` names the original's
  * language, and `abstract_source: "machine_generated"` marks an abstract the
@@ -21,10 +32,33 @@
  * header, set from MED_RESEARCH_CHINAXIV_EMAIL, falling back to NCBI_EMAIL
  * (see chinaxivHeaders below).
  *
+ * Full text: `GET /papers/{id}/text` returns `{ id, title, body_md, word_count }`, the
+ * translated body as Markdown (with `<!-- source-page: 001 -->` markers), for ChinaXiv and
+ * RussiaRxiv ids alike (`chinaxiv-YYYYMM.NNNNN`, `ru-YYYYMM.NNNNN`; an unprefixed id is a
+ * 404). A record without full text gets 200 and an empty `body_md`; an unknown id gets 404.
+ * `/stats` counts text for 26,428 of 26,652 ChinaXiv records and all 25,456 RussiaRxiv
+ * records (2026-11-16). `literature_fulltext` reads it through {@link ChinaRxivApiAdapter.fetchText}.
+ * Checked before using it, 2026-11-16: the OpenAPI spec describes the endpoint ("Returns the
+ * translated body text in Markdown format") and states only the rate limits and a CC BY 4.0
+ * licence; https://chinarxiv.org/llms.txt calls the archive "free, open-access", lists
+ * `/papers/PAPER_ID/text` in its quickstart and says no authentication is required; chinarxiv.org
+ * has no terms page (/about, /terms, /license and /privacy answer 404). Its robots.txt, Cloudflare's
+ * managed block, says `Content-Signal: search=yes,ai-train=no,use=reference` and disallows named
+ * AI training crawlers (including ClaudeBot and GPTBot). This client is no crawler: it reads
+ * one record for a user's request, through the documented API, and trains nothing. `use=reference`
+ * ("Index, excerpt, and link back", Cloudflare's managed robots.txt documentation) states
+ * a preference for what a crawler keeps and reuses, so the texts are served and not kept past
+ * the process (see fulltext.ts).
+ *
  * The search endpoint cuts abstracts at 500 characters ("…outcome indic..."),
  * which often drops the Results of a long abstract. Search keeps those previews
- * (one request per search); an explicit fetch (`fetchFull`) loads the complete
- * record from `/papers/{id}`.
+ * (one request per search) and sets `abstractTruncated` on them; an explicit fetch
+ * (`fetchFull`) loads the complete record from `/papers/{id}`, whose abstract has no
+ * such mark. A cut abstract is exactly 500 characters, the first 497 of the whole one
+ * followed by "..."; a complete one is shorter and doesn't end that way. Checked
+ * 2026-11-16 on 437 search results (every abstract of 500 characters ended in "...";
+ * the complete ones had 490, 276 and 225) and by comparing six previews with their
+ * `/papers/{id}` abstracts (five cut ones: preview = whole[:497] + "..."; one complete).
  *
  * A search matches only records that contain every word of the query, in any
  * order, and reads AND and OR as words: "gut microbiota", "microbiota gut" and
@@ -40,7 +74,7 @@
 import { LRUCache } from "lru-cache";
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { cleanDoi, first, isoDateBound, pageWindow, strArray, withoutPubMedTags } from "./util.js";
+import { cleanAuthors, cleanDoi, first, isoDateBound, pageWindow, withoutPubMedTags } from "./util.js";
 import type { Cache } from "../cache.js";
 import type { Article, SearchInput } from "../types.js";
 import { envSetting } from "../version.js";
@@ -65,6 +99,9 @@ function nearestPage(cursors: Map<number, string>, pageIndex: number): { index: 
   }
   return best;
 }
+
+/** The longest abstract the search endpoint returns: a longer one is cut to 497 characters and "...". */
+const SEARCH_PREVIEW_CHARS = 500;
 
 /** The corpora this adapter reads, by adapter id (also the API's `source` value). */
 export type ChinaRxivCorpus = "chinaxiv" | "russiarxiv";
@@ -98,18 +135,25 @@ export interface PaperResponse {
   next_cursor?: string | null;
 }
 
-/** One ChinaRxiv record (`PaperSummary` from search, `PaperDetail` from `/papers/{id}`) as an Article. */
-function toArticle(r: Record_): Article | null {
+/**
+ * One ChinaRxiv record (`PaperSummary` from search, `PaperDetail` from `/papers/{id}`) as an Article,
+ * or null for a record without an id or of a source other than chinaxiv and russiarxiv (see the header).
+ * `complete` says the record comes from `/papers/{id}`, whose abstract is never cut.
+ */
+function toArticle(r: Record_, complete: boolean): Article | null {
   const id = first(r.id);
   if (!id) return null;
-  const corpus: ChinaRxivCorpus = first(r.source) === "russiarxiv" ? "russiarxiv" : "chinaxiv";
+  // Absent, like a legacy row, is ChinaXiv; a source of another corpus (the spec lists "crad") is not ours.
+  const source = first(r.source) ?? "chinaxiv";
+  if (source !== "chinaxiv" && source !== "russiarxiv") return null;
+  const corpus: ChinaRxivCorpus = source;
   // zh, en, ru, de, or "mixed" (Chinese with some English); none on legacy rows.
   const sourceLanguage = first(r.source_language);
 
   const article: Article = {
-    pmid: id,
+    id,
     title: (first(r.title) ?? "").replace(/\.$/, ""),
-    authors: strArray(r.authors),
+    authors: cleanAuthors(r.authors),
     journal: first(r.publication_title) ?? first(r.publication) ?? (corpus === "chinaxiv" ? "ChinaXiv" : ""),
     pubDate: first(r.date) ?? "",
     publicationTypes: [],
@@ -124,6 +168,8 @@ function toArticle(r: Record_): Article | null {
   const abstract = first(r.abstract);
   if (abstract) {
     article.abstract = abstract;
+    // Only the search endpoint cuts: a complete abstract may end in "..." and run past 500 characters.
+    if (!complete && abstract.length >= SEARCH_PREVIEW_CHARS && abstract.endsWith("...")) article.abstractTruncated = true;
     if (first(r.abstract_source) === "machine_generated") article.machineGeneratedAbstract = true;
   }
   // Not in the v1 schema; kept so a DOI, should records gain one, enables de-duplication and full text.
@@ -132,12 +178,13 @@ function toArticle(r: Record_): Article | null {
   return article;
 }
 
-export function parsePapers(data: PaperResponse): { count: number; articles: Article[] } {
+/** @param options `complete`: the records come from `/papers/{id}`, not from a search, so none has a cut abstract. */
+export function parsePapers(data: PaperResponse, options: { complete?: boolean } = {}): { count: number; articles: Article[] } {
   const records = data?.data ?? [];
   const count = Number(data?.total ?? records.length);
   const articles: Article[] = [];
   for (const r of records) {
-    const a = toArticle(r);
+    const a = toArticle(r, options.complete ?? false);
     if (a) articles.push(a);
   }
   return { count, articles };
@@ -184,6 +231,8 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
             warning:
               `${this.name} matched nothing: it returns only records containing every word of the query and treats ` +
               `AND/OR as words. Try one or two key words.`,
+            // Both corpora say this at once in a search of both: searchLiterature merges the two warnings.
+            emptyReason: "every-word" as const,
           }
         : { count, ids };
     if (pageIndex > 0 && known.total !== undefined && offset >= known.total) return result(known.total, []);
@@ -206,7 +255,7 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
     const parsed = parsePapers(data);
     this.remember(parsed.articles);
     if (data?.next_cursor) known.cursors.set(pageIndex + 1, data.next_cursor);
-    return result(parsed.count, parsed.articles.map((a) => a.pmid));
+    return result(parsed.count, parsed.articles.map((a) => a.id));
   }
 
   /**
@@ -245,11 +294,25 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
     return out;
   }
 
+  /**
+   * The translated body of a record as Markdown, from `/papers/{id}/text`: the answer for a record
+   * with full text is a JSON object with `body_md`. `null` when the API has none (it answers 200 with an
+   * empty `body_md` for a record that lacks full text, and 404 for an unknown id, which the HTTP seam
+   * throws as an error like any other failed request). Reads one record by an id the caller checked,
+   * on this adapter's own host and headers.
+   */
+  async fetchText(id: string): Promise<string | null> {
+    const paper = await this.http.json<{ id?: unknown; body_md?: unknown }>(`${BASE}/${encodeURIComponent(id)}/text`);
+    if (paper?.id !== undefined && paper.id !== id) return null;
+    const body = typeof paper?.body_md === "string" ? paper.body_md.trim() : "";
+    return body || null;
+  }
+
   protected async fetchOne(id: string): Promise<Article | null> {
     // Exact lookup by id; a `q=` text search for the id can return a different paper.
     const record = await this.http.json<Record_>(`${BASE}/${encodeURIComponent(id)}`);
-    const article = parsePapers({ data: [record] }).articles[0];
-    return article?.pmid === id ? article : null;
+    const article = parsePapers({ data: [record] }, { complete: true }).articles[0];
+    return article?.id === id ? article : null;
   }
 }
 

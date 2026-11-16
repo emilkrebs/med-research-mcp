@@ -13,15 +13,44 @@
  * preprints are tagged "Preprint". A studyTypes or minDesignTier filter narrows
  * the query with PUB_TYPE, as the PubMed client does with [pt].
  *
+ * Links (`commentCorrectionList` of `core` results; the types we map are in CORRECTION_TYPES below):
+ * a preprint with a published version has "Preprint of" with the article's id (source MED), and the
+ * article "Preprint in" with the preprint's (source PPR); PubMed's own pairs come through as "Update in"
+ * and "Update of". They become UpdateIn and UpdateOf, as PubMed names the preprint pair (see grader.ts for
+ * the counts; checked 2026-11-16): PPR1312266 has `{source: "MED", id: "42905201", type: "Preprint of", note:
+ * "CrossRef Pre-print loader"}`, and 42905201 `{source: "PPR", id: "PPR1312266", type: "Preprint in"}`.
+ * `SRC:PPR AND HAS_PUBLISHED_VERSION:y AND tirzepatide` finds 57 preprints and `HAS_PREPRINT:y AND
+ * tirzepatide AND SRC:MED` 179 articles. The `note` names the origin: "CrossRef Pre-print loader",
+ * "Link created based on a title-first author match", or "Link created based on another matching version of
+ * this preprint"; most links are matches, and we keep them all. Other types (seen: "Comment in", "Comment on") are dropped.
+ *
+ * Europe PMC matches bare words against full text: `tirzepatide apnea` finds 1,560 records and
+ * `TITLE_ABS:tirzepatide AND TITLE_ABS:apnea` 142 (2026-11-16). A query written for PubMed therefore has
+ * its field tags translated, by toEuropePmcQuery: [tiab] to TITLE_ABS, [ti] TITLE, [au] AUTH, [pt] PUB_TYPE,
+ * [ta] JOURNAL, [la] LANG, [dp] FIRST_PDATE, E_PDATE and P_PDATE, [pmid] EXT_ID with SRC:MED, each compared
+ * with PubMed's esearch on live counts (2026-11-16; the numbers are in util.ts). TITLE_ABS lacks the author
+ * keywords that PubMed's [tiab] covers: it finds 91-95% of PubMed's records and none PubMed lacks. [mh] is
+ * removed with every other tag: Europe PMC has no MeSH field, KW holds MeSH headings and author keywords,
+ * and PubMed explodes a heading ("Sleep Apnea Syndromes"[mh] 50,220 records, KW 17,963). Europe PMC's
+ * own field syntax passes through unchanged. A date range of a search is matched as a [dp] tag is (below): PubMed's
+ * publication date matches the electronic and the print date, so PMID 39680131, online 2024-12-16 and in print
+ * 2025-07-01, is found by 2024[dp] and by 2025[dp]; creatine[tiab] AND 2024[dp] finds 2,046 records in PubMed,
+ * 1,777 with FIRST_PDATE alone and 1,990 with the three date fields (2026-11-16).
+ *
  * `core` results name the journal in `journalInfo.journal.title` and a preprint's
  * server in `bookOrReportDetails.publisher`; `journalTitle` exists only in `lite`
  * results. The date is the issue date (`journalInfo.dateOfPublication`, "2026
  * Sep", like PubMed's), else the first publication date; recently added PMC
  * records have neither `pubYear` nor an issue date. `electronicPublicationDate`
- * becomes `epubDate`. A date range is matched against FIRST_PDATE, the earlier of
- * the two: record 39680131, published online 2024-12-16 and in print 2025-07-01,
- * matches FIRST_PDATE in December 2024 and P_PDATE in July 2025 (2026-10-22). A
- * date sort orders by FIRST_PDATE too, as the merged results are: sorted by P_PDATE,
+ * becomes `epubDate`. A date range is matched against FIRST_PDATE, E_PDATE and P_PDATE, by
+ * publicationDateClause, the clause of a [dp] tag: a record is found if its first, electronic or
+ * print publication date is in the range. Record 39680131, published online 2024-12-16 and
+ * in print 2025-07-01 (issue "2025 Jul"), matches FIRST_PDATE in December 2024 and P_PDATE in
+ * July 2025 (2026-10-22); a range of 2025 finds it with the three fields and not with FIRST_PDATE
+ * alone (2026-11-16). Preprints have FIRST_PDATE only, so a range matches them as it did.
+ * A date sort is not changed by that: it orders by FIRST_PDATE, the earlier of the two dates, as
+ * the merged results are, so a search of a range with sort "date" can list a record first
+ * published before the range, sorted by that earlier date, as PubMed's can. Sorted by P_PDATE,
  * `semaglutide AND SRC:MED` led with an issue of January 2027 published online in
  * August 2026, and records published online on 2026-10-20 didn't make the first page
  * (2026-10-22).
@@ -44,7 +73,7 @@
 import { LRUCache } from "lru-cache";
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { cleanDoi, first, isoDateBound, pageWindow, splitAuthors, strArray, toIso1, withoutPubMedTags } from "./util.js";
+import { cleanDoi, first, isoDateBound, pageWindow, publicationDateClause, splitAuthors, strArray, toEuropePmcQuery, toIso1 } from "./util.js";
 import { designPublicationTypes } from "../grader.js";
 import { htmlToText } from "../text.js";
 import type { Article, Correction, CorrectionType, SearchInput } from "../types.js";
@@ -91,15 +120,23 @@ interface EpmcResult {
   fullTextUrlList?: { fullTextUrl?: { url?: string }[] };
   pubTypeList?: { pubType?: string | string[] };
   meshHeadingList?: { meshHeading?: { descriptorName?: string }[] };
-  commentCorrectionList?: { commentCorrection?: { id?: string; source?: string; type?: string }[] };
+  /** `type` is a link type ("Retraction in", "Preprint of", …); `source` and `id` name the record linked. */
+  commentCorrectionList?: { commentCorrection?: { id?: string; source?: string; type?: string; note?: string }[] };
 }
 
-/** Europe PMC link types → PubMed CommentsCorrections RefType names. */
+/**
+ * Europe PMC link types (lower case) → PubMed CommentsCorrections RefType names. "Preprint of" and
+ * "Preprint in" are Europe PMC's names for what PubMed calls UpdateIn (the preprint, linking its published
+ * article) and UpdateOf (the article, linking its preprint); see the header.
+ */
 const CORRECTION_TYPES: Record<string, CorrectionType> = {
   "retraction in": "RetractionIn",
   "expression of concern in": "ExpressionOfConcernIn",
   "erratum in": "ErratumIn",
   "update in": "UpdateIn",
+  "preprint of": "UpdateIn",
+  "update of": "UpdateOf",
+  "preprint in": "UpdateOf",
 };
 
 function toCorrections(list: EpmcResult["commentCorrectionList"]): Correction[] {
@@ -108,7 +145,9 @@ function toCorrections(list: EpmcResult["commentCorrectionList"]): Correction[] 
     const type = CORRECTION_TYPES[(first(c?.type) ?? "").toLowerCase()];
     if (!type) continue;
     const id = first(c?.id);
-    out.push({ type, ...(id ? { id: toEpmcId(first(c?.source) ?? "MED", id) } : {}) });
+    const link: Correction = { type, ...(id ? { id: toEpmcId(first(c?.source) ?? "MED", id) } : {}) };
+    // Europe PMC types that map to one RefType may name one link twice.
+    if (!out.some((o) => o.type === link.type && o.id === link.id)) out.push(link);
   }
   return out;
 }
@@ -146,7 +185,7 @@ function toArticle(r: EpmcResult): Article | null {
     first(r.fullTextUrlList?.fullTextUrl?.[0]?.url) ?? `https://europepmc.org/article/${source}/${rawId}`;
 
   const article: Article = {
-    pmid: id,
+    id,
     title: htmlToText(first(r.title) ?? "").replace(/\.$/, ""),
     authors: splitAuthors(r.authorString),
     journal:
@@ -192,15 +231,16 @@ export class EuropePmcAdapter extends RestAdapter {
   }
 
   private buildQuery(input: SearchInput, types: string[] | null): string {
-    // PubMed field tags mean nothing here and would be searched as words.
-    const query = withoutPubMedTags(input.query);
+    // A PubMed field tag would be searched as a word: translated into the field that holds the same, or removed.
+    const query = toEuropePmcQuery(input.query);
     const clauses: string[] = [];
-    if (types) clauses.push(types.map((t) => `PUB_TYPE:"${t}"`).join(" OR "));
+    if (types) clauses.push(`(${types.map((t) => `PUB_TYPE:"${t}"`).join(" OR ")})`);
     const from = isoDateBound(input.dateRange?.from, "from");
     const to = isoDateBound(input.dateRange?.to, "to");
-    if (from || to) clauses.push(`FIRST_PDATE:[${from ?? "1900-01-01"} TO ${to ?? "3000-01-01"}]`);
-    // In parentheses, so that a clause filters the whole query and not just the last operand of an OR in it.
-    return clauses.length > 0 ? [query, ...clauses].map((c) => `(${c})`).join(" AND ") : query;
+    // The date clause comes in parentheses from its helper (it is an OR of three fields), so it is not wrapped again.
+    if (from || to) clauses.push(publicationDateClause(from ?? "1900-01-01", to ?? "3000-01-01"));
+    // Each clause and the query are in parentheses, so that a clause filters the whole query and not just the last operand of an OR in it.
+    return clauses.length > 0 ? [`(${query})`, ...clauses].join(" AND ") : query;
   }
 
   private readonly paging = new LRUCache<string, QueryPaging>({ max: CURSOR_MEMO_MAX, ttl: CURSOR_MEMO_TTL_MS });
@@ -244,7 +284,7 @@ export class EuropePmcAdapter extends RestAdapter {
     this.remember(articles);
     const next = data?.nextCursorMark;
     if (next && next !== cursor) known.cursors.set(offset + (data?.resultList?.result?.length ?? 0), next);
-    return { count, ids: articles.map((a) => a.pmid) };
+    return { count, ids: articles.map((a) => a.id) };
   }
 
   protected async fetchOne(id: string): Promise<Article | null> {
@@ -255,6 +295,6 @@ export class EuropePmcAdapter extends RestAdapter {
     const article = parseEuropePmc(data).articles[0];
     if (!article) return null;
     // A PMCID query returns the record under its PubMed id; anything else must match.
-    return article.pmid.toUpperCase() === id.toUpperCase() || /^PMC\d+$/i.test(id) ? article : null;
+    return article.id.toUpperCase() === id.toUpperCase() || /^PMC\d+$/i.test(id) ? article : null;
   }
 }

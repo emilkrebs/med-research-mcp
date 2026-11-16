@@ -34,13 +34,13 @@ export const SUMMARY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  */
 export interface Cache {
   /** Returns a cached summary, or null on a miss or if older than {@link SUMMARY_TTL_MS}. */
-  getSummary(pmid: string): Article | null;
-  setSummary(pmid: string, article: Article): void;
-  getAbstract(pmid: string): string | null;
-  setAbstract(pmid: string, abstract: string): void;
+  getSummary(id: string): Article | null;
+  setSummary(id: string, article: Article): void;
+  getAbstract(id: string): string | null;
+  setAbstract(id: string, abstract: string): void;
   /** Returns a cached full text, or null on a miss or if older than {@link FULLTEXT_TTL_MS}. */
-  getFulltext(pmid: string): FulltextData | null;
-  setFulltext(pmid: string, data: FulltextData): void;
+  getFulltext(id: string): FulltextData | null;
+  setFulltext(id: string, data: FulltextData): void;
 }
 
 export type CacheBackend = "memory" | "sqlite";
@@ -71,34 +71,34 @@ export class LRUBackend implements Cache {
     this.fulltexts = new LRUCache({ max, ttl: FULLTEXT_TTL_MS });
   }
 
-  getSummary(pmid: string): Article | null {
-    return this.summaries.get(pmid) ?? null;
+  getSummary(id: string): Article | null {
+    return this.summaries.get(id) ?? null;
   }
 
-  setSummary(pmid: string, article: Article): void {
-    this.summaries.set(pmid, article);
+  setSummary(id: string, article: Article): void {
+    this.summaries.set(id, article);
   }
 
-  getAbstract(pmid: string): string | null {
-    return this.abstracts.get(pmid) ?? null;
+  getAbstract(id: string): string | null {
+    return this.abstracts.get(id) ?? null;
   }
 
-  setAbstract(pmid: string, abstract: string): void {
-    this.abstracts.set(pmid, abstract);
+  setAbstract(id: string, abstract: string): void {
+    this.abstracts.set(id, abstract);
   }
 
-  getFulltext(pmid: string): FulltextData | null {
-    const data = this.fulltexts.get(pmid);
+  getFulltext(id: string): FulltextData | null {
+    const data = this.fulltexts.get(id);
     if (!data) return null;
     if (Date.now() - data.fetchedAt > FULLTEXT_TTL_MS) {
-      this.fulltexts.delete(pmid);
+      this.fulltexts.delete(id);
       return null;
     }
     return data;
   }
 
-  setFulltext(pmid: string, data: FulltextData): void {
-    this.fulltexts.set(pmid, data);
+  setFulltext(id: string, data: FulltextData): void {
+    this.fulltexts.set(id, data);
   }
 }
 
@@ -129,8 +129,14 @@ export class NullCache implements Cache {
  * 1 (0.6.1): PubMed abstracts lost the text of inline markup and kept character references;
  * Europe PMC titles and abstracts carried HTML; Europe PMC full texts could end in an empty
  * References heading. Up to 0.6.0 the tables had no version in their names.
+ * 2 (0.8.0): ChinaXiv and RussiaRxiv summaries held author lists as one joined string with
+ * affiliation markers, and search previews cut at 500 characters carried no `abstractTruncated`;
+ * PubMed and Europe PMC summaries of earlier versions lack the `UpdateOf` links (a published article's
+ * preprint or earlier version, see `CORRECTION_TYPES` in types.ts).
+ * 3 (0.8.0): a summary holds the record's id under `id` (`Article.id`); summaries of earlier versions hold it
+ * under `pmid` and would come back without one. The key column of the tables is `id` (`pmid` up to version 2).
  */
-export const CACHE_FORMAT_VERSION = 1;
+export const CACHE_FORMAT_VERSION = 3;
 
 const SUMMARIES = `summaries_v${CACHE_FORMAT_VERSION}`;
 const ABSTRACTS = `abstracts_v${CACHE_FORMAT_VERSION}`;
@@ -140,17 +146,17 @@ const VERSIONED_TABLE = /^(?:summaries|abstracts|fulltexts)(?:_v(\d+))?$/;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS ${SUMMARIES} (
-    pmid       TEXT PRIMARY KEY,
+    id         TEXT PRIMARY KEY,
     article    TEXT NOT NULL,
     fetched_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS ${ABSTRACTS} (
-    pmid       TEXT PRIMARY KEY,
+    id         TEXT PRIMARY KEY,
     abstract   TEXT NOT NULL,
     fetched_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS ${FULLTEXTS} (
-    pmid       TEXT PRIMARY KEY,
+    id         TEXT PRIMARY KEY,
     source     TEXT NOT NULL,
     fulltext   TEXT NOT NULL,
     format     TEXT NOT NULL,
@@ -215,57 +221,57 @@ export class SQLiteBackend implements Cache {
     this.clearOlderVersions();
 
     this.stmts = {
-      getSummary: this.db.prepare(`SELECT article, fetched_at FROM ${SUMMARIES} WHERE pmid = ?`),
+      getSummary: this.db.prepare(`SELECT article, fetched_at FROM ${SUMMARIES} WHERE id = ?`),
       vacuumSummary: this.db.prepare(`DELETE FROM ${SUMMARIES} WHERE fetched_at < ?`),
-      setSummary: this.db.prepare(`INSERT OR REPLACE INTO ${SUMMARIES} (pmid, article, fetched_at) VALUES (?, ?, ?)`),
-      delSummary: this.db.prepare(`DELETE FROM ${SUMMARIES} WHERE pmid = ?`),
-      getAbstract: this.db.prepare(`SELECT abstract FROM ${ABSTRACTS} WHERE pmid = ?`),
-      setAbstract: this.db.prepare(`INSERT OR REPLACE INTO ${ABSTRACTS} (pmid, abstract, fetched_at) VALUES (?, ?, ?)`),
-      getFulltext: this.db.prepare(`SELECT source, fulltext, format, fetched_at FROM ${FULLTEXTS} WHERE pmid = ?`),
+      setSummary: this.db.prepare(`INSERT OR REPLACE INTO ${SUMMARIES} (id, article, fetched_at) VALUES (?, ?, ?)`),
+      delSummary: this.db.prepare(`DELETE FROM ${SUMMARIES} WHERE id = ?`),
+      getAbstract: this.db.prepare(`SELECT abstract FROM ${ABSTRACTS} WHERE id = ?`),
+      setAbstract: this.db.prepare(`INSERT OR REPLACE INTO ${ABSTRACTS} (id, abstract, fetched_at) VALUES (?, ?, ?)`),
+      getFulltext: this.db.prepare(`SELECT source, fulltext, format, fetched_at FROM ${FULLTEXTS} WHERE id = ?`),
       setFulltext: this.db.prepare(
-        `INSERT OR REPLACE INTO ${FULLTEXTS} (pmid, source, fulltext, format, fetched_at) VALUES (?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO ${FULLTEXTS} (id, source, fulltext, format, fetched_at) VALUES (?, ?, ?, ?, ?)`,
       ),
-      delFulltext: this.db.prepare(`DELETE FROM ${FULLTEXTS} WHERE pmid = ?`),
+      delFulltext: this.db.prepare(`DELETE FROM ${FULLTEXTS} WHERE id = ?`),
       vacuumFulltext: this.db.prepare(`DELETE FROM ${FULLTEXTS} WHERE fetched_at < ?`),
     };
 
     this.vacuum();
   }
 
-  getSummary(pmid: string): Article | null {
-    const row = this.stmts.getSummary.get(pmid) as { article: string; fetched_at: number } | undefined;
+  getSummary(id: string): Article | null {
+    const row = this.stmts.getSummary.get(id) as { article: string; fetched_at: number } | undefined;
     if (!row) return null;
     if (Date.now() - row.fetched_at > SUMMARY_TTL_MS) {
-      this.stmts.delSummary.run(pmid);
+      this.stmts.delSummary.run(id);
       return null;
     }
     try {
       return JSON.parse(row.article) as Article;
     } catch {
       // Corrupt JSON — drop the row and treat as a miss.
-      this.stmts.delSummary.run(pmid);
+      this.stmts.delSummary.run(id);
       return null;
     }
   }
 
-  setSummary(pmid: string, article: Article): void {
-    this.stmts.setSummary.run(pmid, JSON.stringify(article), Date.now());
+  setSummary(id: string, article: Article): void {
+    this.stmts.setSummary.run(id, JSON.stringify(article), Date.now());
   }
 
-  getAbstract(pmid: string): string | null {
-    const row = this.stmts.getAbstract.get(pmid) as { abstract: string } | undefined;
+  getAbstract(id: string): string | null {
+    const row = this.stmts.getAbstract.get(id) as { abstract: string } | undefined;
     return row ? row.abstract : null;
   }
 
-  setAbstract(pmid: string, abstract: string): void {
-    this.stmts.setAbstract.run(pmid, abstract, Date.now());
+  setAbstract(id: string, abstract: string): void {
+    this.stmts.setAbstract.run(id, abstract, Date.now());
   }
 
-  getFulltext(pmid: string): FulltextData | null {
-    const row = this.stmts.getFulltext.get(pmid) as FulltextRow | undefined;
+  getFulltext(id: string): FulltextData | null {
+    const row = this.stmts.getFulltext.get(id) as FulltextRow | undefined;
     if (!row) return null;
     if (Date.now() - row.fetched_at > FULLTEXT_TTL_MS) {
-      this.stmts.delFulltext.run(pmid);
+      this.stmts.delFulltext.run(id);
       return null;
     }
     return {
@@ -276,8 +282,8 @@ export class SQLiteBackend implements Cache {
     };
   }
 
-  setFulltext(pmid: string, data: FulltextData): void {
-    this.stmts.setFulltext.run(pmid, data.source, data.fulltext, data.format, data.fetchedAt ?? Date.now());
+  setFulltext(id: string, data: FulltextData): void {
+    this.stmts.setFulltext.run(id, data.source, data.fulltext, data.format, data.fetchedAt ?? Date.now());
   }
 
   /**
