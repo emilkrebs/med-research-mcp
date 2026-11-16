@@ -479,18 +479,6 @@ describe("fetchFulltext resolution strategy", () => {
     });
   });
 
-  it("skips the id→DOI lookup when a DOI is supplied", async () => {
-    const onEsummary = vi.fn();
-    const deps: FulltextDeps = {
-      unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://oa.example/u"] }),
-      fetchUrl: async () => htmlResource("<x/>"),
-      htmlToMarkdown: async () => LONG_MARKDOWN,
-    };
-    const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ onEsummary }), deps);
-    expect(out.source).toBe("unpaywall");
-    expect(onEsummary).not.toHaveBeenCalled();
-  });
-
   it("normalizes a DOI passed as a URL before resolving", async () => {
     const lookup = vi.fn(async (): Promise<UnpaywallLookup> => ({ status: "found", result: { doi: DOI, isOa: true, urls: ["https://oa.example/u"] } }));
     const deps: FulltextDeps = {
@@ -1338,13 +1326,13 @@ describe("fetchFulltext — the record's standing, said first", () => {
   it("says nothing of an article whose records carry no flag, and nothing when it knows no record", async () => {
     const plain = await fetchFulltext({ id: "12345678" }, new LRUBackend(), fakeClient({ summary: ESUMMARY }), oa());
     expect(plain.warning).toBeUndefined();
-    // A PMID given with its DOI and no cached summary, read from a PDF: no request is made for a flag, so none is known.
+    // A PMID given with its DOI and no cached summary, read from a PDF, whose esummary finds no record: no flag is known.
     const onEsummary = vi.fn();
     const onEfetch = vi.fn();
     const unknown = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ onEsummary, onEfetch }), pdf());
     expect(unknown).toMatchObject({ source: "unpaywall" });
     expect(unknown.warning).toBeUndefined();
-    expect(onEsummary).not.toHaveBeenCalled();
+    expect(onEsummary).toHaveBeenCalledTimes(1);
     expect(onEfetch).not.toHaveBeenCalled();
   });
 
@@ -1640,6 +1628,249 @@ describe("fetchFulltext — a PMCID given alone, whose record no search cached u
     const out = await fetchFulltext({ id: "PPR123456" }, new LRUBackend(), fakeClient(), deps(europePmc.adapter));
     expect(out.warning).toBe(WARNING_START);
     expect(europePmc.fetch.mock.calls.map(([ids]) => ids)).toEqual([["PPR123456"]]);
+  });
+});
+
+describe("fetchFulltext — a PMID given with its DOI, whose record no cache holds", () => {
+  const PMID = "12345678";
+  const NOTICE_ID = "38512453";
+  const WARNING_START = `RETRACTED: this record is flagged "retracted" (as in literature_search): do not use its findings as evidence. Linked notice: pubmed ${NOTICE_ID} (literature_fetch).`;
+  /** As PubMed's esummary returns it: the types and the correction links, no abstract. */
+  const { abstract: _abstract, ...ESUMMARY } = ARTICLE;
+  const retracted: Article = { ...ESUMMARY, publicationTypes: ["Journal Article", "Retracted Publication"], corrections: [{ type: "RetractionIn", id: NOTICE_ID }] };
+
+  /** A client whose esummary is `answer` (the retracted record by default), counted. */
+  const pubmed = (answer: (ids: string[]) => Promise<Map<string, Article>> = async (ids) => new Map([[ids[0]!, retracted]])) => {
+    const esummary = vi.fn(answer);
+    const onEfetch = vi.fn();
+    const client = { ...fakeClient({ abstract: "Abstract from efetch.", onEfetch }), esummary } as unknown as NcbiClient;
+    return { client, esummary, onEfetch };
+  };
+  const jats = (url: string): FetchedResource => ({ ...htmlResource("<article/>", url), contentType: "application/xml" });
+
+  /** One way for a text, or the abstract in its place, to come back. `source` is the one the call reports. */
+  interface Path {
+    name: string;
+    deps: () => FulltextDeps;
+    cached?: boolean;
+    source: string;
+    /** The fallback's warning goes on after the standing, and its text is the abstract; a text's warning ends with the standing. */
+    fallback?: boolean;
+  }
+  const paths: Path[] = [
+    {
+      name: "the cached text",
+      cached: true,
+      source: "europepmc",
+      deps: () => ({ unpaywall: fakeUnpaywall(null), fetchUrl: async () => paywalled(), adapter: noRecords }),
+    },
+    {
+      name: "Unpaywall's copy",
+      source: "unpaywall",
+      deps: () => ({
+        unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://oa.example/paper.pdf"] }),
+        fetchUrl: async (url) => pdfResource(new Uint8Array([1]), url),
+        pdfToText: async () => "Text. " + "content ".repeat(200),
+      }),
+    },
+    {
+      name: "Unpaywall's PMC copy, fetched through Europe PMC's API",
+      source: "unpaywall",
+      deps: () => ({
+        unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://pmc.ncbi.nlm.nih.gov/articles/PMC1234567/"] }),
+        fetchUrl: async (url) => (url.includes("/PMC1234567/fullTextXML") ? jats(url) : paywalled()),
+        jatsToMarkdown: async () => LONG_MARKDOWN,
+      }),
+    },
+    {
+      name: "the proxy",
+      source: "proxy",
+      deps: () => ({
+        unpaywall: fakeUnpaywall(null),
+        proxyPrefix: "https://doi-org.ezproxy.example.edu",
+        fetchUrl: async (url) => (url.includes("ezproxy") ? htmlResource("<html/>", url) : paywalled()),
+        htmlToMarkdown: async () => LONG_MARKDOWN,
+      }),
+    },
+    {
+      name: "the direct DOI",
+      source: "direct",
+      deps: () => ({
+        unpaywall: fakeUnpaywall(null),
+        proxyPrefix: "",
+        fetchUrl: async (url) => htmlResource("<html/>", url),
+        htmlToMarkdown: async () => LONG_MARKDOWN,
+      }),
+    },
+    {
+      name: "the abstract fallback",
+      source: "none",
+      fallback: true,
+      deps: () => ({ unpaywall: fakeUnpaywall(null), proxyPrefix: "", fetchUrl: async () => paywalled(), adapter: noRecords }),
+    },
+  ];
+  const cacheFor = (path: Path): LRUBackend => {
+    const cache = new LRUBackend();
+    if (path.cached) cache.setFulltext(PMID, { source: "europepmc", fulltext: LONG_MARKDOWN, format: "markdown", fetchedAt: Date.now() });
+    return cache;
+  };
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it.each(paths)("opens the warning with the retraction on $name, from the esummary asked for beside the text's request", async (path) => {
+    const { client, esummary } = pubmed();
+    const out = await fetchFulltext({ id: PMID, doi: DOI }, cacheFor(path), client, path.deps());
+    expect(out.source).toBe(path.source);
+    expect(out.doi).toBe(DOI);
+    if (path.fallback) {
+      expect(out.warning!.startsWith(`${WARNING_START} No full text found; returned the abstract only.`)).toBe(true);
+      expect(out.fulltext).toBe("Abstract from efetch.");
+    } else {
+      expect(out.fulltext).toBeTruthy();
+      expect(out.warning).toBe(WARNING_START);
+    }
+    expect(esummary.mock.calls).toEqual([[[PMID]]]);
+  });
+
+  it("asks for the record beside the text's request, not before it, and keeps it for the next call", async () => {
+    const { client, esummary } = pubmed();
+    // The text's request ends only once the record has been asked for: the two run side by side.
+    let asked!: () => void;
+    const recordAsked = new Promise<void>((resolve) => (asked = resolve));
+    esummary.mockImplementation(async (ids: string[]) => {
+      asked();
+      return new Map([[ids[0]!, retracted]]);
+    });
+    const fetchUrl = vi.fn(async (url: string) => {
+      await recordAsked;
+      return pdfResource(new Uint8Array([1]), url);
+    });
+    const cache = new LRUBackend();
+    const deps: FulltextDeps = {
+      unpaywall: fakeUnpaywall({ doi: DOI, isOa: true, urls: ["https://oa.example/paper.pdf"] }),
+      fetchUrl,
+      pdfToText: async () => "Text. " + "content ".repeat(200),
+    };
+    expect((await fetchFulltext({ id: PMID, doi: DOI }, cache, client, deps)).warning).toBe(WARNING_START);
+    // Under the call's own key, not the bare PMID, which search and fetch keep for records that efetch has completed.
+    expect(cache.getSummary(PMID)).toBeNull();
+    expect(cache.getSummary(`fulltext:${PMID}`)).toMatchObject({ pmid: PMID, corrections: [{ type: "RetractionIn", id: NOTICE_ID }] });
+
+    // The next call has the text and the record in the cache: no request for either, the same warning.
+    const again = await fetchFulltext({ id: PMID, doi: DOI }, cache, client, deps);
+    expect(again.warning).toBe(WARNING_START);
+    expect(fetchUrl).toHaveBeenCalledTimes(1);
+    expect(esummary).toHaveBeenCalledTimes(1);
+    // So do the later parts of the text: nothing is asked for them.
+    const later = await fetchFulltext({ id: PMID, doi: DOI, offset: 100, maxChars: 200 }, cache, client, deps);
+    expect(later.warning).toBe(WARNING_START);
+    expect(esummary).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves with the DOI given, whatever DOI the record has", async () => {
+    const lookup = vi.fn(async (): Promise<UnpaywallLookup> => ({ status: "found", result: { doi: DOI, isOa: true, urls: ["https://oa.example/paper.pdf"] } }));
+    const { client } = pubmed(async (ids) => new Map([[ids[0]!, { ...retracted, doi: "10.1000/other" }]]));
+    const out = await fetchFulltext({ id: PMID, doi: DOI }, new LRUBackend(), client, {
+      unpaywall: { lookup, sharedContact: false } as unknown as UnpaywallClient,
+      fetchUrl: async (url) => pdfResource(new Uint8Array([1]), url),
+      pdfToText: async () => "Text. " + "content ".repeat(200),
+    });
+    expect(out).toMatchObject({ source: "unpaywall", doi: DOI });
+    expect(out.warning).toBe(WARNING_START);
+    expect(lookup).toHaveBeenCalledWith(DOI);
+  });
+
+  it.each(paths)(`leaves out a lookup that outlasts ${STANDING_WAIT_MS} ms from the call's start on $name, returns what it has, and keeps the record for the next call`, async (path) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let release!: (found: Map<string, Article>) => void;
+    const { client, esummary } = pubmed(() => new Promise((resolve) => (release = resolve)));
+    const cache = cacheFor(path);
+    const call = fetchFulltext({ id: PMID, doi: DOI }, cache, client, path.deps());
+    let settled = false;
+    void call.then(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(STANDING_WAIT_MS - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const out = await call;
+    expect(settled).toBe(true);
+    expect(out.source).toBe(path.source);
+    expect(out.fulltext).toBeTruthy();
+    expect(out.warning ?? "").not.toMatch(/RETRACTED/);
+
+    // The answer arrives late and is kept: the next call, for the same cache, warns without asking again.
+    release(new Map([[PMID, retracted]]));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cache.getSummary(`fulltext:${PMID}`)).toMatchObject({ pmid: PMID });
+    if (!path.fallback) {
+      const next = await fetchFulltext({ id: PMID, doi: DOI }, cache, client, path.deps());
+      expect(next.warning).toBe(WARNING_START);
+    }
+    expect(esummary).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(paths)("returns what it has on $name when the lookup fails or finds no record, and never throws for it", async (path) => {
+    for (const answer of [async () => Promise.reject(new Error("NCBI is down")), async () => new Map<string, Article>()]) {
+      const { client, esummary } = pubmed(answer);
+      const out = await fetchFulltext({ id: PMID, doi: DOI }, cacheFor(path), client, path.deps());
+      expect(out.source).toBe(path.source);
+      expect(out.fulltext).toBeTruthy();
+      expect(out.warning ?? "").not.toMatch(/RETRACTED/);
+      expect(esummary).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("sends no request for the record when the cache holds one, under any of the keys the warning reads", async () => {
+    const plain: Article = { ...ESUMMARY, publicationTypes: ["Journal Article"] };
+    for (const [key, record] of [
+      [PMID, retracted],
+      [`europepmc:${PMID}`, { ...retracted, database: "europepmc" as const }],
+      [`fulltext:${PMID}`, retracted],
+    ] as const) {
+      const cache = new LRUBackend();
+      cache.setSummary(key, record);
+      const { client, esummary } = pubmed();
+      const out = await fetchFulltext({ id: PMID, doi: DOI }, cache, client, paths[1]!.deps());
+      expect(out.source, key).toBe("unpaywall");
+      expect(out.warning, key).toContain("RETRACTED:");
+      expect(esummary, key).not.toHaveBeenCalled();
+    }
+    // A cached record with no flag is a record: it says nothing, and nothing is asked.
+    const cache = new LRUBackend();
+    cache.setSummary(PMID, plain);
+    const { client, esummary } = pubmed();
+    const out = await fetchFulltext({ id: PMID, doi: DOI }, cache, client, paths[1]!.deps());
+    expect(out.warning).toBeUndefined();
+    expect(esummary).not.toHaveBeenCalled();
+  });
+
+  it("sends no request for the later parts of a text, and says nothing of the flag it didn't look up", async () => {
+    const { client, esummary } = pubmed();
+    const out = await fetchFulltext({ id: PMID, doi: DOI, offset: 100, maxChars: 200 }, new LRUBackend(), client, paths[1]!.deps());
+    expect(out).toMatchObject({ source: "unpaywall", truncated: true });
+    expect(out.warning).toBeUndefined();
+    expect(esummary).not.toHaveBeenCalled();
+  });
+
+  it("makes the one esummary request for a PMID given without a DOI, as before: its answer is awaited, and is the call's own", async () => {
+    const { client, esummary } = pubmed();
+    const out = await fetchFulltext({ id: PMID }, new LRUBackend(), client, paths[1]!.deps());
+    expect(out).toMatchObject({ source: "unpaywall", doi: DOI });
+    expect(out.warning).toBe(WARNING_START);
+    expect(esummary.mock.calls).toEqual([[[PMID]]]);
+
+    // A failed request is still an error of the call there, since without it there is no DOI to go on.
+    const down = pubmed(async () => Promise.reject(new Error("NCBI is down")));
+    await expect(fetchFulltext({ id: PMID }, new LRUBackend(), down.client, paths[1]!.deps())).rejects.toThrow("NCBI is down");
+    expect(down.esummary).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends no request for the record of a DOI that is not one, a PMID then being treated as given alone", async () => {
+    // A url in `doi` is no DOI: the PMID's own esummary supplies it, and is the one request.
+    const { client, esummary } = pubmed();
+    const out = await fetchFulltext({ id: PMID, doi: "https://example.org/paper" }, new LRUBackend(), client, paths[1]!.deps());
+    expect(out).toMatchObject({ source: "unpaywall", doi: DOI });
+    expect(esummary).toHaveBeenCalledTimes(1);
   });
 });
 

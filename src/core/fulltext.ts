@@ -25,12 +25,13 @@
  * The warning opens with the article's standing when a record of it is known and flagged retracted, a notice,
  * or with an expression of concern (see {@link standingNote}), whether or not a text was found. A record is
  * known from the cache (an earlier search or fetch, or this module's own lookups), or from a request made anyway:
- * esummary for a PMID given without a DOI, efetch for its abstract, the Europe PMC or ChinaRxiv record. A PMID given
- * with its DOI is served without the flag: no request is made for it alone. A PMCID or preprint id whose record no
- * cache holds is the one exception, as a search caches a record under its PMID, where a PMCID doesn't find it: Europe
- * PMC's record of it is asked for beside the text's own request, which takes far longer, and the text waits for it at most
- * STANDING_WAIT_MS. It is read from the records at every call and never stored with a
- * text: a full text cached for 30 days is served with a retraction recorded after it was cached.
+ * esummary for a PMID given without a DOI, efetch for its abstract, the Europe PMC or ChinaRxiv record. Where no
+ * request is made anyway and no cache holds a record, one is asked for beside the text's own request, which takes
+ * far longer, and the text waits for it at most STANDING_WAIT_MS: PubMed's esummary for a PMID given with its DOI,
+ * Europe PMC's record for a PMCID or preprint id (a search caches a record under its PMID, where a PMCID doesn't
+ * find it). Not for the later parts of a text (offset above 0), which the first call's lookup has served. It is read
+ * from the records at every call and never stored with a text: a full text cached for 30 days is served with a
+ * retraction recorded after it was cached.
  *
  * Only open-access (Europe PMC, Unpaywall) texts are cached; a proxy or direct
  * text may be licensed to the user alone, and a ChinaRxiv text is a translation of
@@ -71,10 +72,13 @@ import { envSetting, USER_AGENT } from "./version.js";
 const DEFAULT_MAX_CHARS = 50_000;
 const DEFAULT_TIMEOUT_MS = 20_000;
 /**
- * How long, counted from the start of a call, the text of a PMCID or preprint waits for Europe PMC's record of it, which is
- * asked for beside the text's own request, for the article's standing (see {@link fetchFulltext}). On 2026-11-16 the
- * record of PMC12905075 by PMCID answered in 50-301 ms (5 requests) and the text, `fullTextXML`, in 3.8-6.1 s (4 requests): the
- * record is there long before the text, and only a lookup that outlasts this is left out of the warning.
+ * How long, counted from the start of a call, the text of a PMCID or preprint waits for Europe PMC's record of it, and the
+ * text of a PMID given with its DOI for PubMed's esummary of it, which are asked for beside the text's own request, for
+ * the article's standing (see {@link fetchFulltext}). On 2026-11-16 the record of PMC12905075 by PMCID answered in
+ * 50-301 ms (5 requests) and the text, `fullTextXML`, in 3.8-6.1 s (4 requests); the esummary of its PMID 41695609
+ * answered in 211-706 ms (8 requests: 5 alone, 3 inside a call), while 5 calls given the PMID and its DOI took 1.1-21.0 s,
+ * one of which found no text. The record is there long before the text, and only a lookup that outlasts this is left
+ * out of the warning.
  */
 export const STANDING_WAIT_MS = 3_000;
 /** Extracted text shorter than this is treated as a paywall stub / failed extraction. */
@@ -270,24 +274,29 @@ export async function fetchFulltext(
   const standing = (...more: (Article | undefined)[]): string | undefined =>
     standingNote([article, ...looked, ...more, ...cachedRecords(cache, recordId)]);
 
-  // The record of an id PubMed doesn't know, from the database that holds it. Looked up once, when first needed.
+  // The record of an id PubMed doesn't know, from the database that holds it; of a PMID, PubMed's esummary, which is
+  // asked for only beside the text of a PMID given with its DOI (below). Looked up once, when first needed.
   const adapterFor = deps.adapter ?? defaultAdapter;
   let recordLookup: Promise<Article | undefined> | undefined;
   const record = (): Promise<Article | undefined> =>
-    (recordLookup ??= lookUpRecord(recordId, chinarxivCorpus, cache, adapterFor).then((found) => {
+    (recordLookup ??= (isPmid(id) ? lookUpSummary(id, cache, client) : lookUpRecord(recordId, chinarxivCorpus, cache, adapterFor)).then((found) => {
       // ChinaRxiv's is passed to the warning where it is read: its text may be served in parts.
       if (found && !chinarxivId) looked.push(found);
       return found;
     }));
 
-  // A PMCID or preprint id whose record no cache holds, which the text's own request doesn't return: asked for beside
-  // that request, so that the warning can open with the article's standing. A PMCID alone never finds a record a search
-  // cached under its PMID, and a retracted paper's text is returned with nothing to say so. The text waits for the
-  // record at most STANDING_WAIT_MS from here (the record is usually there within the first half second, long before
-  // the text), and a lookup that fails or is late is left out: it goes on, and its record is kept for the next call.
-  // Not for the later parts of a text, which the first call's lookup has served.
+  // A PMCID or preprint id, or a PMID given with its DOI, whose record no cache holds and which the text's own request
+  // doesn't return: asked for beside that request, so that the warning can open with the article's standing. A PMCID
+  // alone never finds a record a search cached under its PMID, and a PMID with its DOI needs no esummary to resolve,
+  // so a retracted paper's text would be returned with nothing to say so. The text waits for the record at most
+  // STANDING_WAIT_MS from here (the record is usually there within the first half second, long before the text), and
+  // a lookup that fails or is late is left out: it goes on, and its record is kept for the next call. The DOI given
+  // still drives the resolution; the record of a PMID is read for its flags only. Not for the later parts of a text,
+  // which the first call's lookup has served.
   const standingLookup: Promise<unknown> | undefined =
-    europePmcId && offset === 0 && cachedRecords(cache, recordId).length === 0 ? within(STANDING_WAIT_MS, record()) : undefined;
+    (europePmcId || (isPmid(id) && inputDoi)) && offset === 0 && cachedRecords(cache, recordId).length === 0
+      ? within(STANDING_WAIT_MS, record())
+      : undefined;
 
   // The part asked for. A proxy or direct text that goes on is kept for the next part, and any
   // other text replaces it: the next part comes from the text this one came from.
@@ -324,11 +333,7 @@ export async function fetchFulltext(
   article = cache.getSummary(recordId) ?? cache.getSummary(ownSummaryKey(recordId));
   let doi = inputDoi ?? normalizeDoi(article?.doi);
   if (!doi && !article && isPmid(id)) {
-    const summaries = await client.esummary([id]);
-    article = summaries.get(id) ?? null;
-    // Not under the bare PMID, where search and fetch keep summaries that efetch has completed: esummary's lacks the
-    // MeSH headings, and one next to a cached abstract would keep them from asking efetch for them.
-    if (article) cache.setSummary(ownSummaryKey(id), article);
+    article = (await esummaryOf(id, cache, client)) ?? null;
     doi = normalizeDoi(article?.doi);
   }
 
@@ -542,6 +547,19 @@ function hostOf(url: string): string | undefined {
 }
 
 /**
+ * The record of a PMID given with its DOI, from PubMed's esummary, which carries the publication types and the
+ * correction links the warning reads (see {@link standingNote}); kept for the next call as {@link esummaryOf} keeps
+ * it. A failed lookup is no record: callers carry on without.
+ */
+async function lookUpSummary(id: string, cache: Cache, client: NcbiClient): Promise<Article | undefined> {
+  try {
+    return await esummaryOf(id, cache, client);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The record behind an id PubMed doesn't know, as its database's adapter has it: ChinaXiv's or RussiaRxiv's
  * for a ChinaRxiv id (`corpus`), Europe PMC's for any other. `fetch` answers from the adapter's memo of search
  * results and from the cache, where it stores each record under "<database>:<id>" ("europepmc:CBA:644599"),
@@ -599,6 +617,16 @@ function abstractNotes(record: Article | undefined): string[] {
  * would keep literature_fetch from ever asking efetch for them.
  */
 const ownSummaryKey = (id: string): string => `fulltext:${id}`;
+
+/**
+ * PubMed's esummary record of a PMID, or undefined when PubMed has none, kept under {@link ownSummaryKey} and not the
+ * bare PMID, for the reason given there. Throws when the request fails.
+ */
+async function esummaryOf(id: string, cache: Cache, client: NcbiClient): Promise<Article | undefined> {
+  const found = (await client.esummary([id])).get(id);
+  if (found) cache.setSummary(ownSummaryKey(id), found);
+  return found;
+}
 
 /**
  * Every record of an id the cache holds, from an earlier search, fetch or lookup. PubMed searches and fetches keep
