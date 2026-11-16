@@ -3,7 +3,7 @@ import { LRUBackend, NullCache, SQLiteBackend, SUMMARY_TTL_MS, createCache } fro
 import type { NcbiArticle } from "../src/core/types";
 
 const article: NcbiArticle = {
-  pmid: "1",
+  id: "1",
   title: "Test",
   authors: [],
   journal: "J",
@@ -28,12 +28,12 @@ describe("LRUBackend", () => {
 
   it("evicts least-recently-used entries past capacity", () => {
     const c = new LRUBackend(2);
-    c.setSummary("a", { ...article, pmid: "a" });
-    c.setSummary("b", { ...article, pmid: "b" });
-    c.setSummary("c", { ...article, pmid: "c" });
+    c.setSummary("a", { ...article, id: "a" });
+    c.setSummary("b", { ...article, id: "b" });
+    c.setSummary("c", { ...article, id: "c" });
     expect(c.getSummary("a")).toBeNull();
-    expect(c.getSummary("b")?.pmid).toBe("b");
-    expect(c.getSummary("c")?.pmid).toBe("c");
+    expect(c.getSummary("b")?.id).toBe("b");
+    expect(c.getSummary("c")?.id).toBe("c");
   });
 });
 

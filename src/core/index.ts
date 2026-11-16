@@ -18,6 +18,7 @@ export { EuropePmcAdapter, parseEuropePmc } from "./adapters/europepmc.js";
 export { ChinaRXivAdapter, parsePapers as parseChinaRXiv } from "./adapters/chinarxiv.js";
 export { SovietRxivAdapter } from "./adapters/russiarxiv.js";
 export { defaultHttp } from "./adapters/http.js";
+export { isPmidRecord } from "./adapters/util.js";
 export type { AdapterHttp, HttpOptions } from "./adapters/http.js";
 
 export { classifyArticle, classifyDesign, designPublicationTypes, DESIGN_TIER } from "./grader.js";

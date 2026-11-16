@@ -185,7 +185,7 @@ function toArticle(r: EpmcResult): Article | null {
     first(r.fullTextUrlList?.fullTextUrl?.[0]?.url) ?? `https://europepmc.org/article/${source}/${rawId}`;
 
   const article: Article = {
-    pmid: id,
+    id,
     title: htmlToText(first(r.title) ?? "").replace(/\.$/, ""),
     authors: splitAuthors(r.authorString),
     journal:
@@ -284,7 +284,7 @@ export class EuropePmcAdapter extends RestAdapter {
     this.remember(articles);
     const next = data?.nextCursorMark;
     if (next && next !== cursor) known.cursors.set(offset + (data?.resultList?.result?.length ?? 0), next);
-    return { count, ids: articles.map((a) => a.pmid) };
+    return { count, ids: articles.map((a) => a.id) };
   }
 
   protected async fetchOne(id: string): Promise<Article | null> {
@@ -295,6 +295,6 @@ export class EuropePmcAdapter extends RestAdapter {
     const article = parseEuropePmc(data).articles[0];
     if (!article) return null;
     // A PMCID query returns the record under its PubMed id; anything else must match.
-    return article.pmid.toUpperCase() === id.toUpperCase() || /^PMC\d+$/i.test(id) ? article : null;
+    return article.id.toUpperCase() === id.toUpperCase() || /^PMC\d+$/i.test(id) ? article : null;
   }
 }

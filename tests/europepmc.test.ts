@@ -73,7 +73,7 @@ describe("parseEuropePmc", () => {
     expect(articles).toHaveLength(2);
 
     const a = articles[0]!;
-    expect(a.pmid).toBe("33000001");
+    expect(a.id).toBe("33000001");
     expect(a.title).toBe("Creatine and cognition"); // trailing period stripped
     expect(a.authors).toEqual(["Smith J", "Doe A"]);
     expect(a.doi).toBe("10.1234/epmc-a");
@@ -195,10 +195,10 @@ describe("EuropePmcAdapter", () => {
     // fetch() should hit the per-instance memo, not the network again.
     const before = urls.length;
     const fetched = await adapter.fetch(["33000001"], cache);
-    expect(fetched[0]?.pmid).toBe("33000001");
+    expect(fetched[0]?.id).toBe("33000001");
     expect(urls.length).toBe(before);
     // and it is written through to the cache under a database-scoped key.
-    expect(cache.getSummary("europepmc:33000001")?.pmid).toBe("33000001");
+    expect(cache.getSummary("europepmc:33000001")?.id).toBe("33000001");
   });
 
   it("appends a date-range clause to the query", async () => {
@@ -303,7 +303,7 @@ describe("EuropePmcAdapter", () => {
     const { http, urls } = recordingHttp(cba);
     const fetched = await new EuropePmcAdapter(http).fetch(["CBA:521529"], new LRUBackend());
     expect(decodeURIComponent(urls[0]!.replace(/\+/g, " "))).toContain("query=EXT_ID:521529 AND SRC:CBA");
-    expect(fetched.map((a) => a.pmid)).toEqual(["CBA:521529"]);
+    expect(fetched.map((a) => a.id)).toEqual(["CBA:521529"]);
 
     // A bare PMID is looked up in MED; a hit for some other record is not returned as that id.
     const wrong = recordingHttp(RESPONSE);
@@ -341,7 +341,7 @@ describe("Europe PMC ids", () => {
     const ppr = { hitCount: 1, resultList: { result: [{ id: "PPR12345", source: "PPR", title: "A preprint", pubYear: "2025" }] } };
     const { http } = recordingHttp(ppr);
     const out = await fetchLiterature({ ids: ["ppr12345"], database: "europepmc" }, new LRUBackend(), new EuropePmcAdapter(http));
-    expect(out.articles.map((a) => a.pmid)).toEqual(["PPR12345"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["PPR12345"]);
     expect(out.missing).toEqual([]);
   });
 });

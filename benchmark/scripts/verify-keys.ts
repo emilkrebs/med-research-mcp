@@ -562,7 +562,7 @@ export function liveLookups(): Lookups {
     },
     async searchPubmed(query) {
       const { articles } = await searchLiterature({ query, database: "pubmed", maxResults: 5 }, undefined, pubmed);
-      return articles.map((a) => ({ pmid: a.pmid, title: a.title }));
+      return articles.map((a) => ({ pmid: a.id, title: a.title }));
     },
     fetchFulltext: (id) => readWithRetry(() => readFulltext(id, fulltext)),
   };

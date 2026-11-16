@@ -217,8 +217,8 @@ describe("NcbiClient.esummary error-doc handling", () => {
     const out = await fetchPubMed({ ids: ["11111111", "99999999"] }, new LRUBackend(), client);
 
     expect(out.missing).toEqual(["99999999"]);
-    expect(out.articles.map((a) => a.pmid)).toEqual(["11111111"]);
-    expect(out.articles.find((a) => a.pmid === "99999999")).toBeUndefined();
+    expect(out.articles.map((a) => a.id)).toEqual(["11111111"]);
+    expect(out.articles.find((a) => a.id === "99999999")).toBeUndefined();
   });
 });
 
@@ -228,7 +228,7 @@ function fakeClient(): NcbiClient {
     [
       "11111111",
       {
-        pmid: "11111111",
+        id: "11111111",
         title: "Creatine and cognition",
         authors: ["Doe J"],
         journal: "J Test",
@@ -239,7 +239,7 @@ function fakeClient(): NcbiClient {
     [
       "22222222",
       {
-        pmid: "22222222",
+        id: "22222222",
         title: "Narrative review of nootropics",
         authors: ["Roe R"],
         journal: "J Rev",
@@ -263,7 +263,7 @@ describe("searchPubMed orchestration", () => {
   it("classifies results and preserves esearch order", async () => {
     const out = await searchPubMed({ query: "creatine" }, new LRUBackend(), fakeClient());
     expect(out.total).toBe(2);
-    expect(out.articles.map((a) => a.pmid)).toEqual(["11111111", "22222222"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["11111111", "22222222"]);
     expect(out.articles[0]?.studyType).toBe("randomized-controlled-trial");
     expect(out.articles[0]?.designTier).toBe(4);
     expect(out.articles[0]?.meshHeadings).toEqual(["Humans"]);
@@ -320,7 +320,7 @@ describe("searchPubMed orchestration", () => {
   it("filters by minDesignTier, and says it leaves out unrated records", async () => {
     const out = await searchPubMed({ query: "x", minDesignTier: 4 }, new LRUBackend(), fakeClient());
     expect(out.articles).toHaveLength(1);
-    expect(out.articles[0]?.pmid).toBe("11111111");
+    expect(out.articles[0]?.id).toBe("11111111");
     expect(out.warnings).toEqual([expect.stringContaining("leaves out every record with an unknown design tier")]);
   });
 

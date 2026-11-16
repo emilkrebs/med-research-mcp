@@ -85,7 +85,12 @@ export interface Correction {
 
 /** Raw article metadata as returned by NCBI (esummary + efetch merged). */
 export interface Article {
-  pmid: string;
+  /**
+   * The record's own id in its database, as the database gives it: a PMID ("12345678") for PubMed and for Europe PMC's
+   * MEDLINE records, Europe PMC's own id for its other records ("PPR1244531", "CBA:521529", "PMC…"), "chinaxiv-…" for
+   * ChinaXiv and "ru-…" for RussiaRxiv. `isPmidRecord` (exported by the core) tells the records whose id is a PMID.
+   */
+  id: string;
   title: string;
   abstract?: string;
   /**
@@ -120,7 +125,7 @@ export interface Article {
    * Source database — one of the adapter ids ("pubmed", "europepmc", "chinaxiv",
    * "russiarxiv"). Treated as "pubmed" when absent, so all
    * existing code keeps working without setting it. Non-PubMed adapters
-   * always set it. When set, `pmid` holds the database-specific id.
+   * always set it. When set, `id` holds the database-specific id.
    */
   database?: string;
   /** Direct URL to the article page on the source database. */

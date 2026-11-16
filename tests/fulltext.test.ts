@@ -14,7 +14,7 @@ import type { Article, Correction } from "../src/core/types";
 const DOI = "10.1000/xyz123";
 
 const ARTICLE: Article = {
-  pmid: "12345678",
+  id: "12345678",
   title: "Creatine and cognition",
   authors: ["Doe J"],
   journal: "J Test",
@@ -74,7 +74,7 @@ const noRecords: FulltextDeps["adapter"] = () => undefined;
 
 /** A stand-in for the registry's Europe PMC adapter, answering by id from `records`. */
 function fakeEuropePmc(records: Article[] = []) {
-  const fetch = vi.fn(async (ids: string[]) => records.filter((r) => ids.includes(r.pmid)));
+  const fetch = vi.fn(async (ids: string[]) => records.filter((r) => ids.includes(r.id)));
   const adapter: FulltextDeps["adapter"] = () => ({ fetch });
   return { fetch, adapter };
 }
@@ -591,7 +591,7 @@ describe("fetchFulltext resolution strategy", () => {
 
   it("keeps a bare number a PMID: PubMed is asked, and Europe PMC never, whatever record has that number", async () => {
     // "644599" is also the number of a CBA record, which Europe PMC keys "CBA:644599" to tell them apart.
-    const europePmc = fakeEuropePmc([{ ...ARTICLE, pmid: "CBA:644599", database: "europepmc" }]);
+    const europePmc = fakeEuropePmc([{ ...ARTICLE, id: "CBA:644599", database: "europepmc" }]);
     const onEsummary = vi.fn();
     await expect(fetchFulltext({ id: "644599" }, new LRUBackend(), fakeClient({ onEsummary }), { adapter: europePmc.adapter })).rejects.toMatchObject({
       code: "NOT_FOUND",
@@ -606,7 +606,7 @@ describe("fetchFulltext — other Europe PMC ids, looked up like a preprint's", 
   const CBA = "CBA:644599";
   const CBA_DOI = "10.1000/cba-paper";
   const CBA_RECORD: Article = {
-    pmid: CBA,
+    id: CBA,
     title: "A Chinese Biological Abstracts record",
     authors: ["Zhang W"],
     journal: "Chin J Test",
@@ -868,7 +868,7 @@ describe("fetchFulltext — Europe PMC by PMCID", () => {
     const { doi: _doi, ...undated } = ARTICLE;
     const PREPRINT: Article = {
       ...undated,
-      pmid: "PPR123456",
+      id: "PPR123456",
       title: "A preprint",
       journal: "medRxiv",
       publicationTypes: ["Preprint"],
@@ -954,7 +954,7 @@ describe("fetchFulltext — Europe PMC by PMCID", () => {
     });
 
     it("finds the record a search left in the cache, under the key the adapter stores it by", async () => {
-      const cba: Article = { ...PREPRINT, pmid: "CBA:644599", journal: "Chin Med J", publicationTypes: [], abstract: "The CBA record's abstract." };
+      const cba: Article = { ...PREPRINT, id: "CBA:644599", journal: "Chin Med J", publicationTypes: [], abstract: "The CBA record's abstract." };
       const cache = new LRUBackend();
       cache.setSummary("europepmc:CBA:644599", cba);
       const http: AdapterHttp = { json: vi.fn(async () => ({})) as AdapterHttp["json"], text: async () => "" };
@@ -1002,7 +1002,7 @@ describe("fetchFulltext — ChinaXiv and RussiaRxiv by their ChinaRxiv id", () =
   const ORIGINAL = "https://chinaxiv.org/abs/202401.00027";
   const BODY = ("<!-- source-page: 001 -->\n\n# A title\n\n" + "Translated sentence. ".repeat(60)).trim();
   const RECORD: Article = {
-    pmid: CN_ID,
+    id: CN_ID,
     title: "Gastrointestinal dysfunction",
     authors: ["Li Jing"],
     journal: "ChinaXiv",
@@ -1041,7 +1041,7 @@ describe("fetchFulltext — ChinaXiv and RussiaRxiv by their ChinaRxiv id", () =
   });
 
   it("takes a RussiaRxiv id from the russiarxiv adapter, and a capitalized id as the API writes it", async () => {
-    const china = fakeChinaRxiv(BODY, { ...RECORD, pmid: RU_ID, database: "russiarxiv", originalUrl: "https://www.mathnet.ru/eng/dan27147" });
+    const china = fakeChinaRxiv(BODY, { ...RECORD, id: RU_ID, database: "russiarxiv", originalUrl: "https://www.mathnet.ru/eng/dan27147" });
     const out = await fetchFulltext({ id: ` RU-196201.58177 ` }, new LRUBackend(), fakeClient(), { adapter: china.adapter });
     expect(out.source).toBe("chinarxiv");
     expect(out.warning).toContain("https://www.mathnet.ru/eng/dan27147");
@@ -1454,7 +1454,7 @@ describe("fetchFulltext — the record's standing, said first", () => {
   it("knows the record of a preprint or PMC id from Europe PMC's lookup, on the fallback, and from a cached one on the success path", async () => {
     const preprint: Article = {
       ...ARTICLE,
-      pmid: "PPR123456",
+      id: "PPR123456",
       publicationTypes: ["Preprint"],
       database: "europepmc",
       corrections: [{ type: "RetractionIn", id: "PPR654321" }],
@@ -1486,7 +1486,7 @@ describe("fetchFulltext — a PMCID given alone, whose record no search cached u
   const PMCID = "PMC12905075";
   const PMC_URL = `https://www.ebi.ac.uk/europepmc/webservices/rest/${PMCID}/fullTextXML`;
   const retracted: Article = {
-    pmid: "41695609",
+    id: "41695609",
     title: "A retracted trial",
     authors: [],
     journal: "SAGE Open Nurs",
@@ -1623,7 +1623,7 @@ describe("fetchFulltext — a PMCID given alone, whose record no search cached u
   });
 
   it("takes the same trouble for a preprint id, whose record a search keeps under the same key", async () => {
-    const preprint: Article = { ...retracted, pmid: "PPR123456", pmcid: undefined };
+    const preprint: Article = { ...retracted, id: "PPR123456", pmcid: undefined };
     const europePmc = byPmcid(async (ids) => (ids[0] === "PPR123456" ? [preprint] : []));
     const out = await fetchFulltext({ id: "PPR123456" }, new LRUBackend(), fakeClient(), deps(europePmc.adapter));
     expect(out.warning).toBe(WARNING_START);
@@ -1755,7 +1755,7 @@ describe("fetchFulltext — a PMID given with its DOI, whose record no cache hol
     expect((await fetchFulltext({ id: PMID, doi: DOI }, cache, client, deps)).warning).toBe(WARNING_START);
     // Under the call's own key, not the bare PMID, which search and fetch keep for records that efetch has completed.
     expect(cache.getSummary(PMID)).toBeNull();
-    expect(cache.getSummary(`fulltext:${PMID}`)).toMatchObject({ pmid: PMID, corrections: [{ type: "RetractionIn", id: NOTICE_ID }] });
+    expect(cache.getSummary(`fulltext:${PMID}`)).toMatchObject({ id: PMID, corrections: [{ type: "RetractionIn", id: NOTICE_ID }] });
 
     // The next call has the text and the record in the cache: no request for either, the same warning.
     const again = await fetchFulltext({ id: PMID, doi: DOI }, cache, client, deps);
@@ -1801,7 +1801,7 @@ describe("fetchFulltext — a PMID given with its DOI, whose record no cache hol
     // The answer arrives late and is kept: the next call, for the same cache, warns without asking again.
     release(new Map([[PMID, retracted]]));
     await vi.advanceTimersByTimeAsync(0);
-    expect(cache.getSummary(`fulltext:${PMID}`)).toMatchObject({ pmid: PMID });
+    expect(cache.getSummary(`fulltext:${PMID}`)).toMatchObject({ id: PMID });
     if (!path.fallback) {
       const next = await fetchFulltext({ id: PMID, doi: DOI }, cache, client, path.deps());
       expect(next.warning).toBe(WARNING_START);

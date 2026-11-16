@@ -45,7 +45,7 @@ export abstract class RestAdapter implements DatabaseAdapter {
   /** Record parsed articles for later `fetch` calls in the same process. */
   protected remember(articles: Article[]): void {
     if (this.memo.size + articles.length > MEMO_CAP) this.memo.clear();
-    for (const article of articles) this.memo.set(article.pmid, article);
+    for (const article of articles) this.memo.set(article.id, article);
   }
 
   /** Memo or cache hit for an id, without touching the network. */

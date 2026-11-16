@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { LRUBackend, NcbiClient, PROJECT_CONTACT_EMAIL } from "../src/core/index.js";
+import { LRUBackend, NcbiClient, PROJECT_CONTACT_EMAIL, isPmidRecord } from "../src/core/index.js";
 import { parseChinaRXiv, parseEuropePmc } from "../src/core/index.js";
-import { isPmidRecord, printedArticle, printedResult } from "../src/mcp/output.js";
+import { printedArticle, printedResult } from "../src/mcp/output.js";
 import { contactEmailWarning, createServer } from "../src/mcp/server.js";
 
 async function connect() {
@@ -390,32 +390,38 @@ describe("the id the tools print", () => {
 
   it("names a PMID: all digits, in PubMed or Europe PMC, and no other id", () => {
     const [med, ppr, chinese] = epmc(medline, preprint, cba);
-    expect(isPmidRecord({ pmid: "12345678" })).toBe(true); // no database: PubMed's
-    expect(isPmidRecord({ pmid: "12345678", database: "pubmed" })).toBe(true);
-    expect([med, ppr, chinese].map((a) => [a!.pmid, isPmidRecord(a!)])).toEqual([["33000001", true], ["PPR1244531", false], ["CBA:521529", false]]);
+    expect(isPmidRecord({ id: "12345678" })).toBe(true); // no database: PubMed's
+    expect(isPmidRecord({ id: "12345678", database: "pubmed" })).toBe(true);
+    expect([med, ppr, chinese].map((a) => [a!.id, isPmidRecord(a!)])).toEqual([["33000001", true], ["PPR1244531", false], ["CBA:521529", false]]);
     // PMC…, IND… and the like are Europe PMC ids that are no PMID; so is a number of ChinaXiv or RussiaRxiv.
-    for (const pmid of ["PMC1234567", "IND606115927", "NBK1234"]) expect(isPmidRecord({ pmid, database: "europepmc" }), pmid).toBe(false);
+    for (const id of ["PMC1234567", "IND606115927", "NBK1234"]) expect(isPmidRecord({ id, database: "europepmc" }), id).toBe(false);
     const [chinaxiv] = parseChinaRXiv({ data: [{ id: "chinaxiv-202608.00133", title: "t" }] } as never).articles;
-    expect([chinaxiv!.pmid, isPmidRecord(chinaxiv!)]).toEqual(["chinaxiv-202608.00133", false]);
-    for (const database of ["chinaxiv", "russiarxiv"]) expect(isPmidRecord({ pmid: "202608", database }), database).toBe(false);
+    expect([chinaxiv!.id, isPmidRecord(chinaxiv!)]).toEqual(["chinaxiv-202608.00133", false]);
+    for (const database of ["chinaxiv", "russiarxiv"]) expect(isPmidRecord({ id: "202608", database }), database).toBe(false);
   });
 
   it("prints id first, and pmid right after it only for a PMID; every other key keeps its name and place", () => {
-    const pubmed = { pmid: "33000001", title: "t", authors: ["A"], journal: "j", pubDate: "2021", publicationTypes: [], studyType: "unknown", designTier: null };
+    const pubmed = { id: "33000001", title: "t", authors: ["A"], journal: "j", pubDate: "2021", publicationTypes: [], studyType: "unknown", designTier: null };
     expect(Object.keys(printedArticle(pubmed as never))).toEqual(["id", "pmid", "title", "authors", "journal", "pubDate", "publicationTypes", "studyType", "designTier"]);
     expect(printedArticle(pubmed as never)).toMatchObject({ id: "33000001", pmid: "33000001" });
 
+    // Whatever the order of the keys it is given, id comes first and pmid second.
+    const shuffled = { title: "t", authors: ["A"], id: "33000001", journal: "j", pubDate: "2021", publicationTypes: [], studyType: "unknown", designTier: null };
+    expect(Object.keys(printedArticle(shuffled as never))).toEqual(["id", "pmid", "title", "authors", "journal", "pubDate", "publicationTypes", "studyType", "designTier"]);
+    const shuffledPreprint = { title: "t", database: "europepmc", id: "PPR1244531" };
+    expect(Object.keys(printedArticle(shuffledPreprint as never))).toEqual(["id", "title", "database"]);
+
     const [, ppr, chinese] = epmc(medline, preprint, cba);
     const printedPreprint = printedArticle(ppr!);
-    expect(Object.keys(printedPreprint)).toEqual(["id", ...Object.keys(ppr!).filter((k) => k !== "pmid")]);
+    expect(Object.keys(printedPreprint)).toEqual(["id", ...Object.keys(ppr!).filter((k) => k !== "id")]);
     expect(printedPreprint).toMatchObject({ id: "PPR1244531", title: "t", doi: "10.1234/ppr" });
     expect(printedPreprint).not.toHaveProperty("pmid");
     expect(printedArticle(chinese!)).toMatchObject({ id: "CBA:521529" });
     expect(printedArticle(chinese!)).not.toHaveProperty("pmid");
 
-    // The library's article is not changed: library users and the benchmark scorer read pmid there.
-    expect(ppr!.pmid).toBe("PPR1244531");
-    expect(ppr).not.toHaveProperty("id");
+    // The library's article is not changed: it holds the id under `id` and gets no `pmid`.
+    expect(ppr!.id).toBe("PPR1244531");
+    expect(ppr).not.toHaveProperty("pmid");
   });
 
   it("changes only the articles of a result, and keeps the place of its other keys", () => {

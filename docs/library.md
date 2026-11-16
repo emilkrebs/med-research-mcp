@@ -17,15 +17,15 @@ const { articles, warnings } = await searchLiterature(
   cache,
 );
 
-// Full metadata and abstract for the top result (`Article.pmid` holds the database-specific id).
+// Full metadata and abstract for the top result (`Article.id` holds the database-specific id).
 const top = articles[0]!;
-const fetched = await fetchLiterature({ ids: [top.pmid], database: top.database ?? "pubmed" }, cache);
+const fetched = await fetchLiterature({ ids: [top.id], database: top.database ?? "pubmed" }, cache);
 
 // Its full text, resolved through the DOI.
-const fulltext = await fetchFulltext({ id: top.pmid, doi: top.doi }, cache);
+const fulltext = await fetchFulltext({ id: top.id, doi: top.doi }, cache);
 ```
 
-The build ships both ESM and CommonJS, so this works with `import` and `require` alike. The functions take the same inputs and return the same shapes as the [tools](tools.md), with one difference: the library's `Article` keeps the database's own id in `pmid` (a PMID, or `PPR…`, `CBA:…`, `chinaxiv-…`), and the MCP tools print it as `id`, the first key of each article, adding `pmid` only when the id is a PMID (all digits). `searchLiterature` also probes a search that finds nothing, as the tool does: a first-page query of 2 to 5 plain words that every database answers with nothing is searched again without each word, for the count, which costs up to one more request per word and database and can take several seconds ([how it works](how-it-works.md#zero-results-probing-the-words)). `searchPubMed`, which has no merge, doesn't probe, but warns of a word PubMed ignored.
+The build ships both ESM and CommonJS, so this works with `import` and `require` alike. The functions take the same inputs and return the same shapes as the [tools](tools.md), with one difference: the library's `Article` keeps the database's own id in `id` (a PMID, or `PPR…`, `CBA:…`, `chinaxiv-…`) and has no `pmid`, and the MCP tools print the article with `id` as its first key and add `pmid` after it only when the id is a PMID (all digits). `isPmidRecord(article)` tells a library user which records those are: it is true for a record of PubMed or Europe PMC whose id is all digits. Before 0.8.0 the library kept the id in `pmid`. `searchLiterature` also probes a search that finds nothing, as the tool does: a first-page query of 2 to 5 plain words that every database answers with nothing is searched again without each word, for the count, which costs up to one more request per word and database and can take several seconds ([how it works](how-it-works.md#zero-results-probing-the-words)). `searchPubMed`, which has no merge, doesn't probe, but warns of a word PubMed ignored.
 
 Also exported:
 
@@ -45,7 +45,7 @@ Configuration comes from the same environment variables as the server ([README](
 - **`memory`** (default): an LRU of about 200 entries per store that dies with the process.
 - **`sqlite`**: a WAL-mode SQLite file (`path`, default `./pubmed-cache.db`) that survives restarts. It needs `better-sqlite3`, an optional native dependency, loaded only when this backend is created; `createCache` throws if it can't be loaded. Construct `new SQLiteBackend(path)` directly to reach `close()`, for exit, and `vacuum()`, which a long-running process should call now and then to remove expired rows.
 
-Summaries expire after 7 days, because their metadata changes after publication (indexing adds publication types, and retractions, expressions of concern and errata arrive at any time). Open-access full texts expire after 30 days, as resolved URLs rot; texts from the proxy or direct route aren't cached, because they may be licensed to one user, and neither are ChinaRxiv's translations, which are only held in memory for 30 minutes while being read. Abstracts never expire. What the cache stores has a format version (`CACHE_FORMAT_VERSION`, now 2): a SQLite file written by an earlier version is emptied when first opened, and a `Cache` of your own should keep versions apart the same way.
+Summaries expire after 7 days, because their metadata changes after publication (indexing adds publication types, and retractions, expressions of concern and errata arrive at any time). Open-access full texts expire after 30 days, as resolved URLs rot; texts from the proxy or direct route aren't cached, because they may be licensed to one user, and neither are ChinaRxiv's translations, which are only held in memory for 30 minutes while being read. Abstracts never expire. What the cache stores has a format version (`CACHE_FORMAT_VERSION`, now 3): a SQLite file written by an earlier version is emptied when first opened, and a `Cache` of your own should keep versions apart the same way. Format 3 holds a record's id under `id`, where formats 1 and 2 held it under `pmid`.
 
 ## Errors
 

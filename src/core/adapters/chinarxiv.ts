@@ -151,7 +151,7 @@ function toArticle(r: Record_, complete: boolean): Article | null {
   const sourceLanguage = first(r.source_language);
 
   const article: Article = {
-    pmid: id,
+    id,
     title: (first(r.title) ?? "").replace(/\.$/, ""),
     authors: cleanAuthors(r.authors),
     journal: first(r.publication_title) ?? first(r.publication) ?? (corpus === "chinaxiv" ? "ChinaXiv" : ""),
@@ -255,7 +255,7 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
     const parsed = parsePapers(data);
     this.remember(parsed.articles);
     if (data?.next_cursor) known.cursors.set(pageIndex + 1, data.next_cursor);
-    return result(parsed.count, parsed.articles.map((a) => a.pmid));
+    return result(parsed.count, parsed.articles.map((a) => a.id));
   }
 
   /**
@@ -312,7 +312,7 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
     // Exact lookup by id; a `q=` text search for the id can return a different paper.
     const record = await this.http.json<Record_>(`${BASE}/${encodeURIComponent(id)}`);
     const article = parsePapers({ data: [record] }, { complete: true }).articles[0];
-    return article?.pmid === id ? article : null;
+    return article?.id === id ? article : null;
   }
 }
 

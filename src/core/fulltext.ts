@@ -746,7 +746,7 @@ async function resolveAbstract(
     const data = (await client.efetch([id])).get(id);
     if (data) {
       // Without a summary (a DOI was given with the PMID) the record is only what efetch says of it, and isn't cached.
-      const completed = withEfetch(article ?? { pmid: id, title: "", authors: [], journal: "", pubDate: "", publicationTypes: [] }, data);
+      const completed = withEfetch(article ?? { id, title: "", authors: [], journal: "", pubDate: "", publicationTypes: [] }, data);
       if (article) cache.setSummary(id, completed);
       learn(completed);
     }

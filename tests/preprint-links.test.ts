@@ -150,7 +150,7 @@ describe("PubMed links between a preprint and its article", () => {
   it("flags the preprint as updated and the article not at all", () => {
     const grade = (pmid: string) => {
       const data = parsed.get(pmid)!;
-      return classifyArticle({ pmid, title: "", authors: [], journal: "", pubDate: "", ...data });
+      return classifyArticle({ id: pmid, title: "", authors: [], journal: "", pubDate: "", ...data });
     };
     expect(grade("50000001").flags).toEqual(["updated", "preprint"]);
     expect(grade("50000002").flags).toBeUndefined();
@@ -162,7 +162,7 @@ describe("the two databases agree", () => {
     const [epmcPreprint, epmcArticle] = epmc(EPMC_PREPRINT, EPMC_ARTICLE).map(classifyArticle);
     const pubmed = new NcbiClient({ email: "" }).parseEfetch(PUBMED_XML);
     const [pmPreprint, pmArticle] = ["50000001", "50000002"].map((pmid) =>
-      classifyArticle({ pmid, title: "", authors: [], journal: "", pubDate: "", ...pubmed.get(pmid)! }),
+      classifyArticle({ id: pmid, title: "", authors: [], journal: "", pubDate: "", ...pubmed.get(pmid)! }),
     );
     const shape = (a: GradedArticle) => ({ links: a.corrections?.map((c) => c.type), flags: a.flags });
     expect(shape(epmcPreprint!)).toEqual(shape(pmPreprint!));
@@ -199,7 +199,7 @@ describe("what a link does to a record's grade", () => {
 
 describe("merging two copies of one record keeps the links", () => {
   const graded = (over: Partial<GradedArticle>): GradedArticle => ({
-    pmid: "1",
+    id: "1",
     title: "A preprint",
     authors: [],
     journal: "medRxiv",
@@ -210,18 +210,18 @@ describe("merging two copies of one record keeps the links", () => {
     ...over,
   });
   const linked = graded({ corrections: [{ type: "UpdateIn", id: "50000002" }], flags: ["updated", "preprint"] });
-  const unlinked = graded({ pmid: "PPR1", database: "europepmc", flags: ["preprint"] });
+  const unlinked = graded({ id: "PPR1", database: "europepmc", flags: ["preprint"] });
 
   it("takes the published version from the copy that has it, whichever copy is kept", () => {
     for (const merged of [mergeDuplicate(unlinked, linked), mergeDuplicate(linked, unlinked)]) {
       expect(merged.corrections).toEqual([{ type: "UpdateIn", id: "50000002" }]);
       expect(merged.flags).toEqual(["updated", "preprint"]);
     }
-    expect(mergeDuplicate(unlinked, linked).pmid).toBe("PPR1");
+    expect(mergeDuplicate(unlinked, linked).id).toBe("PPR1");
   });
 
   it("lists a link both copies have once, and adds the ids only one has", () => {
-    const other = graded({ pmid: "PPR1", corrections: [{ type: "UpdateIn", id: "50000002" }, { type: "UpdateIn", id: "50000009" }] });
+    const other = graded({ id: "PPR1", corrections: [{ type: "UpdateIn", id: "50000002" }, { type: "UpdateIn", id: "50000009" }] });
     expect(mergeDuplicate(linked, other).corrections).toEqual([
       { type: "UpdateIn", id: "50000002" },
       { type: "UpdateIn", id: "50000009" },
@@ -237,18 +237,18 @@ describe("merging two copies of one record keeps the links", () => {
 
   it("returns the kept copy itself when the other adds nothing", () => {
     expect(mergeDuplicate(linked, graded({ flags: ["preprint"] }))).toBe(linked);
-    expect(mergeDuplicate(linked, { ...linked, pmid: "PPR1" })).toBe(linked);
+    expect(mergeDuplicate(linked, { ...linked, id: "PPR1" })).toBe(linked);
   });
 
   it("adds links without adding a flags property to a copy that has none", () => {
-    const merged = mergeDuplicate(graded({}), graded({ pmid: "2", corrections: [{ type: "UpdateOf", id: "50000001" }] }));
+    const merged = mergeDuplicate(graded({}), graded({ id: "2", corrections: [{ type: "UpdateOf", id: "50000001" }] }));
     expect(merged.corrections).toEqual([{ type: "UpdateOf", id: "50000001" }]);
     expect(merged).not.toHaveProperty("flags");
   });
 
   it("still passes a retraction on with its link, and zeroes the tier", () => {
     const retracted = graded({
-      pmid: "3",
+      id: "3",
       corrections: [{ type: "RetractionIn", id: "60000001" }],
       flags: ["retracted", "preprint"],
       designTier: 0,
@@ -261,7 +261,7 @@ describe("merging two copies of one record keeps the links", () => {
 
 describe("a search with a preprint and its article", () => {
   const preprint: Article = {
-    pmid: "PPR1312266",
+    id: "PPR1312266",
     title: "A preprint on a drug comparison",
     authors: ["Doe J"],
     journal: "Research Square",
@@ -272,7 +272,7 @@ describe("a search with a preprint and its article", () => {
     corrections: [{ type: "UpdateIn", id: "42905201" }],
   };
   const article: Article = {
-    pmid: "42905201",
+    id: "42905201",
     title: "A drug comparison",
     authors: ["Doe J"],
     journal: "Eur J Orthop Surg Traumatol",
@@ -284,8 +284,8 @@ describe("a search with a preprint and its article", () => {
   const serving = (id: string, articles: Article[]): DatabaseAdapter => ({
     id,
     name: id,
-    search: async () => ({ count: articles.length, ids: articles.map((a) => a.pmid) }),
-    fetch: async (ids) => articles.filter((a) => ids.includes(a.pmid)),
+    search: async () => ({ count: articles.length, ids: articles.map((a) => a.id) }),
+    fetch: async (ids) => articles.filter((a) => ids.includes(a.id)),
   });
 
   it("returns both as two records, each with its link, and in the order its tier gives", async () => {
@@ -293,14 +293,14 @@ describe("a search with a preprint and its article", () => {
       serving("europepmc", [preprint]),
       serving("pubmed", [article]),
     ]);
-    expect(out.articles.map((a) => a.pmid)).toEqual(["42905201", "PPR1312266"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["42905201", "PPR1312266"]);
     expect(out.articles.map((a) => a.corrections)).toEqual([[{ type: "UpdateOf", id: "PPR1312266" }], [{ type: "UpdateIn", id: "42905201" }]]);
     expect(out.articles.map((a) => a.flags)).toEqual([undefined, ["updated", "preprint"]]);
     expect(out.total).toBe(2);
   });
 
   it("merges the copies of a preprint that two databases hold, with the link only one has", async () => {
-    const heldByPubmed: Article = { ...preprint, pmid: "50000001", database: undefined, corrections: undefined };
+    const heldByPubmed: Article = { ...preprint, id: "50000001", database: undefined, corrections: undefined };
     delete heldByPubmed.database;
     delete heldByPubmed.corrections;
     const out = await searchLiterature({ query: "drug comparison", database: "all" }, new LRUBackend(), [
@@ -309,7 +309,7 @@ describe("a search with a preprint and its article", () => {
     ]);
     expect(out.articles).toHaveLength(1);
     expect(out.articles[0]).toMatchObject({
-      pmid: "50000001",
+      id: "50000001",
       flags: ["updated", "preprint"],
       corrections: [{ type: "UpdateIn", id: "42905201" }],
     });

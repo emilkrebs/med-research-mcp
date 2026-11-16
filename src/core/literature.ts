@@ -83,7 +83,7 @@ function dedupeByDoi(articles: GradedArticle[]): GradedArticle[] {
   // Map iteration keeps first-seen order: a merged copy takes the place of the first one.
   const byKey = new Map<string, GradedArticle>();
   for (const article of articles) {
-    const key = doiKey(article.doi) ?? `id:${article.database ?? "pubmed"}:${article.pmid}`;
+    const key = doiKey(article.doi) ?? `id:${article.database ?? "pubmed"}:${article.id}`;
     const existing = byKey.get(key);
     byKey.set(key, existing ? mergeDuplicate(existing, article) : article);
   }
@@ -487,7 +487,7 @@ export async function fetchLiterature(
     : await resolved.fetch(input.ids, cache, (w) => warnings.push(w));
   // Case-insensitive: adapters return canonical ids ("PPR123456") for any input case. A PMCID
   // fetched from Europe PMC comes back under its PMID, so it counts as found through `pmcid`.
-  const found = new Set(articles.flatMap((a) => [a.pmid, a.pmcid ?? ""]).map((id) => id.toUpperCase()));
+  const found = new Set(articles.flatMap((a) => [a.id, a.pmcid ?? ""]).map((id) => id.toUpperCase()));
   const missing = input.ids.filter((id) => !found.has(id.toUpperCase()));
   if (missing.length > 0) warnings.push(`${missing.length} id(s) could not be fetched from ${resolved.name}.`);
 

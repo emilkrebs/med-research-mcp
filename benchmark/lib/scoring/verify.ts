@@ -322,21 +322,21 @@ export async function defaultFetch(
   // NullCache, never an LRU: a cached control PMID would make the guard below pass
   // without touching the network, so it could not detect a later silent failure.
   const { articles, missing, warnings } = await fetcher({ ids: withControl, database: "pubmed" }, new NullCache(), new PubMedAdapter(ncbi));
-  if (missing.includes(CONTROL_PMID) || !articles.some((a) => a.pmid === CONTROL_PMID)) {
+  if (missing.includes(CONTROL_PMID) || !articles.some((a) => a.id === CONTROL_PMID)) {
     throw new Error("NCBI lookup returned no data for the control PMID; treating the batch as a transient failure");
   }
   // efetch can also fail silently (an error body with HTTP 200 parses as "no articles");
   // the control PMID always has an abstract, so a missing one means the batch's abstracts are gone.
-  const control = articles.find((a) => a.pmid === CONTROL_PMID);
+  const control = articles.find((a) => a.id === CONTROL_PMID);
   if (warnings?.some((w) => /abstracts could not be fetched/i.test(w)) || !control?.abstract) {
     throw new Error("NCBI efetch returned no abstracts; treating the batch as a transient failure");
   }
   const found: PmidFacts[] = [];
   for (const article of articles) {
-    if (!pmids.includes(article.pmid)) continue;
+    if (!pmids.includes(article.id)) continue;
     const graded = classifyArticle(article);
     found.push({
-      pmid: article.pmid,
+      pmid: article.id,
       exists: true,
       designTier: graded.designTier,
       studyType: graded.studyType,
@@ -367,7 +367,7 @@ interface RegionalRecord {
 
 /** Classify a regional record exactly like a PubMed one (ChinaXiv has no metadata, so it stays unknown). */
 function regionalFacts(id: string, database: string, a: RegionalRecord): PmidFacts {
-  const graded = classifyArticle({ pmid: id, ...a, publicationTypes: a.publicationTypes ?? [] });
+  const graded = classifyArticle({ id, ...a, publicationTypes: a.publicationTypes ?? [] });
   return {
     pmid: id,
     exists: true,

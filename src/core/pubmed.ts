@@ -597,7 +597,7 @@ export class NcbiClient {
     const doi = doc.articleids?.find((a) => a.idtype === "doi")?.value;
     const pmcid = doc.articleids?.find((a) => a.idtype === "pmc")?.value;
     const article: Article = {
-      pmid,
+      id: pmid,
       title: (doc.title ?? "").replace(/\.$/, ""),
       authors: toArray(doc.authors)
         .map((a) => a.name ?? "")

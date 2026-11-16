@@ -224,7 +224,7 @@ describe("classifyDesign — no metadata", () => {
 
 describe("classifyArticle / rankKey / DESIGN_TIER", () => {
   const base: NcbiArticle = {
-    pmid: "1",
+    id: "1",
     title: "Creatine and cognition",
     abstract: "A randomized controlled trial in 40 adults.",
     authors: ["Doe J"],
@@ -256,9 +256,9 @@ describe("classifyArticle / rankKey / DESIGN_TIER", () => {
     const retracted = classifyArticle({ ...base, publicationTypes: ["Randomized Controlled Trial", "Retracted Publication"] });
 
     it("keeps the higher-ranked copy, the first on a tie", () => {
-      const review = classifyArticle({ ...base, pmid: "2", publicationTypes: ["Review"] });
+      const review = classifyArticle({ ...base, id: "2", publicationTypes: ["Review"] });
       expect(mergeDuplicate(review, rct)).toBe(rct);
-      expect(mergeDuplicate(rct, { ...rct, pmid: "2" })).toBe(rct);
+      expect(mergeDuplicate(rct, { ...rct, id: "2" })).toBe(rct);
     });
 
     it("carries a retraction from either copy over to the kept one and zeroes its tier", () => {
@@ -269,16 +269,16 @@ describe("classifyArticle / rankKey / DESIGN_TIER", () => {
 
     it("carries paper-level warnings without touching the tier", () => {
       const concern = classifyArticle({ ...base, corrections: [{ type: "ExpressionOfConcernIn" }, { type: "ErratumIn" }] });
-      const unknown = classifyArticle({ ...base, pmid: "C1", publicationTypes: [] });
+      const unknown = classifyArticle({ ...base, id: "C1", publicationTypes: [] });
       expect(mergeDuplicate(unknown, concern)).toMatchObject({
-        pmid: "1",
+        id: "1",
         designTier: 4,
         flags: ["expression-of-concern", "corrected"],
       });
     });
 
     it("does not carry record-level flags such as preprint", () => {
-      const preprint = classifyArticle({ ...base, pmid: "P1", publicationTypes: ["Preprint"] });
+      const preprint = classifyArticle({ ...base, id: "P1", publicationTypes: ["Preprint"] });
       expect(mergeDuplicate(preprint, rct)).toBe(rct);
     });
   });

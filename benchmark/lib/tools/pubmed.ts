@@ -18,7 +18,7 @@
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { fetchPubMed, LRUBackend, searchPubMed } from "../core.js";
-import type { GradedArticle, NcbiClient } from "../core.js";
+import type { GradedArticle, NcbiArticle, NcbiClient } from "../core.js";
 import { sharedNcbi } from "./literature.js";
 
 export interface PubmedToolDeps {
@@ -28,10 +28,20 @@ export interface PubmedToolDeps {
   fetch?: typeof fetchPubMed;
 }
 
+/**
+ * A record as this baseline prints it: its PMID as `pmid`, first, and the other keys as they were. The library keeps a
+ * record's id under `id`; the baseline's records are PubMed's only, so the id is always a PMID, and the tools have always
+ * printed it as `pmid`, which the stored runs of this condition hold.
+ */
+function printed<A extends NcbiArticle>(article: A): { pmid: string } & Omit<A, "id"> {
+  const { id, ...record } = article;
+  return { pmid: id, ...record };
+}
+
 /** A search hit without the labels the MCP's grader adds. */
-function plain(article: GradedArticle): Omit<GradedArticle, "studyType" | "designTier" | "flags"> {
+function plain(article: GradedArticle) {
   const { studyType: _studyType, designTier: _designTier, flags: _flags, ...record } = article;
-  return record;
+  return printed(record);
 }
 
 const errorText = (err: unknown): string => `Error: ${err instanceof Error ? err.message : String(err)}`;
@@ -101,7 +111,8 @@ export function pubmedTools(deps: PubmedToolDeps = {}): ToolSet {
       }),
       execute: async ({ pmids }) => {
         try {
-          return JSON.stringify(await fetchRecords({ ids: pmids }, cache, ncbi), null, 2);
+          const fetched = await fetchRecords({ ids: pmids }, cache, ncbi);
+          return JSON.stringify({ ...fetched, articles: fetched.articles.map(printed) }, null, 2);
         } catch (err) {
           return errorText(err);
         }

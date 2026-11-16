@@ -36,11 +36,11 @@ describe("what the server prints", () => {
     expect(printed).toEqual({ preprint: "PPR123456", cba: "CBA:521529", chinaxiv: "chinaxiv-202608.00133" });
   });
 
-  it("is an `id`, and a `pmid` only for a PMID: the library's own `pmid` is the same id", () => {
+  it("is an `id`, and a `pmid` only for a PMID: the library's own `id` is the same id", () => {
     for (const article of [printedPreprint, printedCba, printedChinaxiv]) expect(article).not.toHaveProperty("pmid");
     const medline = printedArticle(epmc({ id: "33000001", source: "MED", pmid: "33000001", title: "t", abstractText: "a" }));
     expect(medline).toMatchObject({ id: "33000001", pmid: "33000001" });
-    expect(epmc({ id: "PPR123456", source: "PPR", title: "t" }).pmid).toBe(printed.preprint);
+    expect(epmc({ id: "PPR123456", source: "PPR", title: "t" }).id).toBe(printed.preprint);
   });
 });
 

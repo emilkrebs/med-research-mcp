@@ -538,4 +538,12 @@ export function toIso1(lang: string | undefined): string | undefined {
   return ISO_639_2_TO_1[l] ?? l;
 }
 
-
+/**
+ * Whether the id of a record is a PMID: all digits, in PubMed or Europe PMC. Europe PMC's adapter gives bare digits
+ * only to MEDLINE records and writes any other source's number as `SRC:id` (`toEpmcId`, europepmc.ts); ChinaXiv and
+ * RussiaRxiv ids are `chinaxiv-…` and `ru-…`. A record without a database is PubMed's, as everywhere in the library.
+ */
+export function isPmidRecord(article: { id: string; database?: string }): boolean {
+  const database = article.database ?? "pubmed";
+  return (database === "pubmed" || database === "europepmc") && /^\d+$/.test(article.id);
+}

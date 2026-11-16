@@ -255,7 +255,7 @@ describe("defaultFetch control-PMID guard", () => {
       // First call: NCBI healthy. Second: an error body makes every id "missing".
       if (call === 1) {
         return {
-          articles: input.ids.map((pmid) => ({ pmid, title: "t", abstract: "a", publicationTypes: [] })),
+          articles: input.ids.map((id) => ({ id, title: "t", abstract: "a", publicationTypes: [] })),
           missing: [],
         };
       }
@@ -271,7 +271,7 @@ describe("defaultFetch control-PMID guard", () => {
   it("throws when abstracts silently failed to load, so a record is never graded on its title alone", async () => {
     const { defaultFetch } = await import("../lib/scoring/verify.js");
     const fetcher = (async (input: { ids: string[] }) => ({
-      articles: input.ids.map((pmid) => ({ pmid, title: "t", authors: [], publicationTypes: [] })),
+      articles: input.ids.map((id) => ({ id, title: "t", authors: [], publicationTypes: [] })),
       missing: [],
       warnings: ["Some abstracts could not be fetched."],
     })) as unknown as Parameters<typeof defaultFetch>[2];
@@ -281,7 +281,7 @@ describe("defaultFetch control-PMID guard", () => {
   it("throws when efetch failed silently (the control PMID came back without its abstract)", async () => {
     const { defaultFetch } = await import("../lib/scoring/verify.js");
     const fetcher = (async (input: { ids: string[] }) => ({
-      articles: input.ids.map((pmid) => ({ pmid, title: "t", authors: [], publicationTypes: [] })),
+      articles: input.ids.map((id) => ({ id, title: "t", authors: [], publicationTypes: [] })),
       missing: [],
     })) as unknown as Parameters<typeof defaultFetch>[2];
     await expect(defaultFetch(["111111"], {} as Parameters<typeof defaultFetch>[1], fetcher)).rejects.toThrow(/abstracts/);

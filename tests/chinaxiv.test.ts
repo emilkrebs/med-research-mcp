@@ -128,7 +128,7 @@ describe("parsePapers", () => {
     const { count, articles } = parsePapers(RESPONSE);
     expect(count).toBe(1);
     const a = articles[0]!;
-    expect(a.pmid).toBe("chinaxiv-202401.00027");
+    expect(a.id).toBe("chinaxiv-202401.00027");
     expect(a.title).toBe("Clinical Characteristics and Influencing Factors of Gastrointestinal Dysfunction");
     expect(a.authors).toEqual(["Li Jing", "Ma Leilei"]);
     expect(a.pubDate).toBe("2024-01-03");
@@ -174,7 +174,7 @@ describe("parsePapers", () => {
     // The count is the API's, so a dropped record leaves it as it was.
     const mixed = parsePapers({ total: 2, data: [{ ...CHINAXIV_RECORD, source: "crad" }, RUSSIARXIV_RECORD] });
     expect(mixed.count).toBe(2);
-    expect(mixed.articles.map((a) => a.pmid)).toEqual(["ru-196201.58177"]);
+    expect(mixed.articles.map((a) => a.id)).toEqual(["ru-196201.58177"]);
   });
 
   it("surfaces both as warning flags; the design stays unknown", () => {
@@ -610,7 +610,7 @@ describe("ChinaRxiv paging", () => {
     // Remembering all 21 walked pages would overflow the memo and wipe the first page's records.
     await adapter.search({ query: "anxiety", maxResults: 50, page: 22 });
     urls.length = 0;
-    expect((await adapter.fetch(first.ids, cache)).map((a) => a.pmid)).toEqual(first.ids);
+    expect((await adapter.fetch(first.ids, cache)).map((a) => a.id)).toEqual(first.ids);
     expect(urls).toHaveLength(0);
   });
 

@@ -17,13 +17,13 @@ function fakeAdapter(id: string, articles: NcbiArticle[], count = articles.lengt
   return {
     id,
     name: id,
-    search: async () => ({ count, ids: articles.map((a) => a.pmid) }),
-    fetch: async (ids) => articles.filter((a) => ids.includes(a.pmid)),
+    search: async () => ({ count, ids: articles.map((a) => a.id) }),
+    fetch: async (ids) => articles.filter((a) => ids.includes(a.id)),
   };
 }
 
 const pubmedMeta: NcbiArticle = {
-  pmid: "1",
+  id: "1",
   title: "Effects of creatine supplementation: a meta-analysis",
   authors: ["Doe J"],
   journal: "J Nutr",
@@ -33,7 +33,7 @@ const pubmedMeta: NcbiArticle = {
 };
 
 const scieloReview: NcbiArticle = {
-  pmid: "S1",
+  id: "S1",
   title: "A review of creatine in sport",
   authors: ["García M"],
   journal: "Rev Bras",
@@ -45,7 +45,7 @@ const scieloReview: NcbiArticle = {
 };
 
 const chinaxivRct: NcbiArticle = {
-  pmid: "C1",
+  id: "C1",
   title: "A randomized controlled trial of a peptide",
   authors: ["Wang L"],
   journal: "ChinaRXiv",
@@ -57,7 +57,7 @@ const chinaxivRct: NcbiArticle = {
 };
 
 const epmcRct: NcbiArticle = {
-  pmid: "E1",
+  id: "E1",
   title: "Creatine supplementation in older adults",
   authors: ["Smith J"],
   journal: "Eur J Nutr",
@@ -69,7 +69,7 @@ const epmcRct: NcbiArticle = {
 };
 
 const scieloPlain: NcbiArticle = {
-  pmid: "S2",
+  id: "S2",
   title: "Metabolic pathways of creatine",
   authors: ["López P"],
   journal: "Rev Bras",
@@ -93,7 +93,7 @@ describe("searchLiterature fan-out", () => {
     // outranks the other, so the first-seen copy stays. The meta-analysis's pooled
     // designs aren't indexed, so it is unrated and sorts with the unclassified
     // records, which keep their per-adapter order after the rated RCT.
-    expect(out.articles.map((a) => a.pmid)).toEqual(["E1", "1", "S2", "C1"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["E1", "1", "S2", "C1"]);
     expect(out.articles.map((a) => a.designTier)).toEqual([4, null, null, null]);
     // total sums each adapter's reported count.
     expect(out.total).toBe(132);
@@ -104,7 +104,7 @@ describe("searchLiterature fan-out", () => {
       fakeAdapter("europepmc", [epmcRct]),
       fakeAdapter("chinaxiv", [chinaxivRct]),
     ]);
-    expect(out.articles.map((a) => [a.pmid, a.studyType])).toEqual([
+    expect(out.articles.map((a) => [a.id, a.studyType])).toEqual([
       ["E1", "randomized-controlled-trial"],
       // "randomized controlled trial" in the title is not metadata.
       ["C1", "unknown"],
@@ -130,7 +130,7 @@ describe("searchLiterature fan-out", () => {
       new LRUBackend(),
       adapters,
     );
-    expect(out.articles.map((a) => a.pmid)).toEqual(["E1"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["E1"]);
     // Unrated, not weak — leaving them out (the unrated meta-analysis included) must be surfaced.
     expect(out.warnings?.some((w) => w.startsWith("minDesignTier 4 leaves out every record with an unknown design tier"))).toBe(true);
   });
@@ -141,7 +141,7 @@ describe("searchLiterature fan-out", () => {
     const out = await searchLiterature({ query: "x", database: "europepmc", minDesignTier: 3 }, new LRUBackend(), [
       fakeAdapter("europepmc", [epmcRct]),
     ]);
-    expect(out.articles.map((a) => a.pmid)).toEqual(["E1"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["E1"]);
     expect(out.warnings).toEqual([expect.stringContaining("leaves out every record with an unknown design tier")]);
   });
 
@@ -151,7 +151,7 @@ describe("searchLiterature fan-out", () => {
       new LRUBackend(),
       [fakeAdapter("europepmc", [epmcRct])],
     );
-    expect(out.articles.map((a) => a.pmid)).toEqual(["E1"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["E1"]);
     expect(out.warnings).toBeUndefined();
   });
 
@@ -299,8 +299,8 @@ describe("searchLiterature fan-out", () => {
 
   describe("total across several databases", () => {
     // Two databases hold the same records: the sum counted each twice, 4 for 2 articles.
-    const shared: NcbiArticle[] = [pubmedMeta, { ...epmcRct, pmid: "2", doi: "10.1234/second" }];
-    const copies = (id: string): NcbiArticle[] => shared.map((a) => ({ ...a, pmid: `${id}-${a.pmid}` }));
+    const shared: NcbiArticle[] = [pubmedMeta, { ...epmcRct, id: "2", doi: "10.1234/second" }];
+    const copies = (id: string): NcbiArticle[] => shared.map((a) => ({ ...a, id: `${id}-${a.id}` }));
 
     it("counts a record held by two databases twice, and says how many each database reported", async () => {
       const out = await searchLiterature({ query: "x", database: "all" }, new LRUBackend(), [
@@ -845,9 +845,9 @@ describe("searchLiterature fan-out", () => {
 
   describe("abstractMaxChars", () => {
     const LONG = "alpha beta gamma delta epsilon"; // 30 characters
-    const record = (pmid: string, abstract?: string, extra: Partial<NcbiArticle> = {}): NcbiArticle => ({
+    const record = (id: string, abstract?: string, extra: Partial<NcbiArticle> = {}): NcbiArticle => ({
       ...pubmedMeta,
-      pmid,
+      id,
       doi: undefined,
       ...(abstract !== undefined ? { abstract } : {}),
       ...extra,
@@ -902,10 +902,10 @@ describe("searchLiterature fan-out", () => {
 
     it("leaves the abstract out for 0, flags an article that had one, and not one that had none", async () => {
       const out = await search([record("1", LONG), record("2")], 0);
-      expect(out.articles[0]).toMatchObject({ pmid: "1", abstractTruncated: true });
+      expect(out.articles[0]).toMatchObject({ id: "1", abstractTruncated: true });
       expect(out.articles[0]).not.toHaveProperty("abstract");
       // Told apart from an omitted one: nothing was left out of this record.
-      expect(out.articles[1]).toMatchObject({ pmid: "2" });
+      expect(out.articles[1]).toMatchObject({ id: "2" });
       expect(out.articles[1]).not.toHaveProperty("abstract");
       expect(out.articles[1]).not.toHaveProperty("abstractTruncated");
     });
@@ -941,7 +941,7 @@ describe("searchLiterature fan-out", () => {
         fakeAdapter("chinaxiv", [record("C1", LONG, { database: "chinaxiv", doi: "10.2074/other" })]),
       ]);
       // The RCT copy outranks the unrated meta-analysis copy that shares its DOI.
-      expect(out.articles.map((a) => a.pmid)).toEqual(["E1", "C1"]);
+      expect(out.articles.map((a) => a.id)).toEqual(["E1", "C1"]);
       expect(out.articles.map((a) => a.abstract)).toEqual(["alpha beta gamma…", "alpha beta gamma…"]);
       expect(out.articles.every((a) => a.abstractTruncated)).toBe(true);
     });
@@ -950,7 +950,7 @@ describe("searchLiterature fan-out", () => {
       const articles = [record("1", LONG, { publicationTypes: ["Case Reports"] }), record("2", LONG, { publicationTypes: ["Randomized Controlled Trial"] })];
       const full = await search(articles);
       const capped = await search(articles, 8);
-      expect(capped.articles.map((a) => [a.pmid, a.studyType, a.designTier])).toEqual(full.articles.map((a) => [a.pmid, a.studyType, a.designTier]));
+      expect(capped.articles.map((a) => [a.id, a.studyType, a.designTier])).toEqual(full.articles.map((a) => [a.id, a.studyType, a.designTier]));
       expect(capped.total).toBe(full.total);
     });
 
@@ -971,7 +971,7 @@ describe("searchLiterature fan-out", () => {
   describe("a retraction indexed in only one database", () => {
     const retractedPubmed: NcbiArticle = {
       ...epmcRct,
-      pmid: "P9",
+      id: "P9",
       doi: "10.1234/EPMC",
       publicationTypes: ["Randomized Controlled Trial", "Journal Article", "Retracted Publication"],
       database: undefined,
@@ -1010,15 +1010,15 @@ describe("searchLiterature fan-out", () => {
     const out = await searchLiterature({ query: "x", database: "chinaxiv", minDesignTier: 0 }, new LRUBackend(), [
       fakeAdapter("chinaxiv", [chinaxivRct]),
     ]);
-    expect(out.articles.map((a) => a.pmid)).toEqual(["C1"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["C1"]);
     expect(out.warnings).toBeUndefined();
   });
 
   it('orders by date, not design tier, with sort "date"', async () => {
     // The review's semaglutide 2015–2018 search: PubMed returned these newest first, and 0.6.0
     // re-sorted them by tier (Aug, Apr, Mar, Feb, Nov-Dec, …).
-    const record = (pmid: string, pubDate: string, publicationTypes: string[], database?: string): NcbiArticle => ({
-      pmid, title: pmid, authors: [], journal: "J", pubDate, publicationTypes, ...(database ? { database } : {}),
+    const record = (id: string, pubDate: string, publicationTypes: string[], database?: string): NcbiArticle => ({
+      id, title: id, authors: [], journal: "J", pubDate, publicationTypes, ...(database ? { database } : {}),
     });
     const pubmed = [
       // Issue date 2020 Feb, online since 2019 Jun 3: PubMed sorts by the earlier date.
@@ -1034,7 +1034,7 @@ describe("searchLiterature fan-out", () => {
       fakeAdapter("europepmc", europepmc),
     ]);
     // Merged newest first by first publication; a record without a date goes last.
-    expect(byDate.articles.map((a) => a.pmid)).toEqual(["P1", "E9", "E7", "P2", "P0", "P3", "P4", "E8"]);
+    expect(byDate.articles.map((a) => a.id)).toEqual(["P1", "E9", "E7", "P2", "P0", "P3", "P4", "E8"]);
 
     // A date that only narrows the other is the date: PMID 42422741 has issue "2026" and online "2026 Jun 24".
     const narrowed = await searchLiterature({ query: "x", sort: "date" }, new LRUBackend(), [
@@ -1046,10 +1046,10 @@ describe("searchLiterature fan-out", () => {
         { ...record("Q5", "2026 Dec", []), epubDate: "2026 Sep 1" },
       ]),
     ]);
-    expect(narrowed.articles.map((a) => a.pmid)).toEqual(["Q4", "Q3", "Q5", "Q2", "Q1"]);
+    expect(narrowed.articles.map((a) => a.id)).toEqual(["Q4", "Q3", "Q5", "Q2", "Q1"]);
 
     const byRelevance = await searchLiterature({ query: "x", database: "pubmed" }, new LRUBackend(), [fakeAdapter("pubmed", pubmed)]);
-    expect(byRelevance.articles.map((a) => a.pmid)).toEqual(["P2", "P4", "P0", "P1", "P3"]);
+    expect(byRelevance.articles.map((a) => a.id)).toEqual(["P2", "P4", "P0", "P1", "P3"]);
   });
 
   it("applies the studyTypes filter", async () => {
@@ -1059,7 +1059,7 @@ describe("searchLiterature fan-out", () => {
       new LRUBackend(),
       adapters,
     );
-    expect(out.articles.map((a) => a.pmid)).toEqual(["E1"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["E1"]);
   });
 
   it("degrades a failing adapter to a warning without sinking the others", async () => {
@@ -1075,7 +1075,7 @@ describe("searchLiterature fan-out", () => {
       fakeAdapter("pubmed", [pubmedMeta]),
       broken,
     ]);
-    expect(out.articles.map((a) => a.pmid)).toEqual(["1"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["1"]);
     expect(out.warnings?.some((w) => w.includes("Boom DB") && w.includes("upstream 503"))).toBe(true);
   });
 
@@ -1107,7 +1107,7 @@ describe("searchLiterature fan-out", () => {
       fakeAdapter("pubmed", [pubmedMeta]),
       limited,
     ]);
-    expect(out.articles.map((a) => a.pmid)).toEqual(["1"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["1"]);
     expect(out.warnings).toContain("Europe PMC search failed: Too many requests to Europe PMC. Wait 30s and try again.");
   });
 
@@ -1116,7 +1116,7 @@ describe("searchLiterature fan-out", () => {
       id: "europepmc",
       name: "Europe PMC",
       search: async () => ({ count: 0, ids: [] }),
-      fetch: async () => [{ ...pubmedMeta, pmid: "36615805", pmcid: "PMC9824573", database: "europepmc" }],
+      fetch: async () => [{ ...pubmedMeta, id: "36615805", pmcid: "PMC9824573", database: "europepmc" }],
     };
     const out = await fetchLiterature({ ids: ["pmc9824573"], database: "europepmc" }, new LRUBackend(), epmc);
     expect(out.articles).toHaveLength(1);
@@ -1124,13 +1124,13 @@ describe("searchLiterature fan-out", () => {
   });
 
   it("merges a DOI-less record that two adapters returned from the same database", async () => {
-    const soviet: NcbiArticle = { ...pubmedMeta, pmid: "ru-196201.58177", doi: undefined, database: "russiarxiv", publicationTypes: [] };
+    const soviet: NcbiArticle = { ...pubmedMeta, id: "ru-196201.58177", doi: undefined, database: "russiarxiv", publicationTypes: [] };
     // The chinaxiv adapter with language "ru" and the russiarxiv adapter search the same corpus.
     const out = await searchLiterature({ query: "x", database: "all", language: "ru" }, new LRUBackend(), [
       { ...fakeAdapter("chinaxiv", [soviet]), id: "chinaxiv" },
       fakeAdapter("russiarxiv", [soviet]),
     ]);
-    expect(out.articles.map((a) => a.pmid)).toEqual(["ru-196201.58177"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["ru-196201.58177"]);
   });
 
   it("raises INVALID_INPUT for an unknown database, so a typo can't pass for an empty result", async () => {
@@ -1175,7 +1175,7 @@ describe("searchLiterature input and design filters", () => {
       new LRUBackend(),
       [fakeAdapter("europepmc", [epmcRct]), china],
     );
-    expect(out.articles.map((a) => a.pmid)).toEqual(["E1"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["E1"]);
     expect(search).not.toHaveBeenCalled();
     expect(out.warnings?.some((w) => w.startsWith("ChinaXiv not searched"))).toBe(true);
 
@@ -1203,13 +1203,13 @@ describe("searchLiterature input and design filters", () => {
   });
 
   it("names the study types below minDesignTier, and doesn't blame the animal-study label for them", async () => {
-    const vet: NcbiArticle = { ...epmcRct, pmid: "V1", doi: "10.1/vet", publicationTypes: ["Clinical Trial, Veterinary"] };
+    const vet: NcbiArticle = { ...epmcRct, id: "V1", doi: "10.1/vet", publicationTypes: ["Clinical Trial, Veterinary"] };
     const out = await searchLiterature(
       { query: "x", database: "europepmc", studyTypes: ["animal-study", "review", "randomized-controlled-trial"], minDesignTier: 2 },
       new LRUBackend(),
       [fakeAdapter("europepmc", [epmcRct, vet])],
     );
-    expect(out.articles.map((a) => a.pmid)).toEqual(["E1"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["E1"]);
     expect(out.warnings).toEqual([
       "animal-study (designTier 0) and review (designTier 1) records are below minDesignTier 2, so none are kept. Lower minDesignTier to keep them.",
     ]);
@@ -1217,18 +1217,18 @@ describe("searchLiterature input and design filters", () => {
 
   it("explains an animal-study filter that finds none: lab-animal studies show up as a flag instead", async () => {
     // The review's semaglutide search: no veterinary record, so no animal-study label (2026-10-22).
-    const mouseStudy: NcbiArticle = { ...epmcRct, pmid: "M1", publicationTypes: ["Journal Article"], meshHeadings: ["Animals", "Mice"] };
+    const mouseStudy: NcbiArticle = { ...epmcRct, id: "M1", publicationTypes: ["Journal Article"], meshHeadings: ["Animals", "Mice"] };
     const out = await searchLiterature({ query: "x", database: "europepmc", studyTypes: ["animal-study"] }, new LRUBackend(), [
       fakeAdapter("europepmc", [mouseStudy]),
     ]);
     expect(out.articles).toEqual([]);
     expect(out.warnings).toEqual([expect.stringContaining("flagged animals-not-humans")]);
 
-    const vet: NcbiArticle = { ...epmcRct, pmid: "V1", publicationTypes: ["Clinical Trial, Veterinary"] };
+    const vet: NcbiArticle = { ...epmcRct, id: "V1", publicationTypes: ["Clinical Trial, Veterinary"] };
     const found = await searchLiterature({ query: "x", database: "europepmc", studyTypes: ["animal-study"] }, new LRUBackend(), [
       fakeAdapter("europepmc", [vet]),
     ]);
-    expect(found.articles.map((a) => a.pmid)).toEqual(["V1"]);
+    expect(found.articles.map((a) => a.id)).toEqual(["V1"]);
     expect(found.warnings).toBeUndefined();
   });
 
@@ -1238,7 +1238,7 @@ describe("searchLiterature input and design filters", () => {
       name: "PubMed / NCBI",
       fetch: async (ids, _cache, warn) => {
         warn?.("Some abstracts could not be fetched; those articles lack abstracts, MeSH headings and retraction/correction links.");
-        return [pubmedMeta].filter((a) => ids.includes(a.pmid));
+        return [pubmedMeta].filter((a) => ids.includes(a.id));
       },
     };
     const searched = await searchLiterature({ query: "x" }, new LRUBackend(), [incomplete]);
@@ -1249,7 +1249,7 @@ describe("searchLiterature input and design filters", () => {
 
   it("treats an empty studyTypes list as no filter", async () => {
     const out = await searchLiterature({ query: "x", studyTypes: [] }, new LRUBackend(), [fakeAdapter("pubmed", [pubmedMeta])]);
-    expect(out.articles.map((a) => a.pmid)).toEqual(["1"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["1"]);
   });
 
   it("passes on a database's explanation of an empty result", async () => {
@@ -1440,7 +1440,7 @@ describe("fetchLiterature", () => {
   it("fetches from a single adapter and reports missing ids", async () => {
     const adapter = fakeAdapter("scielo", [scieloReview, scieloPlain]);
     const out = await fetchLiterature({ ids: ["S1", "S2", "S404"], database: "scielo" }, new LRUBackend(), adapter);
-    expect(out.articles.map((a) => a.pmid)).toEqual(["S1", "S2"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["S1", "S2"]);
     expect(out.missing).toEqual(["S404"]);
     expect(out.warnings?.[0]).toContain("1 id(s) could not be fetched");
   });
@@ -1455,7 +1455,7 @@ describe("fetchLiterature", () => {
     // A model that looked up a retracted RCT by PMID got no studyType, designTier or flags, and missed that the design is graded.
     const retractedRct: NcbiArticle = {
       ...epmcRct,
-      pmid: "9",
+      id: "9",
       doi: "10.1234/retracted",
       publicationTypes: ["Randomized Controlled Trial", "Journal Article", "Retracted Publication"],
       database: undefined,
@@ -1463,7 +1463,7 @@ describe("fetchLiterature", () => {
 
     it("classifies every fetched article like a search result does", async () => {
       const out = await fetchLiterature({ ids: ["9", "1", "C1"], database: "pubmed" }, new LRUBackend(), fakeAdapter("pubmed", [retractedRct, pubmedMeta, chinaxivRct]));
-      expect(out.articles.map((a) => a.pmid)).toEqual(["9", "1", "C1"]);
+      expect(out.articles.map((a) => a.id)).toEqual(["9", "1", "C1"]);
       expect(out.articles[0]).toMatchObject({ studyType: "randomized-controlled-trial", designTier: 0, flags: ["retracted"] });
       expect(out.articles[1]).toMatchObject({ studyType: "meta-analysis", designTier: null });
       expect(out.articles[2]).toMatchObject({ studyType: "unknown", designTier: null });

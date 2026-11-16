@@ -99,7 +99,7 @@ async function fetchAbstracts(pmids: string[]): Promise<Map<string, string>> {
   const adapter = new PubMedAdapter(ncbi);
   for (let i = 0; i < pmids.length; i += 50) {
     const { articles } = await fetchLiterature({ ids: pmids.slice(i, i + 50), database: "pubmed" }, cache, adapter);
-    for (const a of articles) if (a.abstract) out.set(a.pmid, a.abstract);
+    for (const a of articles) if (a.abstract) out.set(a.id, a.abstract);
   }
   return out;
 }

@@ -129,7 +129,7 @@ describe("listing a search's records", () => {
         ["chinaxiv-2", { abstract: "B.", machineGeneratedAbstract: true }],
         ["chinaxiv-3", { abstract: undefined, machineGeneratedAbstract: undefined }],
         ["chinaxiv-4", { abstract: "D.", machineGeneratedAbstract: undefined }],
-      ].map(([id, rest]) => [id as string, { pmid: id as string, ...(rest as object) }] as const),
+      ].map(([id, rest]) => [id as string, { id: id as string, ...(rest as object) }] as const),
     );
     const searched: { page?: number; maxResults?: number; query: string }[] = [];
     const adapter = {
