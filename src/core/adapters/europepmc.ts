@@ -32,20 +32,25 @@
  * keywords that PubMed's [tiab] covers: it finds 91-95% of PubMed's records and none PubMed lacks. [mh] is
  * removed with every other tag: Europe PMC has no MeSH field, KW holds MeSH headings and author keywords,
  * and PubMed explodes a heading ("Sleep Apnea Syndromes"[mh] 50,220 records, KW 17,963). Europe PMC's
- * own field syntax passes through unchanged. A date range of a search is matched against FIRST_PDATE (below),
- * though PubMed's own [dp] matches the electronic and the print date: PMID 39680131, online 2024-12-16 and
- * in print 2025-07-01, is found by 2024[dp] and by 2025[dp]; creatine[tiab] AND 2024[dp] finds 2,046 records
- * in PubMed, 1,777 with FIRST_PDATE and 1,990 with the three date fields (2026-11-16).
+ * own field syntax passes through unchanged. A date range of a search is matched as a [dp] tag is (below): PubMed's
+ * publication date matches the electronic and the print date, so PMID 39680131, online 2024-12-16 and in print
+ * 2025-07-01, is found by 2024[dp] and by 2025[dp]; creatine[tiab] AND 2024[dp] finds 2,046 records in PubMed,
+ * 1,777 with FIRST_PDATE alone and 1,990 with the three date fields (2026-11-16).
  *
  * `core` results name the journal in `journalInfo.journal.title` and a preprint's
  * server in `bookOrReportDetails.publisher`; `journalTitle` exists only in `lite`
  * results. The date is the issue date (`journalInfo.dateOfPublication`, "2026
  * Sep", like PubMed's), else the first publication date; recently added PMC
  * records have neither `pubYear` nor an issue date. `electronicPublicationDate`
- * becomes `epubDate`. A date range is matched against FIRST_PDATE, the earlier of
- * the two: record 39680131, published online 2024-12-16 and in print 2025-07-01,
- * matches FIRST_PDATE in December 2024 and P_PDATE in July 2025 (2026-10-22). A
- * date sort orders by FIRST_PDATE too, as the merged results are: sorted by P_PDATE,
+ * becomes `epubDate`. A date range is matched against FIRST_PDATE, E_PDATE and P_PDATE, by
+ * publicationDateClause, the clause of a [dp] tag: a record is found if its first, electronic or
+ * print publication date is in the range. Record 39680131, published online 2024-12-16 and
+ * in print 2025-07-01 (issue "2025 Jul"), matches FIRST_PDATE in December 2024 and P_PDATE in
+ * July 2025 (2026-10-22); a range of 2025 finds it with the three fields and not with FIRST_PDATE
+ * alone (2026-11-16). Preprints have FIRST_PDATE only, so a range matches them as it did.
+ * A date sort is not changed by that: it orders by FIRST_PDATE, the earlier of the two dates, as
+ * the merged results are, so a search of a range with sort "date" can list a record first
+ * published before the range, sorted by that earlier date, as PubMed's can. Sorted by P_PDATE,
  * `semaglutide AND SRC:MED` led with an issue of January 2027 published online in
  * August 2026, and records published online on 2026-10-20 didn't make the first page
  * (2026-10-22).
@@ -68,7 +73,7 @@
 import { LRUCache } from "lru-cache";
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { cleanDoi, first, isoDateBound, pageWindow, splitAuthors, strArray, toEuropePmcQuery, toIso1 } from "./util.js";
+import { cleanDoi, first, isoDateBound, pageWindow, publicationDateClause, splitAuthors, strArray, toEuropePmcQuery, toIso1 } from "./util.js";
 import { designPublicationTypes } from "../grader.js";
 import { htmlToText } from "../text.js";
 import type { Article, Correction, CorrectionType, SearchInput } from "../types.js";
@@ -229,12 +234,13 @@ export class EuropePmcAdapter extends RestAdapter {
     // A PubMed field tag would be searched as a word: translated into the field that holds the same, or removed.
     const query = toEuropePmcQuery(input.query);
     const clauses: string[] = [];
-    if (types) clauses.push(types.map((t) => `PUB_TYPE:"${t}"`).join(" OR "));
+    if (types) clauses.push(`(${types.map((t) => `PUB_TYPE:"${t}"`).join(" OR ")})`);
     const from = isoDateBound(input.dateRange?.from, "from");
     const to = isoDateBound(input.dateRange?.to, "to");
-    if (from || to) clauses.push(`FIRST_PDATE:[${from ?? "1900-01-01"} TO ${to ?? "3000-01-01"}]`);
-    // In parentheses, so that a clause filters the whole query and not just the last operand of an OR in it.
-    return clauses.length > 0 ? [query, ...clauses].map((c) => `(${c})`).join(" AND ") : query;
+    // The date clause comes in parentheses from its helper (it is an OR of three fields), so it is not wrapped again.
+    if (from || to) clauses.push(publicationDateClause(from ?? "1900-01-01", to ?? "3000-01-01"));
+    // Each clause and the query are in parentheses, so that a clause filters the whole query and not just the last operand of an OR in it.
+    return clauses.length > 0 ? [`(${query})`, ...clauses].join(" AND ") : query;
   }
 
   private readonly paging = new LRUCache<string, QueryPaging>({ max: CURSOR_MEMO_MAX, ttl: CURSOR_MEMO_TTL_MS });

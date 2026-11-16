@@ -233,6 +233,17 @@ function termIn(field: string, operand: FoundOperand, wildcards: boolean): strin
   return /^(?:and|or|not)$/i.test(word) ? `${field}:"${word}"` : `${field}:${word}`;
 }
 
+/**
+ * The Europe PMC clause for a publication date range, as PubMed's publication date matches one ("includes both print and
+ * electronic dates of publication"): a record whose first, electronic or print publication date lies in `from` to `to`
+ * (both YYYY-MM-DD). It is the clause of a [dp] tag and of a search's dateRange alike. It is parenthesized, as it is an OR.
+ * Preprints have FIRST_PDATE only, so for them it matches as FIRST_PDATE alone does.
+ */
+export function publicationDateClause(from: string, to: string): string {
+  const range = `[${from} TO ${to}]`;
+  return `(FIRST_PDATE:${range} OR E_PDATE:${range} OR P_PDATE:${range})`;
+}
+
 /** A PubMed [dp] date or range ("2020", "2019:2021", "2024/03") as Europe PMC dates; a day, or anything else, is undefined. */
 function publicationDates(text: string): string | undefined {
   const m = /^([12]\d{3})(?:\/(\d{1,2}))?(?::([12]\d{3})(?:\/(\d{1,2}))?)?$/.exec(text);
@@ -240,8 +251,7 @@ function publicationDates(text: string): string | undefined {
   const from = isoDateBound(m[2] ? `${m[1]}/${m[2]}` : m[1], "from");
   const to = isoDateBound(m[3] ? (m[4] ? `${m[3]}/${m[4]}` : m[3]) : m[2] ? `${m[1]}/${m[2]}` : m[1], "to");
   if (!from || !to || from > to) return undefined;
-  const range = `[${from} TO ${to}]`;
-  return `(FIRST_PDATE:${range} OR E_PDATE:${range} OR P_PDATE:${range})`;
+  return publicationDateClause(from, to);
 }
 
 /** What Europe PMC searches for `name`[operand], or undefined where the two databases may not read it alike. */
@@ -305,11 +315,13 @@ function translateTag(name: string, operand: FoundOperand): string | undefined {
  * - [ta] → JOURNAL, for a quoted name or one word (AND 2021[dp]: "N Engl J Med" 1,515, 1,515; "Sci Rep" 24,534, 24,534; blood 947, 948).
  *   Unquoted words may not be a journal name PubMed knows, and an ISSN is a field of its own in Europe PMC: left out.
  * - [la] → LANG for the languages of {@link LANGUAGES} (creatine[tiab] AND eng[la]: 50,347, 49,012).
- * - [dp] → FIRST_PDATE, E_PDATE or P_PDATE in the range, for a year, a month or a range of them (creatine[tiab] AND 2024[dp]
- *   2,046, 1,990; 2024/03[dp] 197, 194). PubMed Help: "Date range searching includes both print and electronic dates of publication,
- *   except for electronic publication dates occurring after the print publication date"; PMID 39680131
+ * - [dp] → {@link publicationDateClause}: FIRST_PDATE, E_PDATE or P_PDATE in the range, for a year, a month or a range of them
+ *   (creatine[tiab] AND 2024[dp] 2,046, 1,990; 2024/03[dp] 197, 194). PubMed Help: "Date range searching includes both print and
+ *   electronic dates of publication, except for electronic publication dates occurring after the print publication date"; PMID 39680131
  *   (online 2024-12-16, print 2025-07-01) is found by 2024[dp] and by 2025[dp]. FIRST_PDATE alone finds 1,777 of the 2,046 and
- *   135 of the 197. Preprints have FIRST_PDATE only. A day is left out: Europe PMC keeps an issue date to the month (13, 8).
+ *   135 of the 197; for tirzepatide[tiab] AND 2025[dp] PubMed finds 901, the three fields 829 and FIRST_PDATE 770 (with SRC:MED; 2026-11-16).
+ *   Preprints have FIRST_PDATE only: SRC:PPR finds the same with either, 145 for creatine in 2024 and 57 for tirzepatide in 2025.
+ *   A day is left out: Europe PMC keeps an issue date to the month (13, 8). The dateRange of a search is the same clause, for the same reason.
  * - [pmid] and [uid] → EXT_ID with SRC:MED (3, 3 for three PMIDs).
  * Not translated: [mh] (and [mesh], [MeSH Terms]). Europe PMC has no MeSH field; KW holds MeSH headings and author
  * keywords, and PubMed explodes a heading: "Sleep Apnea Syndromes"[mh] finds 50,220 records and KW 17,963 (with

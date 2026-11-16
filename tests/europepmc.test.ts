@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { EuropePmcAdapter, exactIdQuery, parseEuropePmc, toEpmcId } from "../src/core/adapters/europepmc";
-import { toEuropePmcQuery } from "../src/core/adapters/util";
+import { publicationDateClause, toEuropePmcQuery } from "../src/core/adapters/util";
 import type { AdapterHttp } from "../src/core/adapters/http";
 import { LRUBackend } from "../src/core/cache";
 import { errors } from "../src/core/errors";
@@ -47,6 +47,9 @@ const RESPONSE = {
     ],
   },
 };
+
+/** The clause a date range is searched with, written out: a record's first, electronic or print publication date in [a, b]. */
+const dates = (a: string, b: string) => `(FIRST_PDATE:[${a} TO ${b}] OR E_PDATE:[${a} TO ${b}] OR P_PDATE:[${a} TO ${b}])`;
 
 function recordingHttp(payload: unknown): { http: AdapterHttp; urls: string[] } {
   const urls: string[] = [];
@@ -141,7 +144,7 @@ describe("parseEuropePmc — core results", () => {
       ["medRxiv", "2026-08-28"],
       ["European psychiatry", "2026-09-04"],
     ]);
-    // The date a dateRange matches (FIRST_PDATE) can precede the issue date shown.
+    // The dates a dateRange matches (first, electronic and print) can precede the issue date shown.
     expect(articles.map((a) => a.epubDate)).toEqual(["2026-08-29", undefined, undefined]);
   });
 
@@ -202,7 +205,47 @@ describe("EuropePmcAdapter", () => {
     const { http, urls } = recordingHttp(RESPONSE);
     const adapter = new EuropePmcAdapter(http);
     await adapter.search({ query: "peptide", dateRange: { from: "2020-01-01", to: "2021-12-31" } });
-    expect(urls[0]).toContain("FIRST_PDATE");
+    expect(new URL(urls[0]!).searchParams.get("query")).toBe(`(peptide) AND ${dates("2020-01-01", "2021-12-31")}`);
+  });
+
+  it("matches a range against the first, electronic and print publication dates, as PubMed's [dp] does", async () => {
+    // Europe PMC record 39680131 (online 2024-12-16, print July 2025) was found for 2025 by these three fields and not by FIRST_PDATE alone (2026-11-16);
+    // for creatine[tiab] in 2024 they find 1,990 records against 1,777 for FIRST_PDATE alone and PubMed's 2,046. Preprints have FIRST_PDATE only.
+    const { http, urls } = recordingHttp(RESPONSE);
+    const adapter = new EuropePmcAdapter(http);
+    await adapter.search({ query: "semaglutide", dateRange: { from: "2025", to: "2025" } });
+    const query = new URL(urls[0]!).searchParams.get("query")!;
+    expect(query).toContain("FIRST_PDATE:[2025-01-01 TO 2025-12-31]");
+    expect(query).toContain("E_PDATE:[2025-01-01 TO 2025-12-31]");
+    expect(query).toContain("P_PDATE:[2025-01-01 TO 2025-12-31]");
+  });
+
+  it("sends one end of a range with the other open, for all three date fields", async () => {
+    // Europe PMC found 4,602 records of TITLE_ABS:creatine with these three fields from 2025 on (4,407 with FIRST_PDATE) and 18,114 up to 2000 (18,113; 2026-11-16).
+    const { http, urls } = recordingHttp(RESPONSE);
+    const adapter = new EuropePmcAdapter(http);
+    const sent = async (dateRange: { from?: string; to?: string }) => {
+      await adapter.search({ query: "creatine", dateRange });
+      return new URL(urls.at(-1)!).searchParams.get("query");
+    };
+    expect(await sent({ from: "2025" })).toBe(`(creatine) AND ${dates("2025-01-01", "3000-01-01")}`);
+    expect(await sent({ to: "2000" })).toBe(`(creatine) AND ${dates("1900-01-01", "2000-12-31")}`);
+    expect(await sent({ from: "2025-03", to: "2025-04" })).toBe(`(creatine) AND ${dates("2025-03-01", "2025-04-30")}`);
+    // An end that is not a date leaves that end open; with none left there is no clause.
+    expect(await sent({ from: "2025", to: "soon" })).toBe(`(creatine) AND ${dates("2025-01-01", "3000-01-01")}`);
+    expect(await sent({ from: "later" })).toBe("creatine");
+  });
+
+  it("builds the date clause of a dateRange and of a [dp] tag with one helper", async () => {
+    // The same expression twice would let the two drift apart, as FIRST_PDATE alone and the three fields did.
+    expect(publicationDateClause("2024-01-01", "2024-12-31")).toBe(dates("2024-01-01", "2024-12-31"));
+    const { http, urls } = recordingHttp(RESPONSE);
+    const adapter = new EuropePmcAdapter(http);
+    await adapter.search({ query: "creatine", dateRange: { from: "2019-03", to: "2021" } });
+    const ofRange = new URL(urls[0]!).searchParams.get("query");
+    expect(ofRange).toBe(`(creatine) AND ${publicationDateClause("2019-03-01", "2021-12-31")}`);
+    expect(toEuropePmcQuery("2019/03:2021[dp]")).toBe(publicationDateClause("2019-03-01", "2021-12-31"));
+    expect(ofRange).toContain(toEuropePmcQuery("2019/03:2021[dp]"));
   });
 
   it("puts the query in parentheses, so that a date or design clause filters all of an OR query", async () => {
@@ -214,10 +257,10 @@ describe("EuropePmcAdapter", () => {
     };
     // Unparenthesized, Europe PMC counted 43,203 for this query in 2020, and 54,793 with parentheses (2026-11-11).
     expect(await sent({ query: "creatine OR cognition", dateRange: { from: "2020" } })).toBe(
-      "(creatine OR cognition) AND (FIRST_PDATE:[2020-01-01 TO 3000-01-01])",
+      `(creatine OR cognition) AND ${dates("2020-01-01", "3000-01-01")}`,
     );
     expect(await sent({ query: "creatine OR cognition", dateRange: { to: "2020-06" }, studyTypes: ["case-report"] })).toBe(
-      '(creatine OR cognition) AND (PUB_TYPE:"Case Reports") AND (FIRST_PDATE:[1900-01-01 TO 2020-06-30])',
+      `(creatine OR cognition) AND (PUB_TYPE:"Case Reports") AND ${dates("1900-01-01", "2020-06-30")}`,
     );
     expect(await sent({ query: "creatine OR cognition" })).toBe("creatine OR cognition");
   });
@@ -238,14 +281,18 @@ describe("EuropePmcAdapter", () => {
     expect(await sent({ query: "melatonin[tiab] AND TITLE_ABS:sleep" })).toBe("TITLE_ABS:melatonin AND TITLE_ABS:sleep");
     // Parenthesized as a whole beside the other clauses, so that a date range or design filter applies to all of it.
     expect(await sent({ query: "TITLE_ABS:melatonin OR SRC:PPR", dateRange: { from: "2020" } })).toBe(
-      "(TITLE_ABS:melatonin OR SRC:PPR) AND (FIRST_PDATE:[2020-01-01 TO 3000-01-01])",
+      `(TITLE_ABS:melatonin OR SRC:PPR) AND ${dates("2020-01-01", "3000-01-01")}`,
     );
   });
 
-  it("sorts by date as the merged results are, by first publication", async () => {
+  it("sorts by date as the merged results are, by first publication, with or without a dateRange", async () => {
     const { http, urls } = recordingHttp(RESPONSE);
     await new EuropePmcAdapter(http).search({ query: "semaglutide", sort: "date" });
     expect(new URL(urls[0]!).searchParams.get("sort")).toBe("FIRST_PDATE_D desc");
+    // The range is matched on three dates and the sort stays on the first: a record first published before the range can be listed.
+    await new EuropePmcAdapter(http).search({ query: "semaglutide", sort: "date", dateRange: { from: "2025", to: "2025" } });
+    expect(new URL(urls[1]!).searchParams.get("sort")).toBe("FIRST_PDATE_D desc");
+    expect(new URL(urls[1]!).searchParams.get("query")).toContain("P_PDATE:[2025-01-01 TO 2025-12-31]");
   });
 
   it("cold fetch() looks a record up by EXT_ID + SRC and rejects a non-matching hit", async () => {
@@ -476,7 +523,6 @@ describe("EuropePmcAdapter design filters", () => {
 
 describe("toEuropePmcQuery", () => {
   // Every expectation below follows what PubMed's esearch and Europe PMC answered on 2026-11-16 (see the doc comment of the function).
-  const dates = (a: string, b: string) => `(FIRST_PDATE:[${a} TO ${b}] OR E_PDATE:[${a} TO ${b}] OR P_PDATE:[${a} TO ${b}])`;
 
   it("turns [tiab] and [ti] into TITLE_ABS and TITLE, in any case and in long form", () => {
     // Europe PMC found 1,560 records for `tirzepatide apnea` and 142 for TITLE_ABS on both words (PubMed: 144 for [tiab]).
@@ -663,16 +709,16 @@ describe("EuropePmcAdapter queries with PubMed tags", () => {
       studyTypes: ["case-report"],
       dateRange: { from: "2024", to: "2025-06" },
     });
-    expect(query).toBe('(TITLE_ABS:tirzepatide AND TITLE_ABS:apnea) AND (PUB_TYPE:"Case Reports") AND (FIRST_PDATE:[2024-01-01 TO 2025-06-30])');
+    expect(query).toBe(`(TITLE_ABS:tirzepatide AND TITLE_ABS:apnea) AND (PUB_TYPE:"Case Reports") AND ${dates("2024-01-01", "2025-06-30")}`);
   });
 
   it("keeps an OR inside the parentheses, so that the date clause filters all of it", async () => {
     expect((await sent({ query: "tirzepatide[tiab] OR semaglutide[ti]", dateRange: { from: "2020" } })).query).toBe(
-      "(TITLE_ABS:tirzepatide OR TITLE:semaglutide) AND (FIRST_PDATE:[2020-01-01 TO 3000-01-01])",
+      `(TITLE_ABS:tirzepatide OR TITLE:semaglutide) AND ${dates("2020-01-01", "3000-01-01")}`,
     );
     // A [dp] in the query is a group of its own and combines with the dateRange clause.
     expect((await sent({ query: "creatine[tiab] AND 2024[dp]", dateRange: { to: "2024-06" } })).query).toBe(
-      "(TITLE_ABS:creatine AND (FIRST_PDATE:[2024-01-01 TO 2024-12-31] OR E_PDATE:[2024-01-01 TO 2024-12-31] OR P_PDATE:[2024-01-01 TO 2024-12-31])) AND (FIRST_PDATE:[1900-01-01 TO 2024-06-30])",
+      `(TITLE_ABS:creatine AND ${dates("2024-01-01", "2024-12-31")}) AND ${dates("1900-01-01", "2024-06-30")}`,
     );
   });
 
