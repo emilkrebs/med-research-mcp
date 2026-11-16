@@ -1,6 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultJatsToMarkdown, fetchFulltext, type FetchedResource, type FulltextDeps } from "../src/core/fulltext";
 import { UnpaywallClient, type UnpaywallLookup, type UnpaywallResult } from "../src/core/unpaywall";
+import { EuropePmcAdapter } from "../src/core/adapters/europepmc";
+import type { AdapterHttp } from "../src/core/adapters/http";
 import { FULLTEXT_TTL_MS, LRUBackend } from "../src/core/cache";
 import { NcbiClient } from "../src/core/pubmed";
 import { PROJECT_CONTACT_EMAIL } from "../src/core/version";
@@ -51,6 +53,31 @@ function fakeUnpaywall(result: UnpaywallResult | null): UnpaywallClient {
 function answeringUnpaywall(answer: UnpaywallLookup, sharedContact = false): UnpaywallClient {
   return { lookup: async () => answer, sharedContact } as unknown as UnpaywallClient;
 }
+
+/** No adapter for any database: a lookup of a record that PubMed doesn't know finds nothing. */
+const noRecords: FulltextDeps["adapter"] = () => undefined;
+
+/** A stand-in for the registry's Europe PMC adapter, answering by id from `records`. */
+function fakeEuropePmc(records: Article[] = []) {
+  const fetch = vi.fn(async (ids: string[]) => records.filter((r) => ids.includes(r.pmid)));
+  const adapter: FulltextDeps["adapter"] = () => ({ fetch });
+  return { fetch, adapter };
+}
+
+// The record lookups for ids PubMed doesn't know default to the registry's adapters, which use the
+// network. A test that reaches one without injecting `adapter` fails here, instead of its request
+// being swallowed as a failed lookup.
+const strayRequests: string[] = [];
+beforeEach(() => {
+  strayRequests.length = 0;
+  vi.stubGlobal("fetch", async (url: unknown) => {
+    strayRequests.push(String(url));
+    throw new Error("no network in tests");
+  });
+});
+afterEach(() => {
+  expect(strayRequests).toEqual([]);
+});
 
 function htmlResource(text: string, url = "https://oa.example/article"): FetchedResource {
   return { ok: true, status: 200, contentType: "text/html", finalUrl: url, text };
@@ -481,6 +508,7 @@ describe("fetchFulltext resolution strategy", () => {
     const result = await fetchFulltext({ id: "CBA:521529", doi: DOI }, new LRUBackend(), client, {
       unpaywall: fakeUnpaywall(null),
       fetchUrl: async () => paywalled(),
+      adapter: noRecords,
     });
     expect(result.source).toBe("none");
     expect(efetch).not.toHaveBeenCalled();
@@ -595,6 +623,7 @@ describe("fetchFulltext — Europe PMC by PMCID", () => {
   it("says so when Europe PMC has no open-access text for a PMCID without a DOI", async () => {
     const out = await fetchFulltext({ id: "PMC7654321" }, new LRUBackend(), fakeClient(), {
       fetchUrl: async () => ({ ok: false, status: 404, contentType: "text/html", finalUrl: PMC_URL }),
+      adapter: noRecords,
     });
     expect(out.source).toBe("none");
     expect(out.fulltext).toBeUndefined();
@@ -612,6 +641,132 @@ describe("fetchFulltext — Europe PMC by PMCID", () => {
     expect(fetchUrl.mock.calls.map(([url]) => url)).toEqual([PMC_URL, "https://doi.org/10.1000/xyz123"]);
     expect(out.warning).toContain("Unpaywall lists no other open-access copy.");
     expect(out.warning).not.toContain("()");
+  });
+
+  describe("an id PubMed doesn't know, such as a preprint", () => {
+    const PREPRINT_DOI = "10.1101/2024.01.01.123456";
+    const { doi: _doi, ...undated } = ARTICLE;
+    const PREPRINT: Article = {
+      ...undated,
+      pmid: "PPR123456",
+      title: "A preprint",
+      journal: "medRxiv",
+      publicationTypes: ["Preprint"],
+      database: "europepmc",
+      abstract: "The preprint's abstract.",
+    };
+    const noText = async (url: string): Promise<FetchedResource> => ({ ok: false, status: 404, contentType: "text/html", finalUrl: url });
+
+    it("returns the abstract Europe PMC has for a preprint it has no full text of", async () => {
+      const europePmc = fakeEuropePmc([PREPRINT]);
+      const out = await fetchFulltext({ id: "ppr123456" }, new LRUBackend(), fakeClient(), { fetchUrl: noText, adapter: europePmc.adapter });
+      expect(out).toMatchObject({ source: "none", fulltext: "The preprint's abstract." });
+      expect(out.warning).toContain("No full text found; returned the abstract only.");
+      expect(out.warning).toContain("Europe PMC has no open-access full text for PPR123456");
+      // Asked once, by the id as Europe PMC writes it.
+      expect(europePmc.fetch.mock.calls.map(([ids]) => ids)).toEqual([["PPR123456"]]);
+    });
+
+    it("doesn't look the record up when Europe PMC has the text", async () => {
+      const europePmc = fakeEuropePmc([PREPRINT]);
+      const out = await fetchFulltext({ id: "PPR123456" }, new LRUBackend(), fakeClient(), {
+        fetchUrl: async (url: string) => ({ ...htmlResource("<article/>", url), contentType: "application/xml" }),
+        jatsToMarkdown: async () => LONG_MARKDOWN,
+        adapter: europePmc.adapter,
+      });
+      expect(out.source).toBe("europepmc");
+      expect(europePmc.fetch).not.toHaveBeenCalled();
+    });
+
+    it("opens the Unpaywall and direct routes with the DOI of Europe PMC's record, and remembers the record", async () => {
+      const europePmc = fakeEuropePmc([{ ...PREPRINT, doi: PREPRINT_DOI }]);
+      const cache = new LRUBackend();
+      const lookup = vi.fn(async (): Promise<UnpaywallLookup> => ({ status: "found", result: { doi: PREPRINT_DOI, isOa: true, urls: ["https://oa.example/preprint.pdf"] } }));
+      const fetchUrl = vi.fn(async (url: string) => (url.includes("oa.example") ? pdfResource(new Uint8Array([1]), url) : await noText(url)));
+      const deps: FulltextDeps = {
+        unpaywall: { lookup } as unknown as UnpaywallClient,
+        fetchUrl,
+        pdfToText: async () => "Preprint text. " + "content ".repeat(200),
+        adapter: europePmc.adapter,
+      };
+      const out = await fetchFulltext({ id: "PPR123456" }, cache, fakeClient(), deps);
+      expect(out).toMatchObject({ source: "unpaywall", doi: PREPRINT_DOI, format: "pdf" });
+      expect(lookup).toHaveBeenCalledWith(PREPRINT_DOI);
+      expect(fetchUrl.mock.calls.map(([url]) => url)).toEqual([
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PPR123456/fullTextXML",
+        "https://oa.example/preprint.pdf",
+      ]);
+      // The next call, from the cache, reports the same DOI without asking Europe PMC again.
+      expect(await fetchFulltext({ id: "PPR123456" }, cache, fakeClient(), deps)).toMatchObject({ source: "unpaywall", doi: PREPRINT_DOI });
+      expect(europePmc.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps a DOI the caller gave over the record's", async () => {
+      const europePmc = fakeEuropePmc([{ ...PREPRINT, doi: PREPRINT_DOI }]);
+      const lookup = vi.fn(async (): Promise<UnpaywallLookup> => ({ status: "none" }));
+      const out = await fetchFulltext({ id: "PPR123456", doi: DOI }, new LRUBackend(), fakeClient(), {
+        unpaywall: { lookup } as unknown as UnpaywallClient,
+        fetchUrl: noText,
+        adapter: europePmc.adapter,
+      });
+      expect(lookup).toHaveBeenCalledWith(DOI);
+      expect(out.doi).toBe(DOI);
+    });
+
+    it("carries on as before when the lookup fails or finds nothing", async () => {
+      const failing: FulltextDeps["adapter"] = () => ({
+        fetch: async () => {
+          throw new Error("Europe PMC is down");
+        },
+      });
+      for (const adapter of [failing, noRecords, fakeEuropePmc().adapter]) {
+        const out = await fetchFulltext({ id: "PPR123456" }, new LRUBackend(), fakeClient(), { fetchUrl: noText, adapter });
+        expect(out.source).toBe("none");
+        expect(out.fulltext).toBeUndefined();
+        expect(out.warning).toContain("No full text found, and no abstract is available.");
+      }
+    });
+
+    it("finds the record a search left in the cache, under the key the adapter stores it by", async () => {
+      const cba: Article = { ...PREPRINT, pmid: "CBA:644599", journal: "Chin Med J", publicationTypes: [], abstract: "The CBA record's abstract." };
+      const cache = new LRUBackend();
+      cache.setSummary("europepmc:CBA:644599", cba);
+      const http: AdapterHttp = { json: vi.fn(async () => ({})) as AdapterHttp["json"], text: async () => "" };
+      const out = await fetchFulltext({ id: "CBA:644599", doi: DOI }, cache, fakeClient(), {
+        unpaywall: fakeUnpaywall(null),
+        fetchUrl: async () => paywalled(),
+        adapter: () => new EuropePmcAdapter(http),
+      });
+      expect(out).toMatchObject({ source: "none", fulltext: "The CBA record's abstract." });
+      expect(http.json).not.toHaveBeenCalled();
+    });
+
+    it("uses the record a search just found in the adapter's memory, and otherwise asks Europe PMC for the exact id", async () => {
+      const found = {
+        hitCount: 1,
+        resultList: { result: [{ id: "PPR123456", source: "PPR", title: "A preprint", abstractText: "The preprint's abstract.", pubType: "Preprint" }] },
+      };
+      const urls: string[] = [];
+      const http: AdapterHttp = {
+        json: async <T>(url: string): Promise<T> => {
+          urls.push(url);
+          return found as T;
+        },
+        text: async () => "",
+      };
+      const adapter = new EuropePmcAdapter(http);
+      await adapter.search({ query: "preprint" });
+      const before = urls.length;
+      const deps: FulltextDeps = { fetchUrl: noText, adapter: () => adapter };
+      expect((await fetchFulltext({ id: "PPR123456" }, new LRUBackend(), fakeClient(), deps)).fulltext).toBe("The preprint's abstract.");
+      expect(urls.length).toBe(before);
+
+      // A cold adapter asks for that id alone.
+      const cold = new EuropePmcAdapter(http);
+      const out = await fetchFulltext({ id: "PPR123456" }, new LRUBackend(), fakeClient(), { fetchUrl: noText, adapter: () => cold });
+      expect(out.fulltext).toBe("The preprint's abstract.");
+      expect(new URL(urls.at(-1)!).searchParams.get("query")).toBe("EXT_ID:PPR123456 AND SRC:PPR");
+    });
   });
 });
 
@@ -633,7 +788,7 @@ describe("fetchFulltext — why a full text wasn't found", () => {
   });
 
   it("says a DOI is unknown to doi.org instead of calling it paywalled", async () => {
-    const deps: FulltextDeps = { unpaywall: fakeUnpaywall(null), fetchUrl: async (url: string) => status(404, url) };
+    const deps: FulltextDeps = { unpaywall: fakeUnpaywall(null), fetchUrl: async (url: string) => status(404, url), adapter: noRecords };
     const out = await fetchFulltext({ id: "12345678", doi: DOI }, new LRUBackend(), fakeClient({ abstract: "abs" }), deps);
     expect(out.source).toBe("none");
     expect(out.warning).toContain("doi.org has no record of DOI 10.1000/xyz123");

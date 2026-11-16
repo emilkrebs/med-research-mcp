@@ -24,7 +24,7 @@ export { classifyArticle, classifyDesign, designPublicationTypes, DESIGN_TIER } 
 export type { Classification } from "./grader.js";
 
 export { fetchFulltext } from "./fulltext.js";
-export type { FulltextDeps, FetchedResource } from "./fulltext.js";
+export type { FulltextDeps, FetchedResource, RecordSource } from "./fulltext.js";
 
 export { UnpaywallClient } from "./unpaywall.js";
 export type { UnpaywallConfig, UnpaywallLookup, UnpaywallResult } from "./unpaywall.js";

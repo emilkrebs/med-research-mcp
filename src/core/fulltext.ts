@@ -13,6 +13,11 @@
  *   5. Fallback       — the abstract, with `source: "none"` and a warning that
  *                       says what each location answered
  *
+ * The abstract of a PMID comes from PubMed. For any other id (a preprint's, or
+ * another database's passed with its DOI) it comes from the record Europe PMC's
+ * adapter holds, and the record's DOI opens steps 2 to 4 for a PMCID or preprint
+ * id passed without one (see {@link lookUpRecord}).
+ *
  * Only open-access (Europe PMC, Unpaywall) texts are cached; a proxy or direct
  * text may be licensed to the user alone. A long text is returned in parts of at
  * most `maxChars` characters; `offset` reads on from where the last part ended. A
@@ -33,6 +38,7 @@
  */
 
 import { LRUCache } from "lru-cache";
+import type { DatabaseAdapter } from "./adapters/types.js";
 import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors } from "./errors.js";
@@ -88,10 +94,20 @@ export interface FetchedResource {
   bytes?: Uint8Array;
 }
 
+/** What `fetchFulltext` asks of the adapter of a database whose ids PubMed doesn't know: a record by id. */
+export type RecordSource = Pick<DatabaseAdapter, "fetch">;
+
 /** Injectable seams. Defaults hit the network and load the extraction libraries. */
 export interface FulltextDeps {
   /** Unpaywall client. Defaults to one configured from env, for the NCBI client's `tool`. */
   unpaywall?: UnpaywallClient;
+  /**
+   * The adapter holding the records of a database, for an id that isn't a PMID: its abstract, and
+   * the DOI Europe PMC has for a preprint. Defaults to the registry's, so a search's records, which the
+   * adapters keep in memory and in the cache, are found without a request. Returns undefined for a
+   * database it has no adapter for.
+   */
+  adapter?: (database: "europepmc") => RecordSource | undefined | Promise<RecordSource | undefined>;
   /** Fetch a URL, classifying the body as HTML text or PDF bytes. */
   fetchUrl?: (url: string, timeoutMs: number) => Promise<FetchedResource>;
   /** Reduce an HTML document to the article body and convert it to markdown. */
@@ -221,9 +237,14 @@ export async function fetchFulltext(
   }
   const pmcid = europePmcId ?? (article?.pmcid && EUROPE_PMC_ID.test(article.pmcid) ? article.pmcid.toUpperCase() : undefined);
 
+  // The record of an id PubMed doesn't know, from the database that holds it. Looked up once, when first needed.
+  const adapterFor = deps.adapter ?? defaultAdapter;
+  let recordLookup: Promise<Article | undefined> | undefined;
+  const record = (): Promise<Article | undefined> => (recordLookup ??= lookUpRecord(europePmcId ?? id, cache, adapterFor));
+
   // The abstract: the landing-page check needs it, and the fallback returns it. Looked up once, when first needed.
   let abstractLookup: Promise<string | undefined> | undefined;
-  const abstract = (): Promise<string | undefined> => (abstractLookup ??= resolveAbstract(id, article, cache, client));
+  const abstract = (): Promise<string | undefined> => (abstractLookup ??= resolveAbstract(id, article, cache, client, record));
 
   // No DOI or PMCID → nothing to hand to a publisher/OA lookup. Degrade to the abstract.
   if (!doi && !pmcid) {
@@ -294,6 +315,9 @@ export async function fetchFulltext(
     const out = await attempt("europepmc", [`${EUROPE_PMC_FULLTEXT}${pmcid}/fullTextXML`]);
     if (out) return out;
   }
+  // An id without a DOI is a PMCID or preprint id here: Europe PMC's record of it may carry the DOI the
+  // caller didn't have, which opens the Unpaywall and direct routes (a preprint's copy at medRxiv, say).
+  if (!doi && !isPmid(id)) doi = normalizeDoi((await record())?.doi);
   const unpaywall = deps.unpaywall ?? new UnpaywallClient({ tool: client.tool });
   let unpaywallAnswer: UnpaywallLookup | undefined;
   if (doi) {
@@ -388,17 +412,38 @@ function hostOf(url: string): string | undefined {
   }
 }
 
+/**
+ * The record behind an id PubMed doesn't know, as Europe PMC's adapter has it. `fetch` answers from the
+ * adapter's memo of search results and from the cache, where it stores each record under "europepmc:<id>"
+ * ("europepmc:CBA:644599"), before it asks Europe PMC for that exact id, so a record a search found costs no
+ * request. The record is also kept under the bare id, as the PMID path keeps its summary, so that the next
+ * call finds its DOI and abstract at once. A failed lookup is no record: callers carry on without.
+ */
+async function lookUpRecord(id: string, cache: Cache, adapterFor: NonNullable<FulltextDeps["adapter"]>): Promise<Article | undefined> {
+  try {
+    const found = (await (await adapterFor("europepmc"))?.fetch([id], cache))?.[0];
+    if (found) cache.setSummary(id, found);
+    return found;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The adapters of the registry, loaded on first use so that importing this module stays cheap. */
+const defaultAdapter: NonNullable<FulltextDeps["adapter"]> = async (database) => (await import("./adapters/registry.js")).getAdapter(database);
+
 async function resolveAbstract(
   id: string,
   article: Article | null,
   cache: Cache,
   client: NcbiClient,
+  record: () => Promise<Article | undefined>,
 ): Promise<string | undefined> {
   const cached = cache.getAbstract(id);
   if (cached) return cached;
   if (article?.abstract) return article.abstract;
-  // Only PubMed knows the abstract by this id; other databases' ids mean nothing to efetch.
-  if (!isPmid(id)) return undefined;
+  // PubMed's efetch knows only PMIDs. Any other id is a record of another database, asked there.
+  if (!isPmid(id)) return (await record())?.abstract;
   try {
     const fetched = await client.efetch([id]);
     const abstract = fetched.get(id)?.abstract;
