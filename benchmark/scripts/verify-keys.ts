@@ -33,6 +33,9 @@
  *    read that says a source "couldn't be reached" is repeated (`readWithRetry`); the abstract check is exact.
  *    Every expected number must be in `quote` or in `fullTextQuote`; at least one must be only in
  *    the latter (the full-text figure). A `fulltext` query without a `fullTextQuote` is a MISMATCH.
+ *    When the full text's warning opens with the source's standing (`RETRACTED:`, `NOTICE:` or
+ *    `EXPRESSION OF CONCERN:`, see `standingOf`), the key is a WARNING that quotes it, and the passage is
+ *    still checked. Any other warning (ChinaRxiv's machine-translation note, say) is not reported.
  *    A `preprint` or `regional` query asserts that its record is not in PubMed: a PubMed record with
  *    the record's exact title is a MISMATCH.
  *  - `reject` keys: the optional `probe` PubMed search should return nothing
@@ -55,7 +58,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DESIGN_TIER, searchLiterature, NcbiClient, PubMedAdapter } from "../lib/core.js";
 import { defaultFetch, defaultRegionalLookup } from "../lib/scoring/verify.js";
-import { defaultFetchFulltext, readFulltext, type FullTextResult } from "../lib/fulltext.js";
+import { defaultFetchFulltext, readFulltext, standingOf, type FullTextResult } from "../lib/fulltext.js";
 import { abstractNumbers } from "../lib/scoring/attribution.js";
 import { QUERIES } from "../lib/queries.js";
 import type { BenchmarkQuery, KeySource } from "../lib/types.js";
@@ -79,7 +82,7 @@ export interface Lookups {
   fetchRegional?(source: Pick<KeySource, "database" | "id">): Promise<PmidInfo>;
   /** Run a PubMed search; returns the top hits. */
   searchPubmed(query: string): Promise<{ pmid: string; title: string }[]>;
-  /** The whole full text of a record through the library's full-text function. Must throw when the sources are unreachable; `text` is absent when the function has no body. */
+  /** The whole full text of a record through the library's full-text function. Must throw when the sources are unreachable; `text` is absent when the function has no body; `warning` is the function's, which opens with the article's standing when its record is flagged. */
   fetchFulltext?(id: string): Promise<FullTextResult>;
 }
 
@@ -325,6 +328,11 @@ async function checkFullText(
     messages.push(`the library's full-text function returns no body for ${source.id}${full.warning ? ` (${full.warning})` : ""}`);
     bump("MISMATCH");
     return messages;
+  }
+  const standing = standingOf(full.warning);
+  if (standing) {
+    messages.push(`source ${source.database} ${source.id} is flagged by the full-text function: ${standing}`);
+    bump("WARN");
   }
   const body = normalizeFullText(full.text);
   for (const part of parts) {
