@@ -36,9 +36,11 @@ export type StudyType = (typeof STUDY_TYPES)[number];
 /**
  * Facts about a record, read from its database metadata. `retracted`, `notice`,
  * `protocol` and `editorial` mean the record is not usable as evidence, so its
- * `designTier` is 0; the rest are warnings that leave the tier alone.
- * `machine-translated` and `machine-generated-abstract` describe the text of a
- * ChinaXiv or RussiaRxiv record, not the study.
+ * `designTier` is 0; the rest are warnings that leave the tier alone. `updated`:
+ * a newer version exists, which `corrections` names (an updated review; for a
+ * preprint, its published article). `machine-translated` and
+ * `machine-generated-abstract` describe the text of a ChinaXiv or RussiaRxiv
+ * record, not the study.
  */
 export const RECORD_FLAGS = [
   "retracted",
@@ -58,16 +60,26 @@ export const RECORD_FLAGS = [
 export type RecordFlag = (typeof RECORD_FLAGS)[number];
 
 /**
- * Links from a record to notices about it, as PubMed's CommentsCorrections
- * RefType names (Europe PMC's "Retraction in" etc. are mapped to these).
+ * Links from a record to the records that correct, retract or supersede it, and the one link back, as
+ * PubMed's CommentsCorrections RefType names (Europe PMC's "Retraction in" etc. are mapped to these).
+ * NLM's definitions: "UpdateIn cites the reference containing an update to the article", "UpdateOf cites
+ * the article being updated" (see grader.ts). PubMed uses the pair for a preprint and its journal article
+ * too: the preprint has `UpdateIn` with the article's PMID, the article `UpdateOf` with the preprint's
+ * (checked 2026-11-16, see grader.ts), and Europe PMC's "Preprint of" and "Preprint in" are mapped to them.
+ * `UpdateOf` is the one link that is no notice about the record: the record is the newer one, and has no flag.
  */
-export const CORRECTION_TYPES = ["RetractionIn", "ExpressionOfConcernIn", "ErratumIn", "UpdateIn"] as const;
+export const CORRECTION_TYPES = ["RetractionIn", "ExpressionOfConcernIn", "ErratumIn", "UpdateIn", "UpdateOf"] as const;
 
 export type CorrectionType = (typeof CORRECTION_TYPES)[number];
 
 export interface Correction {
   type: CorrectionType;
-  /** Id of the notice or newer version in the same database; absent for one-way links. */
+  /**
+   * Id of the linked record, in the form its database gives it: the notice (`RetractionIn`, `ExpressionOfConcernIn`,
+   * `ErratumIn`), the newer version (`UpdateIn`: for a preprint, the journal article) or the earlier one
+   * (`UpdateOf`: for a journal article, its preprint). A PMID or a Europe PMC id such as "PPR1312266";
+   * absent for a link to a record the database doesn't hold.
+   */
   id?: string;
 }
 
@@ -96,7 +108,10 @@ export interface Article {
   publicationTypes: string[];
   /** MeSH descriptor names assigned by NLM (PubMed, Europe PMC). Absent until a record is MEDLINE-indexed. */
   meshHeadings?: string[];
-  /** Retraction, expression of concern, erratum or newer version linked to this record (PubMed, Europe PMC). */
+  /**
+   * Retraction, expression of concern, erratum, newer version (for a preprint, its published article) or
+   * earlier version (for a published article, its preprint) linked to this record (PubMed, Europe PMC).
+   */
   corrections?: Correction[];
   /** IDs cited by this article in the source database. */
   references?: string[];

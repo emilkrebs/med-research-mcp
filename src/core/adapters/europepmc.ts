@@ -13,6 +13,17 @@
  * preprints are tagged "Preprint". A studyTypes or minDesignTier filter narrows
  * the query with PUB_TYPE, as the PubMed client does with [pt].
  *
+ * Links (`commentCorrectionList` of `core` results; the types we map are in CORRECTION_TYPES below):
+ * a preprint with a published version has "Preprint of" with the article's id (source MED), and the
+ * article "Preprint in" with the preprint's (source PPR); PubMed's own pairs come through as "Update in"
+ * and "Update of". They become UpdateIn and UpdateOf, as PubMed names the preprint pair (see grader.ts for
+ * the counts; checked 2026-11-16): PPR1312266 has `{source: "MED", id: "42905201", type: "Preprint of", note:
+ * "CrossRef Pre-print loader"}`, and 42905201 `{source: "PPR", id: "PPR1312266", type: "Preprint in"}`.
+ * `SRC:PPR AND HAS_PUBLISHED_VERSION:y AND tirzepatide` finds 57 preprints and `HAS_PREPRINT:y AND
+ * tirzepatide AND SRC:MED` 179 articles. The `note` names the origin: "CrossRef Pre-print loader",
+ * "Link created based on a title-first author match", or "Link created based on another matching version of
+ * this preprint"; most links are matches, and we keep them all. Other types (seen: "Comment in", "Comment on") are dropped.
+ *
  * `core` results name the journal in `journalInfo.journal.title` and a preprint's
  * server in `bookOrReportDetails.publisher`; `journalTitle` exists only in `lite`
  * results. The date is the issue date (`journalInfo.dateOfPublication`, "2026
@@ -91,15 +102,23 @@ interface EpmcResult {
   fullTextUrlList?: { fullTextUrl?: { url?: string }[] };
   pubTypeList?: { pubType?: string | string[] };
   meshHeadingList?: { meshHeading?: { descriptorName?: string }[] };
-  commentCorrectionList?: { commentCorrection?: { id?: string; source?: string; type?: string }[] };
+  /** `type` is a link type ("Retraction in", "Preprint of", …); `source` and `id` name the record linked. */
+  commentCorrectionList?: { commentCorrection?: { id?: string; source?: string; type?: string; note?: string }[] };
 }
 
-/** Europe PMC link types → PubMed CommentsCorrections RefType names. */
+/**
+ * Europe PMC link types (lower case) → PubMed CommentsCorrections RefType names. "Preprint of" and
+ * "Preprint in" are Europe PMC's names for what PubMed calls UpdateIn (the preprint, linking its published
+ * article) and UpdateOf (the article, linking its preprint); see the header.
+ */
 const CORRECTION_TYPES: Record<string, CorrectionType> = {
   "retraction in": "RetractionIn",
   "expression of concern in": "ExpressionOfConcernIn",
   "erratum in": "ErratumIn",
   "update in": "UpdateIn",
+  "preprint of": "UpdateIn",
+  "update of": "UpdateOf",
+  "preprint in": "UpdateOf",
 };
 
 function toCorrections(list: EpmcResult["commentCorrectionList"]): Correction[] {
@@ -108,7 +127,9 @@ function toCorrections(list: EpmcResult["commentCorrectionList"]): Correction[] 
     const type = CORRECTION_TYPES[(first(c?.type) ?? "").toLowerCase()];
     if (!type) continue;
     const id = first(c?.id);
-    out.push({ type, ...(id ? { id: toEpmcId(first(c?.source) ?? "MED", id) } : {}) });
+    const link: Correction = { type, ...(id ? { id: toEpmcId(first(c?.source) ?? "MED", id) } : {}) };
+    // Europe PMC types that map to one RefType may name one link twice.
+    if (!out.some((o) => o.type === link.type && o.id === link.id)) out.push(link);
   }
   return out;
 }

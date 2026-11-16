@@ -4,7 +4,7 @@
  * `searchLiterature` fans a query out to one or more {@link DatabaseAdapter}s,
  * classifies every result's design from its metadata, merges the lists,
  * de-duplicates by DOI (keeping the better-classified copy, with any retraction
- * found on another copy), filters, and sorts by design tier, or with `sort: "date"`
+ * or link to a newer version found on another copy), filters, and sorts by design tier, or with `sort: "date"`
  * newest first. `fetchLiterature` fetches specific ids from one database and classifies them the same way.
  *
  * A page is merged, de-duplicated and sorted on its own, not with the pages before it.
@@ -67,7 +67,9 @@ function validateSearch(input: SearchInput): void {
 }
 
 /**
- * Keep one article per DOI (see {@link mergeDuplicate}). DOI-less articles are merged only
+ * Keep one article per DOI (see {@link mergeDuplicate}: the flags and links of the other copies are kept
+ * with it). A preprint and its journal article have different DOIs and stay two records, linked by their
+ * `corrections`. DOI-less articles are merged only
  * when the same database returned the same id twice (the chinaxiv adapter with language
  * "ru" and the russiarxiv adapter search the same corpus).
  */

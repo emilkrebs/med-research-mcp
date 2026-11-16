@@ -544,7 +544,8 @@ const CORRECTION_SET: ReadonlySet<string> = new Set(CORRECTION_TYPES);
 /**
  * Retraction, expression-of-concern, erratum and update links from a
  * CommentsCorrectionsList (RefType names per NLM's MEDLINE/PubMed XML element
- * descriptions). Comment and citation links are dropped.
+ * descriptions). UpdateIn and UpdateOf include a preprint's link to its journal article and
+ * the article's link back (see grader.ts). Comment and citation links are dropped.
  */
 function extractCorrections(ccl: unknown): Correction[] {
   if (!ccl || typeof ccl !== "object") return [];
