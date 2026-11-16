@@ -221,6 +221,26 @@ describe("EuropePmcAdapter", () => {
     expect(await sent({ query: "creatine OR cognition" })).toBe("creatine OR cognition");
   });
 
+  it("sends Europe PMC's own field syntax through unchanged, with a PubMed tag next to it dropped", async () => {
+    // The literature_search description tells a model to use these on europepmc alone (checked 2026-11-16):
+    // TITLE_ABS:word is TITLE:word OR ABSTRACT:word, a tag covers the next word only, SRC:PPR keeps preprints.
+    // PubMed reads them as words ("title"[All Fields] AND melatonin; SRC:PPR matched 0 records there).
+    const { http, urls } = recordingHttp(RESPONSE);
+    const adapter = new EuropePmcAdapter(http);
+    const sent = async (input: Parameters<EuropePmcAdapter["search"]>[0]) => {
+      await adapter.search(input);
+      return new URL(urls.at(-1)!).searchParams.get("query");
+    };
+    expect(await sent({ query: "TITLE_ABS:melatonin TITLE_ABS:sleep" })).toBe("TITLE_ABS:melatonin TITLE_ABS:sleep");
+    expect(await sent({ query: "TITLE:melatonin AND ABSTRACT:sleep AND SRC:PPR" })).toBe("TITLE:melatonin AND ABSTRACT:sleep AND SRC:PPR");
+    expect(await sent({ query: 'TITLE:"melatonin sleep" OR TITLE:(sleep elderly)' })).toBe('TITLE:"melatonin sleep" OR TITLE:(sleep elderly)');
+    expect(await sent({ query: "melatonin[tiab] AND TITLE_ABS:sleep" })).toBe("melatonin AND TITLE_ABS:sleep");
+    // Parenthesized as a whole beside the other clauses, so that a date range or design filter applies to all of it.
+    expect(await sent({ query: "TITLE_ABS:melatonin OR SRC:PPR", dateRange: { from: "2020" } })).toBe(
+      "(TITLE_ABS:melatonin OR SRC:PPR) AND (FIRST_PDATE:[2020-01-01 TO 3000-01-01])",
+    );
+  });
+
   it("sorts by date as the merged results are, by first publication", async () => {
     const { http, urls } = recordingHttp(RESPONSE);
     await new EuropePmcAdapter(http).search({ query: "semaglutide", sort: "date" });
