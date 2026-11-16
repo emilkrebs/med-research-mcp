@@ -38,6 +38,9 @@ export { htmlToText } from "../../src/core/text.js";
 
 export { createServer } from "../../src/mcp/server.js";
 
+// An article as the server's tools print it (`id` first, `pmid` only for a PMID), so that a test names the id a model is shown.
+export { printedArticle } from "../../src/mcp/output.js";
+
 // Page extraction shared with the web-search baseline's `web_fetch`, so both
 // conditions turn HTML/PDF into text identically. Module exports, not public API.
 export { defaultHtmlToMarkdown as htmlToMarkdown, defaultPdfToText as pdfToText } from "../../src/core/fulltext.js";

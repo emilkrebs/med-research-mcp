@@ -134,7 +134,7 @@ export const errors = {
           ? `Europe PMC has no record of "${id}" (or couldn't be reached), and no doi was given. `
           : `"${id}" is not an id literature_fulltext looks up: not a PMID (digits), a PMCID (PMC…), an id of Europe PMC ` +
             `(PPR…, CBA:…, IND…) or a ChinaXiv or RussiaRxiv id (chinaxiv-…, ru-…), and no doi was given. `) +
-        `Pass the id as literature_search returned it in pmid, with any prefix (CBA:644599), or the doi of that result; a ` +
+        `Pass the id of a literature_search result, with any prefix (CBA:644599), or the doi of that result; a ` +
         `record without a doi can't be fetched, so open its url instead. A url or originalUrl is not a doi: don't pass one ` +
         `as doi.`,
       recoverable: false,

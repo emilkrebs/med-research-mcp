@@ -540,7 +540,7 @@ describe("fetchFulltext resolution strategy", () => {
       const message = error.userMessage;
       expect(error, name).toMatchObject({ code: "NOT_FOUND", recoverable: false });
       // What to pass: the id as search returned it, prefix included, or the doi; and what to do for a record without one.
-      expect(message, name).toContain("Pass the id as literature_search returned it in pmid, with any prefix (CBA:644599), or the doi of that result");
+      expect(message, name).toContain("Pass the id of a literature_search result, with any prefix (CBA:644599), or the doi of that result");
       expect(message, name).toContain("open its url instead");
       expect(message, name).toContain("A url or originalUrl is not a doi");
     }

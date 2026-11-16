@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { LRUBackend, NcbiClient, PROJECT_CONTACT_EMAIL } from "../src/core/index.js";
+import { parseChinaRXiv, parseEuropePmc } from "../src/core/index.js";
+import { isPmidRecord, printedArticle, printedResult } from "../src/mcp/output.js";
 import { contactEmailWarning, createServer } from "../src/mcp/server.js";
 
 async function connect() {
@@ -80,17 +82,18 @@ describe("createServer", () => {
       const search = async (args: object) => {
         const result = await client.callTool({ name: "literature_search", arguments: { query: "x", ...args } });
         expect(result.isError).toBeFalsy();
-        return JSON.parse((result.content as { text: string }[])[0]!.text) as { articles: { pmid: string }[]; total: number; page: number; nextPage?: number };
+        return JSON.parse((result.content as { text: string }[])[0]!.text) as { articles: { id: string; pmid: string }[]; total: number; page: number; nextPage?: number };
       };
 
       const first = await search({});
       expect(first).toMatchObject({ total: 25, page: 1, nextPage: 2 });
+      expect(first.articles.map((a) => a.id)).toEqual(pmids.slice(0, 10));
       expect(first.articles.map((a) => a.pmid)).toEqual(pmids.slice(0, 10));
       const second = await search({ page: 2 });
       expect(second).toMatchObject({ page: 2, nextPage: 3 });
-      expect(second.articles.map((a) => a.pmid)).toEqual(pmids.slice(10, 20));
+      expect(second.articles.map((a) => a.id)).toEqual(pmids.slice(10, 20));
       const third = await search({ page: 3 });
-      expect(third.articles.map((a) => a.pmid)).toEqual(pmids.slice(20));
+      expect(third.articles.map((a) => a.id)).toEqual(pmids.slice(20));
       expect(third.page).toBe(3);
       expect(third).not.toHaveProperty("nextPage");
       await client.close();
@@ -136,8 +139,13 @@ describe("createServer", () => {
     expect(prop("literature_search", "abstractMaxChars")).toContain("literature_fetch returns the whole abstract");
     expect(prop("literature_search", "maxResults")).toContain("with several databases a page holds up to maxResults from each");
 
-    // pmid is the database's own id; a record in two databases counts twice in total.
-    expect(search).toMatch(/pmid is the database's own id, a PMID only when it is all digits/);
+    // id is the database's own id and pmid is set only for a PMID; a record in two databases counts twice in total.
+    expect(search).toContain("id is the database's own id; pmid is set only for a PMID");
+    expect(search).not.toContain("pmid is the database's own id");
+    expect(prop("literature_fetch", "ids")).toContain("each a literature_search result's id");
+    expect(prop("literature_fetch", "ids")).not.toContain("in pmid");
+    expect(prop("literature_fulltext", "id")).toContain("A literature_search result's id");
+    expect(prop("literature_fulltext", "id")).not.toContain("in pmid");
     expect(search).toContain("a record held by two databases counts twice in total");
 
     // Europe PMC reads full text and takes field syntax, which PubMed would read as words; RussiaRxiv is not medical.
@@ -187,6 +195,7 @@ describe("createServer", () => {
 
       const fetched = await call("literature_fetch", { ids: ["11111111"], database: "pubmed" });
       expect(fetched.articles[0]).toMatchObject({
+        id: "11111111",
         pmid: "11111111",
         studyType: "randomized-controlled-trial",
         designTier: 0,
@@ -364,6 +373,78 @@ describe("createServer", () => {
 
   it("builds independent servers per call", () => {
     expect(createServer({ cache: new LRUBackend() })).not.toBe(createServer({ cache: new LRUBackend() }));
+  });
+});
+
+describe("the id the tools print", () => {
+  const epmc = (...results: object[]) => parseEuropePmc({ resultList: { result: results } } as never).articles;
+  const medline = { id: "33000001", source: "MED", pmid: "33000001", title: "t", abstractText: "a", pubTypeList: { pubType: ["Randomized Controlled Trial"] } };
+  const preprint = { id: "PPR1244531", source: "PPR", title: "t", abstractText: "a", doi: "10.1234/ppr" };
+  const cba = { id: "521529", source: "CBA", title: "t", abstractText: "a" };
+
+  it("names a PMID: all digits, in PubMed or Europe PMC, and no other id", () => {
+    const [med, ppr, chinese] = epmc(medline, preprint, cba);
+    expect(isPmidRecord({ pmid: "12345678" })).toBe(true); // no database: PubMed's
+    expect(isPmidRecord({ pmid: "12345678", database: "pubmed" })).toBe(true);
+    expect([med, ppr, chinese].map((a) => [a!.pmid, isPmidRecord(a!)])).toEqual([["33000001", true], ["PPR1244531", false], ["CBA:521529", false]]);
+    // PMC…, IND… and the like are Europe PMC ids that are no PMID; so is a number of ChinaXiv or RussiaRxiv.
+    for (const pmid of ["PMC1234567", "IND606115927", "NBK1234"]) expect(isPmidRecord({ pmid, database: "europepmc" }), pmid).toBe(false);
+    const [chinaxiv] = parseChinaRXiv({ data: [{ id: "chinaxiv-202608.00133", title: "t" }] } as never).articles;
+    expect([chinaxiv!.pmid, isPmidRecord(chinaxiv!)]).toEqual(["chinaxiv-202608.00133", false]);
+    for (const database of ["chinaxiv", "russiarxiv"]) expect(isPmidRecord({ pmid: "202608", database }), database).toBe(false);
+  });
+
+  it("prints id first, and pmid right after it only for a PMID; every other key keeps its name and place", () => {
+    const pubmed = { pmid: "33000001", title: "t", authors: ["A"], journal: "j", pubDate: "2021", publicationTypes: [], studyType: "unknown", designTier: null };
+    expect(Object.keys(printedArticle(pubmed as never))).toEqual(["id", "pmid", "title", "authors", "journal", "pubDate", "publicationTypes", "studyType", "designTier"]);
+    expect(printedArticle(pubmed as never)).toMatchObject({ id: "33000001", pmid: "33000001" });
+
+    const [, ppr, chinese] = epmc(medline, preprint, cba);
+    const printedPreprint = printedArticle(ppr!);
+    expect(Object.keys(printedPreprint)).toEqual(["id", ...Object.keys(ppr!).filter((k) => k !== "pmid")]);
+    expect(printedPreprint).toMatchObject({ id: "PPR1244531", title: "t", doi: "10.1234/ppr" });
+    expect(printedPreprint).not.toHaveProperty("pmid");
+    expect(printedArticle(chinese!)).toMatchObject({ id: "CBA:521529" });
+    expect(printedArticle(chinese!)).not.toHaveProperty("pmid");
+
+    // The library's article is not changed: library users and the benchmark scorer read pmid there.
+    expect(ppr!.pmid).toBe("PPR1244531");
+    expect(ppr).not.toHaveProperty("id");
+  });
+
+  it("changes only the articles of a result, and keeps the place of its other keys", () => {
+    const result = { articles: epmc(medline, preprint), total: 2, query: "q", warnings: ["w"], missing: [] };
+    const printed = printedResult(result);
+    expect(Object.keys(printed)).toEqual(["articles", "total", "query", "warnings", "missing"]);
+    expect(printed.articles.map((a) => a.id)).toEqual(["33000001", "PPR1244531"]);
+    expect(printed.articles.map((a) => "pmid" in a)).toEqual([true, false]);
+    expect({ ...printed, articles: [] }).toEqual({ ...result, articles: [] });
+  });
+
+  it("is what literature_search and literature_fetch print, for PubMed and Europe PMC records alike", async () => {
+    const body = { hitCount: 3, resultList: { result: [medline, preprint, cba] } };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body))));
+    try {
+      const { client, server } = await connect();
+      const call = async (name: string, args: object) => {
+        const result = await client.callTool({ name, arguments: args });
+        expect(result.isError).toBeFalsy();
+        return JSON.parse((result.content as { text: string }[])[0]!.text) as { articles: Record<string, unknown>[] };
+      };
+      for (const [name, args] of [
+        ["literature_search", { query: "x", database: "europepmc" }],
+        ["literature_fetch", { ids: ["33000001", "PPR1244531", "CBA:521529"], database: "europepmc" }],
+      ] as const) {
+        const { articles } = await call(name, args);
+        expect(articles.map((a) => a.id), name).toEqual(["33000001", "PPR1244531", "CBA:521529"]);
+        expect(articles.map((a) => Object.keys(a).slice(0, 2)), name).toEqual([["id", "pmid"], ["id", "title"], ["id", "title"]]);
+        expect(articles[0]!.pmid, name).toBe("33000001");
+      }
+      await client.close();
+      await server.close();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

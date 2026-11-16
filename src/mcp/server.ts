@@ -29,6 +29,7 @@ import {
 } from "../core/index.js";
 import { withDeadline } from "../core/request.js";
 import { envSetting, packageVersion } from "../core/version.js";
+import { printedResult } from "./output.js";
 
 /** Re-exported for the HTTP entry and tests, which import it from here. */
 export { packageVersion };
@@ -273,8 +274,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         "protocol and editorial records (designTier 0), and warns of an expression of concern, an erratum (corrected), " +
         "a newer version (updated), animals-not-humans indexing, preprints, letters, machine-translated text and " +
         "machine-generated abstracts (chinaxiv, russiarxiv: check originalUrl before relying on a number). " +
-        "pmid is the database's own id, a PMID only when it is all digits: cite any other (PPR…, CBA:…, chinaxiv-…, ru-…) " +
-        "by it with the database, or by doi/url. Results are merged, de-duplicated by DOI and sorted (see sort), a page at a time: when nextPage " +
+        "id is the database's own id; pmid is set only for a PMID: cite any other (PPR…, CBA:…, chinaxiv-…, ru-…) " +
+        "by id with the database, or by doi/url. Results are merged, de-duplicated by DOI and sorted (see sort), a page at a time: when nextPage " +
         "is set, more follow (see page); a record held by two databases counts twice in total. " +
         "Use literature_fetch to get full metadata for specific ids, and literature_fulltext for the article body.",
       // Strict, so a misnamed key (e.g. `databases`) errors instead of being stripped and silently searching PubMed.
@@ -285,7 +286,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       try {
         const result = await budgeted(() => searchLiterature(args, cache, resolveAdapters(args.database)));
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(printedResult(result), null, 2) }],
         };
       } catch (err) {
         const payload = isMedResearchError(err)
@@ -307,7 +308,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .min(1)
       .max(50)
       .describe(
-        "Database-specific ids to fetch, as literature_search returns them in pmid: PMIDs for pubmed; PMIDs, PMCIDs or prefixed ids (e.g. CBA:644599, PPR… preprints) for europepmc; " +
+        "Database-specific ids to fetch, each a literature_search result's id: PMIDs for pubmed; PMIDs, PMCIDs or prefixed ids (e.g. CBA:644599, PPR… preprints) for europepmc; " +
           "the ids literature_search returned for chinaxiv and russiarxiv.",
       ),
     database: z.enum(DATABASES).describe(`Which database the ids belong to: ${DATABASES.join(", ")}.`),
@@ -332,7 +333,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
           fetchLiterature({ ids: args.ids, database: args.database }, cache, resolveAdapter(args.database)),
         );
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(printedResult(result), null, 2) }],
         };
       } catch (err) {
         const payload = isMedResearchError(err)
@@ -352,7 +353,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     id: z
       .string()
       .describe(
-        "Id as literature_search returns it in pmid: a PMID, a PMCID (PMC…, a record's pmcid), an id of Europe PMC " +
+        "A literature_search result's id: a PMID, a PMCID (PMC…, a record's pmcid), an id of Europe PMC " +
           "(PPR…, CBA:… with its prefix, IND…) or a chinaxiv or russiarxiv id (chinaxiv-…, ru-…). Each works alone; doi is for " +
           "any other id.",
       ),
