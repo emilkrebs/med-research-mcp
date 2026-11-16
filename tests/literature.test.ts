@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { searchLiterature, fetchLiterature } from "../src/core/literature";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { searchLiterature, fetchLiterature, resetProbeAllowance } from "../src/core/literature";
 import { adaptersFor } from "../src/core/adapters/registry";
 import { ChinaRXivAdapter } from "../src/core/adapters/chinarxiv";
 import { SovietRxivAdapter } from "../src/core/adapters/russiarxiv";
@@ -156,15 +156,16 @@ describe("searchLiterature fan-out", () => {
   it("says a zero is not evidence of absence, naming the query", async () => {
     // PubMed ANDs space-separated terms, so 4 keywords can match nothing while the literature holds
     // hits ("psilocybin glucose" returns 14). A bare 0 was read as "no such evidence exists" (2026-10-23).
+    // The field tag keeps the query from being probed word by word, which would give the warning below instead.
     const out = await searchLiterature(
-      { query: "psilocybin glucose metabolism glycemic", database: "pubmed" },
+      { query: "psilocybin glucose[tiab] metabolism glycemic", database: "pubmed" },
       new LRUBackend(),
       [fakeAdapter("pubmed", [], 0)],
     );
     expect(out.articles).toEqual([]);
     expect(out.total).toBe(0);
     expect(out.warnings).toEqual([expect.stringContaining("not evidence of absence")]);
-    expect(out.warnings?.[0]).toContain("psilocybin glucose metabolism glycemic");
+    expect(out.warnings?.[0]).toContain("psilocybin glucose[tiab] metabolism glycemic");
   });
 
   it("doesn't add the generic zero warning when a design filter or a failed database explains it", async () => {
@@ -195,12 +196,12 @@ describe("searchLiterature fan-out", () => {
 
   it("warns that a zero under a dateRange names the range and is not evidence of absence", async () => {
     // Two models read 0 results under a dateRange, with no warning and no trace of the filter in the result,
-    // as the filter having been ignored.
-    const run = (dateRange: { from?: string; to?: string }, query = "psilocybin glucose") =>
+    // as the filter having been ignored. The field tag keeps the query from being probed word by word (see "probes").
+    const run = (dateRange: { from?: string; to?: string }, query = "psilocybin[tiab] glucose") =>
       searchLiterature({ query, dateRange }, new LRUBackend(), [fakeAdapter("pubmed", [], 0)]);
     const both = await run({ from: "2020", to: "2021-06" });
     expect(both.warnings).toEqual([
-      'No record matched the query "psilocybin glucose" within dateRange 2020 to 2021-06. This is not evidence of absence: retry without the dateRange, or with fewer keywords.',
+      'No record matched the query "psilocybin[tiab] glucose" within dateRange 2020 to 2021-06. This is not evidence of absence: retry without the dateRange, or with fewer keywords.',
     ]);
     expect((await run({ from: "2020" })).warnings?.[0]).toContain("within dateRange from 2020.");
     expect((await run({ to: "2021" })).warnings?.[0]).toContain("within dateRange up to 2021.");
@@ -349,19 +350,19 @@ describe("searchLiterature fan-out", () => {
     });
 
     it("names them all in a single warning, in the order requested", async () => {
-      const out = await searchLiterature({ query: "a b", database: "all" }, new LRUBackend(), [
+      const out = await searchLiterature({ query: "a OR b", database: "all" }, new LRUBackend(), [
         silent("chinaxiv", "ChinaXiv (via ChinaRxiv)", "every-word"),
         silent("russiarxiv", "RussiaRxiv (via ChinaRxiv)", "every-word"),
       ]);
       expect(out.warnings).toEqual([
         "ChinaXiv (via ChinaRxiv) and RussiaRxiv (via ChinaRxiv) matched nothing: they return only records containing every word of the query and treat AND/OR as words. Try one or two key words.",
         // PubMed-style generic warning: nothing matched anywhere.
-        expect.stringContaining('No record matched every term of the query "a b"'),
+        expect.stringContaining('No record matched every term of the query "a OR b"'),
       ]);
     });
 
     it("lists three or more with commas", async () => {
-      const out = await searchLiterature({ query: "a b", database: "all" }, new LRUBackend(), [
+      const out = await searchLiterature({ query: "a OR b", database: "all" }, new LRUBackend(), [
         silent("one", "One", "every-word"),
         silent("two", "Two", "every-word"),
         silent("three", "Three", "every-word"),
@@ -370,10 +371,10 @@ describe("searchLiterature fan-out", () => {
     });
 
     it("keeps a lone database's own warning, as a single-database search always has", async () => {
-      const lone = await searchLiterature({ query: "a b", database: "chinaxiv" }, new LRUBackend(), [silent("chinaxiv", "ChinaXiv (via ChinaRxiv)", "every-word")]);
+      const lone = await searchLiterature({ query: "a OR b", database: "chinaxiv" }, new LRUBackend(), [silent("chinaxiv", "ChinaXiv (via ChinaRxiv)", "every-word")]);
       expect(lone.warnings?.[0]).toBe(`ChinaXiv (via ChinaRxiv) ${sentence}`);
       // One of the two databases found something: the other keeps its own warning.
-      const mixed = await searchLiterature({ query: "a b", database: "all" }, new LRUBackend(), [
+      const mixed = await searchLiterature({ query: "a OR b", database: "all" }, new LRUBackend(), [
         fakeAdapter("pubmed", [pubmedMeta]),
         silent("chinaxiv", "ChinaXiv (via ChinaRxiv)", "every-word"),
       ]);
@@ -383,13 +384,13 @@ describe("searchLiterature fan-out", () => {
     it("does so for the real ChinaXiv and RussiaRxiv adapters, which answer a many-word query with nothing", async () => {
       const empty: AdapterHttp = { json: async <T>() => ({ data: [], total: 0 }) as T, text: async () => "" };
       const adapters = [new ChinaRXivAdapter(empty), new SovietRxivAdapter(empty)];
-      const out = await searchLiterature({ query: "vitamin depression", database: ["chinaxiv", "russiarxiv"] }, new LRUBackend(), adapters);
+      const out = await searchLiterature({ query: "vitamin OR depression", database: ["chinaxiv", "russiarxiv"] }, new LRUBackend(), adapters);
       const matched = out.warnings!.filter((w) => w.includes("matched nothing"));
       expect(matched).toEqual([
         "ChinaXiv (via ChinaRxiv) and RussiaRxiv (via ChinaRxiv) matched nothing: they return only records containing every word of the query and treat AND/OR as words. Try one or two key words.",
       ]);
       // Alone, each keeps the warning it always had.
-      const alone = await searchLiterature({ query: "vitamin depression", database: "russiarxiv" }, new LRUBackend(), [adapters[1]!]);
+      const alone = await searchLiterature({ query: "vitamin OR depression", database: "russiarxiv" }, new LRUBackend(), [adapters[1]!]);
       expect(alone.warnings?.[0]).toMatch(/^RussiaRxiv \(via ChinaRxiv\) matched nothing: it returns only records containing every word/);
       // One word is not explained by that rule.
       const oneWord = await searchLiterature({ query: "vitamin", database: ["chinaxiv", "russiarxiv"] }, new LRUBackend(), adapters);
@@ -397,11 +398,403 @@ describe("searchLiterature fan-out", () => {
     });
 
     it("doesn't merge warnings that carry no reason, or a database's warning with another's", async () => {
-      const out = await searchLiterature({ query: "a b", database: "all" }, new LRUBackend(), [
+      const out = await searchLiterature({ query: "a OR b", database: "all" }, new LRUBackend(), [
         silent("chinaxiv", "ChinaXiv (via ChinaRxiv)"),
         silent("russiarxiv", "RussiaRxiv (via ChinaRxiv)"),
       ]);
       expect(out.warnings?.slice(0, 2)).toEqual([`ChinaXiv (via ChinaRxiv) ${sentence}`, `RussiaRxiv (via ChinaRxiv) ${sentence}`]);
+    });
+  });
+
+  describe("probes: which word blocks a search that found nothing", () => {
+    beforeEach(() => {
+      resetProbeAllowance();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    type Answer = number | "fail" | "rate-limit" | "too-broad";
+    /**
+     * A database that finds nothing for the query as given, and answers a probe (a search of the query without a word) with
+     * `answer(query)`. It records every search; a probe that finds something returns an id too, which must never be fetched.
+     */
+    function probing(id: string, name: string, answer: (query: string) => Answer = () => 0, designMetadata?: false) {
+      const searches: SearchInput[] = [];
+      let running = 0;
+      let mostAtOnce = 0;
+      const fetched: string[][] = [];
+      const adapter: DatabaseAdapter = {
+        id,
+        name,
+        ...(designMetadata === false ? { designMetadata } : {}),
+        search: async (input) => {
+          searches.push(input);
+          running += 1;
+          mostAtOnce = Math.max(mostAtOnce, running);
+          try {
+            await Promise.resolve();
+            const result = input.maxResults === 1 ? answer(input.query) : 0;
+            if (result === "fail") throw new Error("upstream 503");
+            if (result === "rate-limit") throw errors.rateLimit(30, name);
+            if (result === "too-broad") throw errors.queryTooBroad(373_618);
+            return { count: result, ids: result > 0 ? ["PROBE-HIT"] : [] };
+          } finally {
+            running -= 1;
+          }
+        },
+        fetch: async (ids) => {
+          fetched.push(ids);
+          return [];
+        },
+      };
+      return { adapter, searches, fetched, mostAtOnce: () => mostAtOnce };
+    }
+    /** The searches that are probes: those that ask for a single record (the others in these tests don't). */
+    const probesOf = (db: { searches: SearchInput[] }) => db.searches.filter((s) => s.maxResults === 1);
+    const run = (input: SearchInput, ...dbs: { adapter: DatabaseAdapter }[]) =>
+      searchLiterature({ database: "all", ...input }, new LRUBackend(), dbs.map((d) => d.adapter));
+
+    it("names the word whose removal gives hits, with the count and where", async () => {
+      const pubmed = probing("pubmed", "PubMed / NCBI", (q) => (q === "sleep cpap" ? 12 : 0));
+      const epmc = probing("europepmc", "Europe PMC", (q) => (q === "sleep cpap" ? 40 : 0));
+      const out = await run({ query: "sleep apnea cpap" }, pubmed, epmc);
+      expect(out.warnings).toEqual(['Without "apnea" the query matches 12 records in PubMed and 40 in Europe PMC.']);
+      // The result is the search's, not a probe's: no records, no count, nothing fetched.
+      expect(out.articles).toEqual([]);
+      expect(out.total).toBe(0);
+      expect(out.totalByDatabase).toEqual({ pubmed: 0, europepmc: 0 });
+      expect(out.query).toBe("sleep apnea cpap");
+      expect([...pubmed.fetched, ...epmc.fetched].flat()).not.toContain("PROBE-HIT");
+    });
+
+    it("lists every such word in the order of the query, the count of one record in the singular", async () => {
+      const pubmed = probing("pubmed", "PubMed / NCBI", (q) => ({ "apnea cpap": 1, "sleep cpap": 12_345 })[q] ?? 0);
+      const epmc = probing("europepmc", "Europe PMC", (q) => ({ "sleep cpap": 40 })[q] ?? 0);
+      const out = await run({ query: "sleep apnea cpap" }, pubmed, epmc);
+      expect(out.warnings).toEqual([
+        'Without "sleep" the query matches 1 record in PubMed; without "apnea", 12,345 in PubMed and 40 in Europe PMC.',
+      ]);
+    });
+
+    it("says that no single word unblocks it when removing any one still finds nothing", async () => {
+      const out = await run({ query: "sleep apnea cpap" }, probing("pubmed", "PubMed / NCBI"), probing("europepmc", "Europe PMC"));
+      expect(out.warnings).toEqual([
+        "Leaving out any one word still matches nothing in PubMed and Europe PMC, so two or more words are too specific together. " +
+          "This is not evidence of absence: try fewer, more general keywords.",
+      ]);
+    });
+
+    it("names the databases by their short names, the ChinaRxiv ones included", async () => {
+      const out = await run(
+        { query: "vitamin depression" },
+        probing("chinaxiv", "ChinaXiv (via ChinaRxiv)", (q) => (q === "vitamin" ? 87 : 0), false),
+        probing("russiarxiv", "RussiaRxiv (via ChinaRxiv)", () => 0, false),
+      );
+      expect(out.warnings).toEqual(['Without "depression" the query matches 87 records in ChinaXiv.']);
+    });
+
+    it("is the one warning: it stands in for the generic one and for the databases' own 'every word' ones", async () => {
+      const sentence = "matched nothing: it returns only records containing every word of the query and treats AND/OR as words. Try one or two key words.";
+      const everyWord = (id: string, name: string, answer: (q: string) => Answer) => {
+        const db = probing(id, name, answer);
+        const search = db.adapter.search;
+        db.adapter.search = async (input) => ({ ...(await search(input)), warning: `${name} ${sentence}`, emptyReason: "every-word" as const });
+        return db;
+      };
+      const found = await run(
+        { query: "vitamin depression" },
+        everyWord("chinaxiv", "ChinaXiv (via ChinaRxiv)", (q) => (q === "vitamin" ? 87 : 0)),
+        everyWord("russiarxiv", "RussiaRxiv (via ChinaRxiv)", () => 0),
+      );
+      expect(found.warnings).toHaveLength(1);
+      expect(found.warnings?.[0]).toMatch(/^Without "depression" the query matches 87 records in ChinaXiv\.$/);
+      const none = await run(
+        { query: "vitamin depression" },
+        everyWord("chinaxiv", "ChinaXiv (via ChinaRxiv)", () => 0),
+        everyWord("russiarxiv", "RussiaRxiv (via ChinaRxiv)", () => 0),
+      );
+      expect(none.warnings).toEqual([expect.stringMatching(/^Leaving out any one word still matches nothing in ChinaXiv and RussiaRxiv,/)]);
+    });
+
+    describe("under a dateRange", () => {
+      const dateRange = { from: "2020", to: "2021-06" };
+
+      it("searches each probe within the same dateRange and says the counts are within it", async () => {
+        const pubmed = probing("pubmed", "PubMed / NCBI", (q) => (q === "psilocybin glucose" ? 4 : 0));
+        const out = await run({ query: "psilocybin glucose glycemic", dateRange }, pubmed);
+        expect(probesOf(pubmed).map((s) => s.dateRange)).toEqual([dateRange, dateRange, dateRange]);
+        expect(out.warnings).toEqual(['Without "glycemic" the query matches 4 records in PubMed within dateRange 2020 to 2021-06.']);
+      });
+
+      it("keeps the dateRange in the claim that no word unblocks it, as the range may be what is too narrow", async () => {
+        const out = await run({ query: "psilocybin glucose", dateRange: { from: "2020" } }, probing("pubmed", "PubMed / NCBI"));
+        expect(out.warnings).toEqual([
+          "Leaving out any one word still matches nothing in PubMed within dateRange from 2020, " +
+            "so two or more words are too specific together, or the dateRange is too narrow. " +
+            "This is not evidence of absence: try fewer, more general keywords, or no dateRange.",
+        ]);
+        expect(out.warnings).toHaveLength(1);
+      });
+
+      it("leaves a query that is not probed with the dateRange warning it always had", async () => {
+        const out = await run({ query: "psilocybin[tiab] glucose", dateRange }, probing("pubmed", "PubMed / NCBI"));
+        expect(out.warnings).toEqual([
+          'No record matched the query "psilocybin[tiab] glucose" within dateRange 2020 to 2021-06. This is not evidence of absence: retry without the dateRange, or with fewer keywords.',
+        ]);
+      });
+    });
+
+    it("passes the filters on, a design filter included, and then says only what a probe found", async () => {
+      const epmc = probing("europepmc", "Europe PMC", (q) => (q === "melatonin elderly" ? 7 : 0));
+      const filters = { studyTypes: ["randomized-controlled-trial" as const], minDesignTier: 3, language: "ru" };
+      const found = await run({ query: "melatonin elderly insomnia", ...filters }, epmc);
+      expect(probesOf(epmc).map(({ studyTypes, minDesignTier, language }) => ({ studyTypes, minDesignTier, language }))).toEqual([filters, filters, filters]);
+      expect(found.warnings?.at(-1)).toBe(
+        'Without "insomnia" the query matches 7 records in Europe PMC within the studyTypes/minDesignTier filter.',
+      );
+      // Nothing found without any word: the filter explains a zero by itself, so no claim about the words.
+      const none = await run({ query: "melatonin elderly insomnia", minDesignTier: 4 }, probing("europepmc", "Europe PMC"));
+      expect(none.warnings ?? []).not.toContainEqual(expect.stringContaining("Leaving out any one word"));
+    });
+
+    it("sends each probe as a count: the query without one word, one record, page 1, in a relevance order", async () => {
+      const pubmed = probing("pubmed", "PubMed / NCBI");
+      await run({ query: "  sleep  apnea cpap ", maxResults: 25, sort: "date", abstractMaxChars: 100 }, pubmed);
+      expect(pubmed.searches).toHaveLength(4);
+      expect(probesOf(pubmed)).toEqual([
+        { query: "apnea cpap", maxResults: 1, page: 1 },
+        { query: "sleep cpap", maxResults: 1, page: 1 },
+        { query: "sleep apnea", maxResults: 1, page: 1 },
+      ]);
+    });
+
+    it("sends one request per word and database, up to 5 words: one at a time to a database with a request allowance", async () => {
+      const dbs = ["pubmed", "europepmc", "chinaxiv"].map((id) => probing(id, id));
+      await run({ query: "one two three four five" }, ...dbs);
+      for (const db of dbs) expect(db.searches).toHaveLength(1 + 5);
+      // ChinaRxiv has 30 requests a minute to share: its probes go one by one. The others' go together, within the time.
+      expect(dbs.map((db) => db.mostAtOnce())).toEqual([5, 5, 1]);
+      const two = [probing("pubmed", "pubmed"), probing("europepmc", "europepmc")];
+      await run({ query: "one two" }, ...two);
+      expect(two.map((db) => db.searches.length)).toEqual([3, 3]);
+    });
+
+    it("counts a repeated word once, and runs no probe when that leaves fewer than two words", async () => {
+      const pubmed = probing("pubmed", "pubmed");
+      await run({ query: "sleep SLEEP apnea" }, pubmed);
+      expect(probesOf(pubmed).map((s) => s.query)).toEqual(["apnea", "sleep"]);
+      const same = probing("pubmed", "pubmed");
+      await run({ query: "sleep Sleep" }, same);
+      expect(same.searches).toHaveLength(1);
+    });
+
+    describe("runs no probe", () => {
+      const probesRun = async (input: SearchInput, ...extra: { adapter: DatabaseAdapter }[]): Promise<number> => {
+        const pubmed = probing("pubmed", "PubMed / NCBI");
+        const epmc = probing("europepmc", "Europe PMC");
+        await run(input, pubmed, epmc, ...extra);
+        return pubmed.searches.length - 1 + (epmc.searches.length - 1);
+      };
+
+      it("for a query of 2 to 5 plain words that every database answered with nothing", async () => {
+        for (const query of ["a b", "a b c d e", "BRCA1 mutation", "5-HT receptor agonist", "COVID-19 vaccine", "tnf* alpha"]) {
+          expect(await probesRun({ query })).toBe(2 * query.split(" ").length);
+        }
+      });
+
+      it("for a query of other than 2 to 5 words", async () => {
+        for (const query of ["a", " a ", "a b c d e f", "one two three four five six seven"]) {
+          expect(await probesRun({ query })).toBe(0);
+        }
+      });
+
+      it("for a query with a quote, a parenthesis, a bracket, a colon or a boolean operator", async () => {
+        for (const query of ['"a b" c', "a (b c)", "a b)", "a[tiab] b", "a b[mesh]", "TITLE:a b", "a AND b", "a OR b", "a NOT b", "a b OR c"]) {
+          expect(await probesRun({ query })).toBe(0);
+        }
+        // Lower-case and/or/not are words, like any other.
+        expect(await probesRun({ query: "a and b" })).toBe(6);
+      });
+
+      it("after the first page", async () => {
+        expect(await probesRun({ query: "a b c", page: 2 })).toBe(0);
+        expect(await probesRun({ query: "a b c", page: 1 })).toBe(6);
+      });
+
+      it("when a database found something", async () => {
+        const pubmed = probing("pubmed", "PubMed / NCBI");
+        const out = await run({ query: "a b c" }, pubmed, { adapter: fakeAdapter("chinaxiv", [chinaxivRct], 1) });
+        expect(pubmed.searches).toHaveLength(1);
+        expect(out.warnings).toBeUndefined();
+      });
+
+      it("when a database failed, whatever the others found", async () => {
+        const failing: DatabaseAdapter = { id: "boom", name: "Boom DB", search: async () => { throw new Error("upstream 503"); }, fetch: async () => [] };
+        const pubmed = probing("pubmed", "PubMed / NCBI");
+        const out = await run({ query: "a b c" }, pubmed, { adapter: failing });
+        expect(pubmed.searches).toHaveLength(1);
+        expect(out.warnings).toEqual([expect.stringContaining("Boom DB search failed")]);
+      });
+
+      it("for a database a design filter skipped", async () => {
+        const china = probing("chinaxiv", "ChinaXiv (via ChinaRxiv)", () => 5, false);
+        const epmc = probing("europepmc", "Europe PMC");
+        await run({ query: "a b", minDesignTier: 3 }, epmc, china);
+        expect(china.searches).toHaveLength(0);
+        expect(epmc.searches).toHaveLength(3);
+      });
+
+      it("when nothing is searched", async () => {
+        const china = probing("chinaxiv", "ChinaXiv (via ChinaRxiv)", () => 5, false);
+        const out = await run({ query: "a b", minDesignTier: 3 }, china);
+        expect(china.searches).toHaveLength(0);
+        expect(out.databases).toEqual([]);
+      });
+    });
+
+    describe("a probe that fails", () => {
+      it("is ignored: the others are still reported, and the search is still a success", async () => {
+        const pubmed = probing("pubmed", "PubMed / NCBI", (q) => (q === "sleep apnea" ? "fail" : q === "sleep cpap" ? 12 : 0));
+        const out = await run({ query: "sleep apnea cpap" }, pubmed);
+        expect(out.total).toBe(0);
+        expect(out.articles).toEqual([]);
+        expect(out.warnings).toEqual(['Without "apnea" the query matches 12 records in PubMed.']);
+      });
+
+      it("withholds the claim that no word unblocks it, which it can no longer make: the generic warning stays", async () => {
+        const pubmed = probing("pubmed", "PubMed / NCBI", (q) => (q === "sleep apnea" ? "fail" : 0));
+        const out = await run({ query: "sleep apnea cpap" }, pubmed);
+        expect(out.warnings).toEqual([
+          'No record matched every term of the query "sleep apnea cpap". This is not evidence of absence: retry with fewer, more general keywords.',
+        ]);
+      });
+
+      it("leaves the whole search a success when every probe fails", async () => {
+        const out = await run({ query: "sleep apnea" }, probing("pubmed", "PubMed / NCBI", () => "fail"), probing("europepmc", "Europe PMC", () => "fail"));
+        expect(out.total).toBe(0);
+        expect(out.warnings).toEqual([expect.stringContaining("No record matched every term of the query")]);
+      });
+
+      it("counts a query too broad for PubMed to serve as a probe that matched, by the count its error gives", async () => {
+        const pubmed = probing("pubmed", "PubMed / NCBI", (q) => (q === "cancer chemotherapy" ? "too-broad" : 0));
+        const out = await run({ query: "cancer chemotherapy quokka" }, pubmed);
+        expect(out.warnings).toEqual(['Without "quokka" the query matches 373,618 records in PubMed.']);
+      });
+
+      it("ends that database's probes when it refuses with a rate limit, and the others go on", async () => {
+        const china = probing("chinaxiv", "ChinaXiv (via ChinaRxiv)", () => "rate-limit", false);
+        const epmc = probing("europepmc", "Europe PMC", (q) => (q === "a b d" || q === "a b c" ? 9 : 0));
+        const out = await run({ query: "a b c d" }, china, epmc);
+        // The first probe was refused; the three after it were never sent.
+        expect(probesOf(china)).toHaveLength(1);
+        expect(probesOf(epmc)).toHaveLength(4);
+        expect(out.warnings).toEqual(['Without "c" the query matches 9 records in Europe PMC; without "d", 9 in Europe PMC.']);
+      });
+    });
+
+    describe("the request allowance of ChinaRxiv", () => {
+      // A contact email in the environment would lift the allowance from 30 requests a minute to 300.
+      beforeEach(() => {
+        vi.stubEnv("MED_RESEARCH_CHINAXIV_EMAIL", "");
+        vi.stubEnv("NCBI_EMAIL", "");
+      });
+      afterEach(() => {
+        vi.unstubAllEnvs();
+      });
+
+      /** The real ChinaXiv and RussiaRxiv adapters over a fake API that finds nothing, counting the requests it gets. */
+      function chinaRxiv() {
+        const urls: URLSearchParams[] = [];
+        const http: AdapterHttp = {
+          json: async <T>(url: string) => {
+            urls.push(new URL(url).searchParams);
+            return { data: [], total: 0 } as T;
+          },
+          text: async () => "",
+        };
+        return { adapters: [new ChinaRXivAdapter(http), new SovietRxivAdapter(http)], urls };
+      }
+      const search = (adapters: DatabaseAdapter[], query: string) =>
+        searchLiterature({ query, database: ["chinaxiv", "russiarxiv"] }, new LRUBackend(), adapters);
+
+      it("probes with one request per word, for each corpus, as a count of one record", async () => {
+        const { adapters, urls } = chinaRxiv();
+        const out = await search(adapters, "vitamin depression");
+        // 2 requests for the search itself, 2 words on each of the 2 corpora.
+        expect(urls).toHaveLength(2 + 4);
+        const probes = urls.slice(2);
+        expect(probes.map((p) => [p.get("source"), p.get("q"), p.get("limit")])).toEqual(
+          expect.arrayContaining([
+            ["chinaxiv", "depression", "1"],
+            ["chinaxiv", "vitamin", "1"],
+            ["russiarxiv", "depression", "1"],
+            ["russiarxiv", "vitamin", "1"],
+          ]),
+        );
+        expect(out.warnings).toEqual([expect.stringMatching(/^Leaving out any one word still matches nothing in ChinaXiv and RussiaRxiv,/)]);
+      });
+
+      it("spends no more than a third of the 30 requests a minute on probes, both corpora counted together", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-11-16T12:00:00Z"));
+        const { adapters, urls } = chinaRxiv();
+        // 5 words on 2 corpora: 10 probes, all that the minute holds.
+        await search(adapters, "one two three four five");
+        expect(urls).toHaveLength(2 + 10);
+        // The next search gets no probes: its own 2 requests only, and the warnings it always had.
+        urls.length = 0;
+        const second = await search(adapters, "six seven");
+        expect(urls).toHaveLength(2);
+        expect(second.warnings).toEqual([
+          expect.stringContaining("ChinaXiv (via ChinaRxiv) and RussiaRxiv (via ChinaRxiv) matched nothing"),
+          expect.stringContaining("No record matched every term of the query"),
+        ]);
+        // A minute on, the allowance is back.
+        urls.length = 0;
+        vi.setSystemTime(new Date("2026-11-16T12:01:01Z"));
+        await search(adapters, "six seven");
+        expect(urls).toHaveLength(2 + 4);
+      });
+
+      it("probes the corpus whose probes fit when only one corpus' do, and the other not at all", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-11-16T12:00:00Z"));
+        const { adapters, urls } = chinaRxiv();
+        // 4 words on 2 corpora: 8 of the 10 probes a minute. Five words need 5 on each, and 2 are left: no probe.
+        await search(adapters, "one two three four");
+        urls.length = 0;
+        await search(adapters, "one two three four five");
+        expect(urls).toHaveLength(2);
+        // Two words need 2 on each: the first corpus takes the last 2, and the second is left unprobed.
+        urls.length = 0;
+        const out = await search(adapters, "six seven");
+        expect(urls.map((p) => p.get("source"))).toEqual(["chinaxiv", "russiarxiv", "chinaxiv", "chinaxiv"]);
+        // What was probed is all it says: nothing found in ChinaXiv without either word.
+        expect(out.warnings).toEqual([expect.stringMatching(/^Leaving out any one word still matches nothing in ChinaXiv,/)]);
+      });
+
+      it("is ten times as large with an X-API-Email header, the limit being 300 a minute", async () => {
+        vi.stubEnv("MED_RESEARCH_CHINAXIV_EMAIL", "someone@example.com");
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-11-16T12:00:00Z"));
+        const { adapters, urls } = chinaRxiv();
+        // A third of 300 a minute is 100 probes: ten searches of 5 words on 2 corpora.
+        for (let i = 0; i < 10; i++) await search(adapters, "one two three four five");
+        expect(urls).toHaveLength(10 * (2 + 10));
+        urls.length = 0;
+        await search(adapters, "one two");
+        expect(urls).toHaveLength(2);
+      });
+
+      it("applies to any adapter of those ids, and leaves the other databases to their own pacing", async () => {
+        const china = probing("chinaxiv", "ChinaXiv (via ChinaRxiv)", () => 0, false);
+        const russia = probing("russiarxiv", "RussiaRxiv (via ChinaRxiv)", () => 0, false);
+        const epmc = probing("europepmc", "Europe PMC");
+        for (let i = 0; i < 3; i++) await run({ query: "one two three four five" }, china, russia, epmc);
+        // The first search takes the minute's 10 probes (5 on each corpus); Europe PMC's 5 go out every time.
+        expect([probesOf(china).length, probesOf(russia).length, probesOf(epmc).length]).toEqual([5, 5, 15]);
+      });
     });
   });
 

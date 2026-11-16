@@ -17,13 +17,19 @@
  *
  * Input a caller can correct (an unknown database, an empty query, a bad page, a date that
  * doesn't exist) raises INVALID_INPUT rather than returning an empty result.
+ *
+ * A page-1 search of 2 to 5 plain words that every database answers with nothing is probed: the query
+ * is searched again without each word, for the count only, so that the warning can name the word that
+ * blocks it (see {@link probeZeroResult}). Models otherwise drop words one tool call at a time.
  */
 
 import { adaptersFor, getAdapter, unknownDatabase, type DatabaseAdapter } from "./adapters/registry.js";
+import { chinaxivHeaders } from "./adapters/chinarxiv.js";
 import type { EmptyReason } from "./adapters/types.js";
 import { doiKey, firstPublished, isoDateBound, MAX_PAGED_RECORDS, pageWindow } from "./adapters/util.js";
 import { LRUBackend, type Cache } from "./cache.js";
 import { errors, isMedResearchError } from "./errors.js";
+import { withDeadline } from "./request.js";
 import { classifyArticle, designPublicationTypes, filterWarnings, mergeDuplicate, noAnimalStudiesWarning, rankKey } from "./grader.js";
 import type {
   Article,
@@ -137,6 +143,167 @@ function capAbstract(article: GradedArticle, max: number): GradedArticle {
   return capped;
 }
 
+/** The most words a query may have to be probed: a probe costs a request per word and database. */
+const PROBE_MAX_WORDS = 5;
+/** The time all the probes of one search get: they are an extra, and a slow database must not hold the answer back. */
+const PROBE_TIME_MS = 10_000;
+/** The share of a database's request allowance that probes may use, so that the caller's own searches keep the rest. */
+const PROBE_SHARE = 1 / 3;
+const MINUTE_MS = 60_000;
+
+/**
+ * The request allowance of a database whose adapter doesn't pace its own requests (the NCBI client does: pubmed.ts),
+ * with the group of adapters that share it, or undefined when none is known. ChinaXiv and RussiaRxiv are two
+ * corpora of one API, which allows 30 requests a minute anonymously and 300 with an X-API-Email header (its OpenAPI
+ * spec, https://chinarxiv.org/api/openapi.json, checked 2026-11-16); a 429 with a Retry-After over 5 s is not waited
+ * out (request.ts), so a request over the limit fails, and so would the caller's next search. Europe PMC sends no
+ * rate-limit header, and its documentation (europepmc.org/RestfulWebService) answered 403 from here: no limit is known,
+ * and its adapter paces nothing; a search sends at most {@link PROBE_MAX_WORDS} probes to it, and PubMed's client queues its own.
+ */
+function requestAllowance(adapterId: string): { group: string; perMinute: number } | undefined {
+  if (adapterId !== "chinaxiv" && adapterId !== "russiarxiv") return undefined;
+  return { group: "chinarxiv", perMinute: chinaxivHeaders()["X-API-Email"] ? 300 : 30 };
+}
+
+/** When the probes of each allowance group were sent, within the last minute. */
+const probesSent = new Map<string, number[]>();
+
+/** Take `count` probe requests from a group's allowance for this minute; false, taking none, when it doesn't hold that many. */
+function takeProbes(group: string, perMinute: number, count: number): boolean {
+  const now = Date.now();
+  const recent = (probesSent.get(group) ?? []).filter((sentAt) => now - sentAt < MINUTE_MS);
+  const taken = recent.length + count <= Math.floor(perMinute * PROBE_SHARE);
+  probesSent.set(group, taken ? [...recent, ...Array<number>(count).fill(now)] : recent);
+  return taken;
+}
+
+/** Forget the probes sent so far; for tests, which share one process (and so one allowance) with the others. */
+export function resetProbeAllowance(): void {
+  probesSent.clear();
+}
+
+const BOOLEAN_OPERATORS: ReadonlySet<string> = new Set(["AND", "OR", "NOT"]);
+
+/**
+ * The words of a query worth probing: 2 to 5 plain words, without quotes, parentheses, brackets (field
+ * tags), colons or the operators AND, OR and NOT, a word once however often it is repeated (ignoring case);
+ * undefined for any other query, which can't be told apart word by word, or has no word to leave out.
+ */
+function probeWords(query: string): string[] | undefined {
+  const text = query.trim();
+  if (/["()[\]:]/.test(text)) return undefined;
+  const words = text.split(/\s+/);
+  if (words.length < 2 || words.length > PROBE_MAX_WORDS || words.some((w) => BOOLEAN_OPERATORS.has(w))) return undefined;
+  const distinct = words.filter((w, i) => words.findIndex((v) => v.toLowerCase() === w.toLowerCase()) === i);
+  return distinct.length >= 2 ? distinct : undefined;
+}
+
+/** What a probe of one database found: the count of the query without each word, undefined where no answer came. */
+interface ProbeOutcome {
+  adapter: DatabaseAdapter;
+  counts: (number | undefined)[];
+}
+
+/**
+ * Search each database again without each of `words` in turn, for the count: `maxResults: 1`, page 1, the filters
+ * of the search and no sort, through the adapter's own `search` (so its pacing and caches apply), one request
+ * on each (PubMed's takes up to 500 ids with it, in the one request). The databases go side by side, within
+ * {@link PROBE_TIME_MS}. One with a request allowance (see {@link requestAllowance}) gets its probes one at a time,
+ * and no more when it refuses one with a rate limit; the others all at once, as a broad query can take Europe PMC
+ * 7 s (2026-11-16), and probes in turn would not fit the time (PubMed's client queues its requests itself). A probe
+ * that fails leaves its count undefined and is never an error (a query too broad to be served is the exception: its
+ * count, which the error carries, is the probe's). A database whose allowance can't take {@link PROBE_SHARE}
+ * of its minute for all its probes more is left out of the result, so that probes never use more than that share.
+ */
+async function probeZeroResult(input: SearchInput, adapters: DatabaseAdapter[], words: string[]): Promise<ProbeOutcome[]> {
+  const probeInput = (query: string): SearchInput => ({
+    query,
+    maxResults: 1,
+    page: 1,
+    ...(input.dateRange ? { dateRange: input.dateRange } : {}),
+    ...(input.studyTypes ? { studyTypes: input.studyTypes } : {}),
+    ...(input.minDesignTier !== undefined ? { minDesignTier: input.minDesignTier } : {}),
+    ...(input.language ? { language: input.language } : {}),
+  });
+  // Taken before any request is sent, so that two searches at once can't both spend the same share.
+  const probed = adapters.filter((adapter) => {
+    const allowance = requestAllowance(adapter.id);
+    return !allowance || takeProbes(allowance.group, allowance.perMinute, words.length);
+  });
+  /** The count without `word`; undefined for a failed probe, "refused" for one the database or the time refused. */
+  const ask = async (adapter: DatabaseAdapter, word: string): Promise<number | undefined | "refused"> => {
+    try {
+      return (await adapter.search(probeInput(words.filter((w) => w !== word).join(" ")))).count;
+    } catch (err) {
+      if (!isMedResearchError(err)) return undefined;
+      // PubMed refuses to answer over 100,000 hits but says how many there are: the word that was left out blocks the rest.
+      if (err.code === "QUERY_TOO_BROAD") return Number(/\d+/.exec(err.message)?.[0]) || undefined;
+      return err.code === "RATE_LIMIT" || err.code === "TIMEOUT" ? "refused" : undefined;
+    }
+  };
+  const counted = (answer: number | undefined | "refused"): number | undefined => (typeof answer === "number" ? answer : undefined);
+  return withDeadline(PROBE_TIME_MS, () =>
+    Promise.all(
+      probed.map(async (adapter): Promise<ProbeOutcome> => {
+        if (!requestAllowance(adapter.id)) return { adapter, counts: (await Promise.all(words.map((w) => ask(adapter, w)))).map(counted) };
+        const counts: (number | undefined)[] = [];
+        let refused = false;
+        for (const word of words) {
+          const answer: number | undefined | "refused" = refused ? undefined : await ask(adapter, word);
+          refused = refused || answer === "refused";
+          counts.push(counted(answer));
+        }
+        return { adapter, counts };
+      }),
+    ),
+  );
+}
+
+/** "PubMed / NCBI" → "PubMed", "ChinaXiv (via ChinaRxiv)" → "ChinaXiv": a database as a warning names it. */
+function shortName(name: string): string {
+  return name.replace(/\s*[(/].*$/, "");
+}
+
+/**
+ * The one warning a zero-result search gets from its probes, or undefined when they found nothing to say:
+ * per word whose removal gives hits, the count and the databases; or, when removing any single word still gives none in
+ * every database probed, that two or more words are too specific together. That claim needs an answer for every probe
+ * of every database probed (a probe that failed leaves it unsaid), and a search without a design filter, which would
+ * explain the zero by itself (see the generic warning below). A dateRange or design filter applies to the counts.
+ */
+function describeProbes(words: string[], outcomes: ProbeOutcome[], input: SearchInput): string | undefined {
+  const records = (count: number, first: boolean, name: string): string =>
+    `${count.toLocaleString("en-US")}${first ? ` record${count === 1 ? "" : "s"}` : ""} in ${shortName(name)}`;
+  const findings = words
+    .map((word, i) => ({
+      word,
+      hits: outcomes.flatMap(({ adapter, counts }) => ((counts[i] ?? 0) > 0 ? [{ adapter, count: counts[i]! }] : [])),
+    }))
+    .filter((f) => f.hits.length > 0);
+  const { dateRange } = input;
+  const designFilter = Boolean(input.studyTypes?.length || input.minDesignTier);
+  const within = [
+    ...(dateRange?.from || dateRange?.to ? [`dateRange ${describeRange(dateRange)}`] : []),
+    ...(designFilter ? ["the studyTypes/minDesignTier filter"] : []),
+  ];
+  const inLimits = within.length > 0 ? ` within ${nameList(within)}` : "";
+
+  if (findings.length > 0) {
+    const clauses = findings.map(({ word, hits }, i) => {
+      const where = nameList(hits.map((h, j) => records(h.count, i === 0 && j === 0, h.adapter.name)));
+      return i === 0 ? `Without "${word}" the query matches ${where}` : `without "${word}", ${where}`;
+    });
+    return `${clauses.join("; ")}${inLimits}.`;
+  }
+  if (designFilter || outcomes.length === 0 || outcomes.some(({ counts }) => counts.some((c) => c === undefined))) return undefined;
+  const ranged = Boolean(dateRange?.from || dateRange?.to);
+  return (
+    `Leaving out any one word still matches nothing in ${nameList(outcomes.map((o) => shortName(o.adapter.name)))}${inLimits}, ` +
+    `so two or more words are too specific together${ranged ? ", or the dateRange is too narrow" : ""}. ` +
+    `This is not evidence of absence: try fewer, more general keywords${ranged ? ", or no dateRange" : ""}.`
+  );
+}
+
 /**
  * Search one or more databases and return classified, merged, de-duplicated results,
  * sorted by design tier, or with `sort: "date"` by first publication date, newest first.
@@ -209,9 +376,16 @@ export async function searchLiterature(
   // Raise the error instead, with its code (RATE_LIMIT, QUERY_TOO_BROAD, …) and retry hint.
   if (failures.length === searched.length) throw failures[0];
 
+  const total = perAdapter.reduce((sum, { count }) => sum + count, 0);
+  // Nothing found anywhere, on the first page, for a query of a few plain words: ask which word blocks it. What the probes
+  // say stands in for the warnings that say less (the databases' own empty reasons below, and the generic one further down).
+  const zero = total === 0 && failures.length === 0;
+  const words = zero && page === 1 ? probeWords(input.query) : undefined;
+  const probeWarning = words ? describeProbes(words, await probeZeroResult(input, searched, words), input) : undefined;
+
   // Databases that found nothing for the same reason say so once, naming them all, in the order requested.
   const byReason = new Map<EmptyReason, { name: string; warning: string }[]>();
-  for (const { adapter, reported } of perAdapter) {
+  for (const { adapter, reported } of probeWarning ? [] : perAdapter) {
     if (!reported) continue;
     byReason.set(reported.reason, [...(byReason.get(reported.reason) ?? []), { name: adapter.name, warning: reported.warning }]);
   }
@@ -219,10 +393,8 @@ export async function searchLiterature(
     warnings.push(group.length > 1 ? SHARED_EMPTY_WARNING[reason](group.map((g) => g.name)) : group[0]!.warning);
   }
 
-  let total = 0;
   const graded: GradedArticle[] = [];
-  for (const { count, articles } of perAdapter) {
-    total += count;
+  for (const { articles } of perAdapter) {
     for (const article of articles) {
       // MeSH feeds the classification; search results leave it to literature_fetch to stay compact.
       const { meshHeadings: _mesh, ...g } = classifyArticle(article);
@@ -242,10 +414,12 @@ export async function searchLiterature(
   // A bare 0 reads as "no evidence exists". A failure explains a zero itself, and so does a design filter
   // (studyTypes, minDesignTier) with the warnings above; a date range does not, and a zero under one was read
   // as the range being ignored.
-  if (total === 0 && failures.length === 0) {
+  if (zero) {
     const oneWord = !/\s/.test(input.query.trim());
     const { dateRange } = input;
-    if (dateRange?.from || dateRange?.to) {
+    if (probeWarning) {
+      warnings.push(probeWarning);
+    } else if (dateRange?.from || dateRange?.to) {
       warnings.push(
         `No record matched the query "${input.query}" within dateRange ${describeRange(dateRange)}. This is not evidence ` +
           `of absence: retry without the dateRange, or ${oneWord ? "with a synonym" : "with fewer keywords"}.`,
