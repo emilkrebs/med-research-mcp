@@ -207,17 +207,38 @@ interface PmidList {
 }
 
 /**
- * Terms esearch reports under `errorlist.phrasesnotfound`: found in no PubMed record. Checked 2026-11-16 on
- * 34 queries; none of ten real ones (BRCA1, COVID-19, 5-HT, vitamin D3, hs-CRP, ...) had a false report. Two cases:
- * in a query of plain words esearch drops such a word and searches the rest (`sleep apnea qzxvbnmk` found 71,644
- * records, as `sleep apnea` does, and its `querytranslation` leaves the word out), so the word is `ignored`;
- * in a quoted phrase, a field-tagged term (`fooxx[tiab]`), an `AND` operand, or a query of unknown words only
- * (`qzxvbnmk wrtyplkj`), the term stays in the query (`querytranslation` has it) and the search finds nothing:
- * it is `blocking`. A misspelling that some record contains is not reported (`tirzepatid obesity` found 4 records).
+ * Terms esearch reports as found in no PubMed record (a quoted phrase: as no phrase), in two lists. Checked 2026-11-16 on 34
+ * queries for the first and 25 for the second.
+ *
+ * `errorlist.phrasesnotfound` names a word as written, without quotes. None of ten real queries (BRCA1, COVID-19, 5-HT,
+ * vitamin D3, hs-CRP, ...) had a false report. In a query of plain words esearch drops such a word and searches the rest
+ * (`sleep apnea qzxvbnmk` found 71,644 records, as `sleep apnea` does, and its `querytranslation` leaves the word out),
+ * so the word is `ignored`; in a field-tagged term (`fooxx[tiab]`), an `AND` operand, or a query of unknown words only
+ * (`qzxvbnmk wrtyplkj`), the term stays in the query (`querytranslation` has it) and the search finds nothing: it is
+ * `blocking`. A misspelling that some record contains is not reported (`tirzepatid obesity` found 4 records).
+ *
+ * `warninglist.quotedphrasesnotfound` names a quoted term with its quotes, and with its field tag when it has one
+ * (`"qzxvbnmk"[tiab]`); `errorlist` is absent when only a quoted term is unknown. The list's neighbour `phrasesignored`
+ * was empty in all 25 queries, and `outputmessages` held only "No items found." for a count of 0. None of ten real
+ * quoted queries (`"sleep apnea"` 66,630 records, `"BRCA1"`, `"COVID-19"`, `"vitamin D3"`, `"hs-CRP"`, `"sleep apnea"[tiab]`,
+ * `"Kreider R"[au]`, `"N Engl J Med"[ta] AND 2021[dp]`, `"Sleep Apnea Syndromes"[mh]`, `"intranasal corticosteroid*"[tiab]`)
+ * had a warninglist or an errorlist. Two cases:
+ * a quoted word or phrase that no record contains stays in the query and the search finds nothing, so it is `blocking`
+ * (`"qzxvbnmk"`, `sleep apnea "qzxvbnmk"`, `"qzxvbnmk" "wrtyplkj"`, `"qzxvbnmk wrtyplkj"` and `"apnea tirzepatide sleep"[tiab]`
+ * found 0 records, each with the term in its `querytranslation`; `sleep apnea NOT "qzxvbnmk"` found 71,648, the term
+ * kept as a NOT operand, which a missing term doesn't harm). But a quoted phrase of words that all exist, for which PubMed
+ * finds no phrase, is reported too, and esearch searches its words separately, unquoted and ANDed:
+ * `"apnea tirzepatide sleep"` and `"sleep tirzepatide apnea"` found 173 records and `"obesity apnea tirzepatide"` 143,
+ * each `querytranslation` being the three words with their variants, without the phrase; `"sleep qzxvbnmk"` found 373,649,
+ * its translation `sleep` alone, the unknown word dropped as in a plain query. Such a phrase is `asWords`. Nothing was
+ * seen of a quoted single word that the translation left out; it would count as `ignored`. A word can be in both lists
+ * (`qzxvbnmk "qzxvbnmk"` has `qzxvbnmk` in one and `"qzxvbnmk"` in the other, and found 0): it is named once.
  */
 interface UnknownTerms {
   ignored: string[];
   blocking: string[];
+  /** Quoted phrases PubMed has no phrase for, searched as their words instead. */
+  asWords: string[];
 }
 
 /** `"a"`, `"a" and "b"`, `"a", "b" and "c"`. */
@@ -226,29 +247,61 @@ function quotedList(terms: string[], joiner = "and"): string {
   return quoted.length < 2 ? quoted.join("") : `${quoted.slice(0, -1).join(", ")} ${joiner} ${quoted.at(-1)}`;
 }
 
-/** The terms esearch reported as found in no record, sorted into ignored and blocking by `querytranslation`; undefined when there are none. */
-function unknownTerms(reported: unknown, translation: string | undefined): UnknownTerms | undefined {
-  const terms = toArray(reported as string[] | undefined).filter((t): t is string => typeof t === "string" && t.trim() !== "");
+/** The strings of a list esearch returned, which may be absent, one string or an array. */
+function termList(value: unknown): string[] {
+  return toArray(value as string[] | undefined).filter((t): t is string => typeof t === "string" && t.trim() !== "");
+}
+
+/** A quoted term as `quotedphrasesnotfound` gives it: without its quotes and its field tag (`"qzxvbnmk"[tiab]` is `qzxvbnmk`). */
+function unquoted(term: string): string {
+  return (/^"(.*)"(?:\[[^\]]*\])?$/s.exec(term.trim())?.[1] ?? term).trim();
+}
+
+/**
+ * The terms esearch reported as found in no record (`notFound`, from `errorlist.phrasesnotfound`; `quotedNotFound`, from
+ * `warninglist.quotedphrasesnotfound`), sorted by `querytranslation` into ignored, blocking and searched as words, each
+ * term named once; undefined when there are none.
+ */
+function unknownTerms(notFound: unknown, quotedNotFound: unknown, translation: string | undefined): UnknownTerms | undefined {
+  const terms = termList(notFound);
+  const quoted = termList(quotedNotFound).map(unquoted).filter(Boolean);
   // Without the translation we can't tell whether the term was left out, so we say nothing.
-  if (terms.length === 0 || !translation) return undefined;
+  if ((terms.length === 0 && quoted.length === 0) || !translation) return undefined;
   const kept = translation.toLowerCase();
-  const unknown: UnknownTerms = { ignored: [], blocking: [] };
-  for (const term of terms) (kept.includes(term.toLowerCase()) ? unknown.blocking : unknown.ignored).push(term);
+  const unknown: UnknownTerms = { ignored: [], blocking: [], asWords: [] };
+  // A term in both lists is named once, as the first list has it.
+  const named = new Set<string>();
+  const isNew = (term: string): boolean => {
+    const key = term.toLowerCase();
+    if (named.has(key)) return false;
+    named.add(key);
+    return true;
+  };
+  for (const term of terms) if (isNew(term)) (kept.includes(term.toLowerCase()) ? unknown.blocking : unknown.ignored).push(term);
+  for (const term of quoted) {
+    if (!isNew(term)) continue;
+    // A quoted term that stays in the query keeps its quotes in the translation; a phrase searched as words is gone from it.
+    if (kept.includes(`"${term.toLowerCase()}"`)) unknown.blocking.push(term);
+    else (/\s/.test(term) ? unknown.asWords : unknown.ignored).push(term);
+  }
   return unknown;
 }
 
 /**
  * What the unknown terms mean for a search, in a sentence: a word PubMed left out, always (the records come from the
- * rest of the query); a term it kept, only when the search found nothing (otherwise it was a NOT or OR operand, which a
- * missing term doesn't harm).
+ * rest of the query); a phrase it searched as words, always (the records need not hold the words together); a term it
+ * kept, only when the search found nothing (otherwise it was a NOT or OR operand, which a missing term doesn't harm).
  */
 function unknownWarning(unknown: UnknownTerms | undefined, count: number): string | undefined {
   if (!unknown) return undefined;
-  const { ignored, blocking } = unknown;
+  const { ignored, blocking, asWords } = unknown;
   const sentences: string[] = [];
   if (ignored.length > 0) {
     const them = ignored.length > 1 ? "them" : "it";
     sentences.push(`PubMed ignored ${quotedList(ignored)}: no record contains ${them}, so it searched without ${them}.`);
+  }
+  if (asWords.length > 0) {
+    sentences.push(`PubMed has no phrase ${quotedList(asWords, "or")}, so it searched the words separately: a record need not hold them together.`);
   }
   if (blocking.length > 0 && count === 0) sentences.push(`No PubMed record contains ${quotedList(blocking, "or")}.`);
   return sentences.length > 0 ? sentences.join(" ") : undefined;
@@ -477,6 +530,7 @@ export class NcbiClient {
         idlist?: string[];
         querytranslation?: string;
         errorlist?: { phrasesnotfound?: unknown };
+        warninglist?: { quotedphrasesnotfound?: unknown };
         ERROR?: string;
       };
       ERROR?: string;
@@ -495,7 +549,8 @@ export class NcbiClient {
     if (count > this.broadThreshold) {
       throw errors.queryTooBroad(count);
     }
-    const unknown = unknownTerms(data.esearchresult?.errorlist?.phrasesnotfound, data.esearchresult?.querytranslation);
+    const { errorlist, warninglist, querytranslation } = data.esearchresult ?? {};
+    const unknown = unknownTerms(errorlist?.phrasesnotfound, warninglist?.quotedphrasesnotfound, querytranslation);
     return { count, pmids: toArray(data.esearchresult?.idlist), ...(unknown ? { unknown } : {}) };
   }
 

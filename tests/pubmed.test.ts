@@ -1167,3 +1167,132 @@ describe("esearch: words that no record contains", () => {
     expect(out.warnings).toContain('No PubMed record contains "fooxx".');
   });
 });
+
+// A quoted term esearch can't find is reported under warninglist.quotedphrasesnotfound, with its quotes and its field tag
+// (checked live 2026-11-16, see the comment on UnknownTerms in pubmed.ts). The answers below are those it returned, trimmed to
+// the fields the client reads; `phrasesignored` was empty in all of them.
+describe("esearch: quoted terms that no record contains", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const noItems = ["No items found."];
+  const answer = (count: number, translation: string, quoted: string[], outputmessages: string[] = [], errorlist?: { phrasesnotfound: string[] }): Response =>
+    new Response(
+      JSON.stringify({
+        esearchresult: {
+          count: String(count),
+          idlist: count > 0 ? ["1", "2"] : [],
+          querytranslation: translation,
+          ...(errorlist ? { errorlist: { ...errorlist, fieldsnotfound: [] } } : {}),
+          warninglist: { phrasesignored: [], quotedphrasesnotfound: quoted, outputmessages },
+        },
+      }),
+      { status: 200 },
+    );
+  // The threshold is raised: the counts of "sleep qzxvbnmk" (373,649) and "COVID-19" (495,549) are above the default 100,000.
+  const quick = () => new NcbiClient({ email: "test@example.com", apiKey: "test-key", broadThreshold: 1_000_000 });
+  const warningOf = async (query: string, response: Response): Promise<string | undefined> => {
+    vi.stubGlobal("fetch", vi.fn(async () => response.clone()));
+    return (await quick().esearch({ query })).warning;
+  };
+
+  // "sleep" and its variants, as esearch expanded the word in the answers for `"sleep qzxvbnmk"` and the phrases of three known words.
+  const SLEEP = '"sleep"[MeSH Terms] OR "sleep"[All Fields] OR "sleeping"[All Fields] OR "sleeps"[All Fields] OR "sleep s"[All Fields]';
+  const APNEA = '"apnea"[MeSH Terms] OR "apnea"[All Fields] OR "apneas"[All Fields] OR "apnoeas"[All Fields] OR "apnoea"[All Fields]';
+  const TIRZEPATIDE = '"tirzepatide"[Supplementary Concept] OR "tirzepatide"[All Fields] OR "tirzepatide"[MeSH Terms]';
+
+  it("names a quoted word that stays in the query and leaves nothing, without its quotes", async () => {
+    const out = 'No PubMed record contains "qzxvbnmk".';
+    expect(await warningOf('"qzxvbnmk"', answer(0, '"qzxvbnmk"', ['"qzxvbnmk"'], noItems))).toBe(out);
+    // Beside known words, which esearch leaves untranslated when the quoted word finds nothing.
+    expect(await warningOf('sleep apnea "qzxvbnmk"', answer(0, 'sleep apnea "qzxvbnmk"', ['"qzxvbnmk"'], noItems))).toBe(out);
+    // With a field tag, which esearch reports too, and the client leaves out of the name.
+    expect(await warningOf('"qzxvbnmk"[tiab]', answer(0, '"qzxvbnmk"[tiab]', ['"qzxvbnmk"[tiab]'], noItems))).toBe(out);
+    expect(await warningOf('"qzxvbnmk" "wrtyplkj"', answer(0, '"qzxvbnmk" "wrtyplkj"', ['"qzxvbnmk"', '"wrtyplkj"'], noItems))).toBe(
+      'No PubMed record contains "qzxvbnmk" or "wrtyplkj".',
+    );
+    // A quoted phrase of unknown words, and a tagged phrase of known words that no record has in the field.
+    expect(await warningOf('"qzxvbnmk wrtyplkj"', answer(0, '"qzxvbnmk wrtyplkj"', ['"qzxvbnmk wrtyplkj"'], noItems))).toBe('No PubMed record contains "qzxvbnmk wrtyplkj".');
+    expect(await warningOf('"apnea tirzepatide sleep"[tiab]', answer(0, '"apnea tirzepatide sleep"[tiab]', ['"apnea tirzepatide sleep"[tiab]'], noItems))).toBe(
+      'No PubMed record contains "apnea tirzepatide sleep".',
+    );
+  });
+
+  it("says nothing of a quoted term that stays in a search that found records (a NOT operand)", async () => {
+    const response = answer(71648, 'sleep apnea NOT "qzxvbnmk"', ['"qzxvbnmk"']);
+    vi.stubGlobal("fetch", vi.fn(async () => response.clone()));
+    expect(await quick().esearch({ query: 'sleep apnea NOT "qzxvbnmk"' })).not.toHaveProperty("warning");
+  });
+
+  it("says that a quoted phrase PubMed has no phrase for was searched as its words, whatever the count", async () => {
+    const separately = 'PubMed has no phrase "apnea tirzepatide sleep", so it searched the words separately: a record need not hold them together.';
+    expect(await warningOf('"apnea tirzepatide sleep"', answer(173, `(${APNEA}) AND (${TIRZEPATIDE}) AND (${SLEEP})`, ['"apnea tirzepatide sleep"']))).toBe(separately);
+    // Here esearch also dropped the word no record contains (its translation is "sleep" alone), which the reported phrase doesn't say.
+    expect(await warningOf('"sleep qzxvbnmk"', answer(373649, SLEEP, ['"sleep qzxvbnmk"']))).toBe(
+      'PubMed has no phrase "sleep qzxvbnmk", so it searched the words separately: a record need not hold them together.',
+    );
+    // The words, searched on their own, can find nothing too: the sentence is still what happened.
+    expect(await warningOf('"apnea tirzepatide sleep"', answer(0, `(${APNEA}) AND (${TIRZEPATIDE}) AND (${SLEEP})`, ['"apnea tirzepatide sleep"'], noItems))).toBe(separately);
+    // Two phrases are named in one sentence.
+    expect(await warningOf('"a b" "c d"', answer(5, "(a) AND (b) AND (c) AND (d)", ['"a b"', '"c d"']))).toBe(
+      'PubMed has no phrase "a b" or "c d", so it searched the words separately: a record need not hold them together.',
+    );
+  });
+
+  it("names a term that both lists report once", async () => {
+    const response = answer(0, 'qzxvbnmk "qzxvbnmk"', ['"qzxvbnmk"'], noItems, { phrasesnotfound: ["qzxvbnmk"] });
+    expect(await warningOf('qzxvbnmk "qzxvbnmk"', response)).toBe('No PubMed record contains "qzxvbnmk".');
+    // Whatever the case it is written in.
+    expect(await warningOf('QZXVBNMK "qzxvbnmk"', answer(0, 'QZXVBNMK "qzxvbnmk"', ['"qzxvbnmk"'], noItems, { phrasesnotfound: ["QZXVBNMK"] }))).toBe(
+      'No PubMed record contains "QZXVBNMK".',
+    );
+    // A tagged plain word has only the first list, and an empty second one.
+    expect(await warningOf("qzxvbnmk[tiab]", answer(0, "qzxvbnmk[tiab]", [], noItems, { phrasesnotfound: ["qzxvbnmk"] }))).toBe('No PubMed record contains "qzxvbnmk".');
+  });
+
+  it("says each thing once, in the order ignored, searched as words, blocking", async () => {
+    // Not an answer seen live: one the two lists could give together.
+    const response = answer(0, '"sleep"[All Fields] AND "x"[All Fields] AND "y"[All Fields] AND "zzzz"', ['"x y"', '"zzzz"'], noItems, { phrasesnotfound: ["qzxvbnmk"] });
+    expect(await warningOf('sleep qzxvbnmk "x y" "zzzz"', response)).toBe(
+      'PubMed ignored "qzxvbnmk": no record contains it, so it searched without it. ' +
+        'PubMed has no phrase "x y", so it searched the words separately: a record need not hold them together. ' +
+        'No PubMed record contains "zzzz".',
+    );
+  });
+
+  it("reports nothing for the quoted terms of real queries, which esearch leaves without a warninglist", async () => {
+    const real: [string, number, string][] = [
+      ['"sleep apnea"', 66630, '"sleep apnea"[All Fields]'],
+      ['"BRCA1"', 26313, '"BRCA1"[All Fields]'],
+      ['"COVID-19"', 495549, '"COVID-19"[All Fields]'],
+      ['"vitamin D3"', 13814, '"vitamin D3"[All Fields]'],
+      ['"hs-CRP"', 10481, '"hs-CRP"[All Fields]'],
+      ['"sleep apnea"[tiab]', 50996, '"sleep apnea"[Title/Abstract]'],
+      ['"Kreider R"[au]', 36, '"Kreider R"[Author]'],
+      ['"intranasal corticosteroid*"[tiab]', 1356, '"intranasal corticosteroid*"[Title/Abstract]'],
+    ];
+    for (const [query, count, translation] of real) {
+      const bare = { esearchresult: { count: String(count), idlist: ["1"], querytranslation: translation } };
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(bare), { status: 200 })));
+      expect(await quick().esearch({ query }), query).not.toHaveProperty("warning");
+    }
+    // Lists that are there and empty say nothing either, nor does a list without the query it ran.
+    expect(await warningOf('"sleep apnea"', answer(66630, '"sleep apnea"[All Fields]', []))).toBeUndefined();
+    const untranslated = { esearchresult: { count: "5", idlist: ["1"], warninglist: { quotedphrasesnotfound: ['"x y"'] } } };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(untranslated), { status: 200 })));
+    expect(await quick().esearch({ query: '"x y"' })).not.toHaveProperty("warning");
+  });
+
+  it("keeps the sentence on a repeated search", async () => {
+    const response = answer(173, `(${APNEA}) AND (${TIRZEPATIDE}) AND (${SLEEP})`, ['"apnea tirzepatide sleep"']);
+    const fetchMock = vi.fn(async () => response.clone());
+    vi.stubGlobal("fetch", fetchMock);
+    const client = quick();
+    const first = await client.esearch({ query: '"apnea tirzepatide sleep"' });
+    const again = await client.esearch({ query: '"apnea tirzepatide sleep"' });
+    expect(first.warning).toMatch(/^PubMed has no phrase "apnea tirzepatide sleep"/);
+    expect(again.warning).toBe(first.warning);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

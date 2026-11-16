@@ -7,6 +7,8 @@ import type { AdapterHttp } from "../src/core/adapters/http";
 import { cleanDoi, dateKey, doiKey, isoDateBound, pageWindow, withoutPubMedTags } from "../src/core/adapters/util";
 import { errors } from "../src/core/errors";
 import { LRUBackend } from "../src/core/cache";
+import { NcbiClient } from "../src/core/pubmed";
+import { PubMedAdapter } from "../src/core/adapters/pubmed";
 import type { DatabaseAdapter } from "../src/core/adapters/types";
 import type { NcbiArticle, SearchInput } from "../src/core/types";
 
@@ -795,6 +797,49 @@ describe("searchLiterature fan-out", () => {
         // The first search takes the minute's 10 probes (5 on each corpus); Europe PMC's 5 go out every time.
         expect([probesOf(china).length, probesOf(russia).length, probesOf(epmc).length]).toEqual([5, 5, 15]);
       });
+    });
+  });
+
+  describe("a quoted term that PubMed can't find", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    /** PubMed's esearch for a quoted term no record contains (checked live 2026-11-16): count 0, the term kept in the translation, named under warninglist. */
+    const esearch = (query: string, quoted: string[]) =>
+      JSON.stringify({
+        esearchresult: {
+          count: "0",
+          idlist: [],
+          querytranslation: query,
+          warninglist: { phrasesignored: [], quotedphrasesnotfound: quoted, outputmessages: ["No items found."] },
+        },
+      });
+
+    it("is named by PubMed's warning, and no probe is sent for a query with a quote, so that nothing contradicts it", async () => {
+      for (const [query, quoted] of [
+        ['"qzxvbnmk"', ['"qzxvbnmk"']],
+        ['sleep apnea "qzxvbnmk"', ['"qzxvbnmk"']],
+      ] as const) {
+        const requests: string[] = [];
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (url: unknown) => {
+            requests.push(new URL(String(url)).searchParams.get("term") ?? "");
+            return new Response(esearch(query, [...quoted]), { status: 200 });
+          }),
+        );
+        const adapter = new PubMedAdapter(new NcbiClient({ email: "test@example.com", apiKey: "test-key" }));
+        const out = await searchLiterature({ query, database: "pubmed" }, new LRUBackend(), [adapter]);
+        // One esearch, the search's own: a probe would be a second one, for the query without a word.
+        expect(requests, query).toEqual([query]);
+        expect(out.total).toBe(0);
+        expect(out.warnings?.[0], query).toBe('No PubMed record contains "qzxvbnmk".');
+        // What follows is the generic zero-result warning, which says only that a zero is no evidence of absence.
+        expect(out.warnings, query).toHaveLength(2);
+        expect(out.warnings?.[1], query).toContain("not evidence of absence");
+        expect(out.warnings?.join(" "), query).not.toMatch(/Without "/);
+      }
     });
   });
 
