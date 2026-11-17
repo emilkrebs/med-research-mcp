@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/med-research-mcp"><img src="https://img.shields.io/npm/v/med-research-mcp" alt="npm 版本"></a>
   <a href="https://www.modelscope.cn/mcp/servers/emilkrebs/med-research-mcp"><img src="https://img.shields.io/badge/%E9%AD%94%E6%90%AD%E7%A4%BE%E5%8C%BA-MCP%20%E6%9C%8D%E5%8A%A1%E5%99%A8-624aff" alt="魔搭社区 MCP 服务器"></a>
+  <a href="https://mcpservers.org/servers/emilkrebs/med-research-mcp"><img src="https://mcpservers.org/badge.svg" alt="已收录于 mcpservers.org"></a>
 </p>
 
 <p align="center">

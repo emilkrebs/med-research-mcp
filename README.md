@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/med-research-mcp"><img src="https://img.shields.io/npm/v/med-research-mcp" alt="npm version"></a>
+  <a href="https://mcpservers.org/servers/emilkrebs/med-research-mcp"><img src="https://mcpservers.org/badge.svg" alt="Listed on mcpservers.org"></a>
 </p>
 
 <p align="center">
