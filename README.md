@@ -27,6 +27,12 @@
   <a href="#data-sources-and-copyright">Data sources</a>
 </p>
 
+<p align="center">
+  <img src="docs/media/med-research-mcp-demo.gif" alt="Real output: the assistant is asked whether tirzepatide helps with obstructive sleep apnea, searches PubMed, Europe PMC and ChinaXiv, and returns study cards labelled randomized controlled trial, tier 4 and corrected, then notes that the meta-analysis in the list has no tier assigned." width="880">
+</p>
+
+<p align="center"><sub>Ten seconds of real output: one question, one search across four databases, and the labels the assistant reads before it answers.</sub></p>
+
 `med-research-mcp` is an [MCP](https://modelcontextprotocol.io) server that lets an AI assistant search PubMed, Europe PMC and ChinaRxiv's ChinaXiv and RussiaRxiv sources, and tells it what kind of study each result is. The assistant can then tell a meta-analysis from a case report, and a retracted paper from a sound one, before it answers. It's built for medical, clinical and supplementation research, where "what does the evidence actually say" matters more than a list of abstracts.
 
 - **Four databases in one search**, merged and de-duplicated.
