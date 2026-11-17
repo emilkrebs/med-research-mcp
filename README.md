@@ -38,6 +38,12 @@
 > [!IMPORTANT]
 > This is a research aid, not medical advice and not a diagnostic tool. Don't put anything that identifies a patient into a query: queries are sent to the databases listed under [Privacy](#privacy). See the [medical disclaimer](#medical-disclaimer).
 
+<p align="center">
+  <img src="docs/media/med-research-mcp-demo.gif" alt="Real output: the assistant is asked whether tirzepatide helps with obstructive sleep apnea, searches PubMed, Europe PMC and ChinaXiv, and returns study cards labelled randomized controlled trial, tier 4 and corrected, then notes that the meta-analysis in the list has no tier assigned." width="880">
+</p>
+
+<p align="center"><sub>Ten seconds of real output: one question, one search across four databases, and the labels the assistant reads before it answers.</sub></p>
+
 ## Install
 
 You need [Node.js](https://nodejs.org) 22.22.2 or later on 22, 24.15.0 or later on 24, or 26+. The server runs straight from [npm](https://www.npmjs.com/package/med-research-mcp), so there's nothing to clone or build. In the examples, replace `you@example.com` with your email (see [Configuration](#configuration)).
