@@ -42,6 +42,8 @@ export type {
   RecordFlag,
   Correction,
   CorrectionType,
+  Article,
+  // @deprecated Use Article. Kept so existing imports keep compiling.
   Article as NcbiArticle,
   GradedArticle,
   DateRange,
