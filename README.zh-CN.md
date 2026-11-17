@@ -28,6 +28,12 @@
   <a href="#数据来源与版权">数据来源</a>
 </p>
 
+<p align="center">
+  <img src="docs/media/med-research-mcp-demo-zh.gif" alt="真实输出：向助手提问替尔泊肽是否有助于阻塞性睡眠呼吸暂停，它检索 PubMed、Europe PMC 和 ChinaXiv，返回标有「随机对照试验」「tier 4」「corrected」的文献卡片，并指出列表中那条 Meta 分析没有评级。" width="880">
+</p>
+
+<p align="center"><sub>十秒真实输出：一个问题、一次覆盖四个数据库的检索，以及助手在回答前读取的标注。</sub></p>
+
 `med-research-mcp` 是一个 [MCP](https://modelcontextprotocol.io)（模型上下文协议）服务器。它让 AI 助手能够检索 PubMed、Europe PMC 和 ChinaRxiv（含 ChinaXiv 与 RussiaRxiv 数据源），并告诉助手每条结果属于哪一类研究。这样，助手在回答之前就能分清 Meta 分析和病例报告，也能识别出已撤稿的论文。它专为医学、临床和膳食补充剂研究而设计：在这些领域，“证据究竟说明了什么”比一串摘要更重要。
 
 - **一次检索覆盖四个数据库**，结果合并并去重。
@@ -37,12 +43,6 @@
 - **不调用大语言模型，无需账号，不发送遥测数据**。服务器在你自己的电脑上运行。
 
 > **重要提示**：本工具是科研辅助工具，不构成医疗建议，也不是诊断工具。请勿在检索内容中输入任何可识别患者身份的信息：检索内容会发送到[隐私](#隐私)一节列出的数据库。另请参阅[医学免责声明](#医学免责声明)。
-
-<p align="center">
-  <img src="docs/media/med-research-mcp-demo-zh.gif" alt="真实输出：向助手提问替尔泊肽是否有助于阻塞性睡眠呼吸暂停，它检索 PubMed、Europe PMC 和 ChinaXiv，返回标有「随机对照试验」「tier 4」「corrected」的文献卡片，并指出列表中那条 Meta 分析没有评级。" width="880">
-</p>
-
-<p align="center"><sub>十秒真实输出：一个问题、一次覆盖四个数据库的检索，以及助手在回答前读取的标注。</sub></p>
 
 ## 预期用途与排序说明
 
