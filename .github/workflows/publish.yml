@@ -25,18 +25,17 @@ on:
 permissions:
   contents: read
 
-# Runs of one kind never race each other. Releases and next releases get a
-# group each: GitHub cancels a pending run when another joins its group, which
-# is right for next releases (the newer commit wins) and never for a release.
-concurrency:
-  group: publish-${{ github.event_name }}
-  cancel-in-progress: false
-
 jobs:
   publish:
     name: npm
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
+    # One release at a time. GitHub cancels a pending job when another joins its
+    # group, so next builds have a group of their own and never cancel a pending
+    # release.
+    concurrency:
+      group: publish-release
+      cancel-in-progress: false
     # The trusted publisher on npmjs.com names this environment.
     environment: publish
     permissions:
@@ -91,14 +90,25 @@ jobs:
 
   next:
     name: npm (next)
-    # Only CI runs for pushes to main in this repository: a pull request's run,
-    # from a branch or a fork, never publishes.
+    # Only CI runs for pushes to main in this repository, not in a fork, and only
+    # while the commit is still main's tip (github.sha, for a workflow_run): a
+    # pull request's run, from a branch or a fork, never publishes, and neither
+    # does a run for an older commit that finishes late or is re-run.
     if: >-
       github.event_name == 'workflow_run' &&
+      github.repository == 'emilkrebs/med-research-mcp' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_sha == github.sha
     runs-on: ubuntu-latest
+    # One next build at a time, and a newer tip's build replaces a pending one.
+    # The group is the job's, not the workflow's: every CI run that completes on
+    # a branch named main starts this workflow, and a skipped job is never
+    # queued, so it can't cancel the tip's pending build.
+    concurrency:
+      group: publish-next
+      cancel-in-progress: false
     environment: publish
     permissions:
       contents: read

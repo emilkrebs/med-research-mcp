@@ -68,13 +68,14 @@ function gitStatus(...args) {
   return status;
 }
 
-/** The commit the package's current `next` build was published from, if npm recorded one. */
+/**
+ * The commit the package's current `next` build was published from, if npm recorded one.
+ * The package has a `next` dist-tag, so `npm view` failing is a registry or network
+ * error and fails the run: taking it for "no next build yet" would skip the check
+ * for whether anything that ships has changed.
+ */
 function nextBuildCommit(name) {
-  try {
-    return execFileSync("npm", ["view", `${name}@next`, "gitHead"], { cwd: root, encoding: "utf-8" }).trim() || undefined;
-  } catch {
-    return undefined; // no `next` dist-tag yet
-  }
+  return execFileSync("npm", ["view", `${name}@next`, "gitHead"], { cwd: root, encoding: "utf-8" }).trim() || undefined;
 }
 
 function decide() {
