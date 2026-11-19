@@ -1,6 +1,12 @@
-# Publish to npm when a GitHub release is published. A prerelease version
-# (0.6.0-next.1) goes to the `next` dist-tag, any other to `latest`. npm trusted
-# publishing authenticates the job (OIDC, no token), and npm adds provenance.
+# Publishes to npm. Two jobs do it:
+# - `publish`, when a GitHub release is published: a pre-release version
+#   (0.6.0-next.1) goes to the `next` dist-tag, any other to `latest`;
+# - `next`, when CI passes on a push to main: a build of that commit, versioned
+#   by scripts/next-version.mjs (0.8.1-next.2.gb28f2da), goes to `next`. No tag,
+#   no GitHub release, and nothing is committed.
+# npm trusted publishing authenticates both (OIDC, no token), and npm adds
+# provenance. The trusted publisher on npmjs.com names this file and the
+# `publish` environment, which is why both jobs live here.
 #
 # npm only takes a trusted publisher for a package that exists, so the
 # package's first version was published by hand.
@@ -10,19 +16,26 @@ name: Publish
 on:
   release:
     types: [published]
+  # Matches ci.yml's `name`; renaming that workflow stops next releases.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: read
 
-# Never let two publish runs race each other.
-concurrency:
-  group: publish
-  cancel-in-progress: false
-
 jobs:
   publish:
     name: npm
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
+    # One release at a time. GitHub cancels a pending job when another joins its
+    # group, so next builds have a group of their own and never cancel a pending
+    # release.
+    concurrency:
+      group: publish-release
+      cancel-in-progress: false
     # The trusted publisher on npmjs.com names this environment.
     environment: publish
     permissions:
@@ -74,3 +87,74 @@ jobs:
       - run: npm publish --tag "$DIST_TAG"
         env:
           DIST_TAG: ${{ steps.version.outputs.dist-tag }}
+
+  next:
+    name: npm (next)
+    # Only CI runs for pushes to main in this repository, not in a fork, and only
+    # while the commit is still main's tip (github.sha, for a workflow_run): a
+    # pull request's run, from a branch or a fork, never publishes, and neither
+    # does a run for an older commit that finishes late or is re-run.
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.repository == 'emilkrebs/med-research-mcp' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_sha == github.sha
+    runs-on: ubuntu-latest
+    # One next build at a time, and a newer tip's build replaces a pending one.
+    # The group is the job's, not the workflow's: every CI run that completes on
+    # a branch named main starts this workflow, and a skipped job is never
+    # queued, so it can't cancel the tip's pending build.
+    concurrency:
+      group: publish-next
+      cancel-in-progress: false
+    environment: publish
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing and provenance
+    steps:
+      # The commit CI passed on, with all history and tags: the version counts
+      # commits since the last release tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          check-latest: true
+          package-manager-cache: false
+          registry-url: "https://registry.npmjs.org"
+
+      # Leaves the version empty when main has moved on or nothing that ships
+      # has changed since the current `next` build; the steps below then skip.
+      - name: Pick the version
+        id: version
+        run: node scripts/next-version.mjs
+
+      # CI has already typechecked and tested this commit on every supported Node.
+      - if: steps.version.outputs.version != ''
+        run: npm ci
+
+      # The version is set in this checkout only. mcpb/manifest.json ships in
+      # the package too, so it gets the version as well. prepublishOnly builds
+      # dist/, which inlines the version.
+      - name: Publish
+        if: steps.version.outputs.version != ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          npm version "$VERSION" --no-git-tag-version
+          node -e '
+            const fs = require("node:fs");
+            const file = "mcpb/manifest.json";
+            const text = fs.readFileSync(file, "utf-8");
+            const updated = text.replace(/^(  "version": )"[^"]*"/m, `$1"${process.env.VERSION}"`);
+            if (updated === text) throw new Error(`No top-level version in ${file}.`);
+            fs.writeFileSync(file, updated);
+          '
+          npm publish --tag next
+          echo "Published \`med-research-mcp@$VERSION\` to the \`next\` dist-tag." >> "$GITHUB_STEP_SUMMARY"
