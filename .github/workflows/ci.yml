@@ -31,6 +31,8 @@ jobs:
             package-lock.json
             benchmark/package-lock.json
 
+      # Identity contract with the official MCP registry; dependency-free.
+      - run: npm run check:registry
       - run: npm ci
       - run: npm run typecheck
       - run: npm test

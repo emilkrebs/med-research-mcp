@@ -79,6 +79,7 @@ jobs:
           fi
           echo "dist-tag=$dist_tag" >> "$GITHUB_OUTPUT"
 
+      - run: npm run check:registry
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
