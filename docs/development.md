@@ -50,6 +50,18 @@ The `.mcpb` is one esbuild bundle plus two exceptions ([`scripts/build-mcpb.mjs`
 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on every push to `main` and every pull request, on Node 22.22.2, 24 and 26: typecheck, the registry metadata check, tests, both builds, a smoke test that unpacks the `.mcpb`, checks it answers `initialize` with the package version and resolves an HTML page and a PDF through it from a local server, and the benchmark harness's offline tests.
 
+## Next releases
+
+Once CI passes on a push to `main`, the `next` job in [`publish.yml`](../.github/workflows/publish.yml) publishes that commit to npm under the `next` dist-tag, so a change can be tried before it's released:
+
+```bash
+npx -y med-research-mcp@next
+```
+
+[`scripts/next-version.mjs`](../scripts/next-version.mjs) picks the version, `<x.y.z>-next.<n>.g<commit>`, for example `0.8.1-next.2.gb28f2da`: a pre-release of the version in `package.json` once it's been bumped past the last release, otherwise of the patch after the last release, with `<n>` the number of commits since that release. A build therefore sorts above the last release and below the next. The job sets the version in its own checkout only: it commits nothing, creates no tag or GitHub release and builds no `.mcpb`.
+
+The job publishes nothing when `main` has moved past the commit, since the newer commit's run publishes that one. It also skips a commit when nothing that ships has changed since the commit the current `next` build came from: the non-`dist` entries of `files` in `package.json`, `package.json` and its lockfile, and the build config. Docs, tests, the benchmark and CI changes don't publish. The job waits on the CI workflow by its name, `CI`, so renaming that workflow stops next releases.
+
 ## Releasing
 
 1. Make sure CI is green on `main`.

@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/med-research-mcp"><img src="https://img.shields.io/npm/v/med-research-mcp" alt="npm 版本"></a>
   <a href="https://www.modelscope.cn/mcp/servers/emilkrebs/med-research-mcp"><img src="https://img.shields.io/badge/%E9%AD%94%E6%90%AD%E7%A4%BE%E5%8C%BA-MCP%20%E6%9C%8D%E5%8A%A1%E5%99%A8-624aff" alt="魔搭社区 MCP 服务器"></a>
+  <a href="https://mcpservers.org/servers/emilkrebs/med-research-mcp"><img src="https://mcpservers.org/badge.svg" alt="已收录于 mcpservers.org"></a>
 </p>
 
 <p align="center">
@@ -26,6 +27,12 @@
   <a href="#医学免责声明">免责声明</a> ·
   <a href="#数据来源与版权">数据来源</a>
 </p>
+
+<p align="center">
+  <img src="docs/media/med-research-mcp-demo-zh.gif" alt="真实输出：向助手提问替尔泊肽是否有助于阻塞性睡眠呼吸暂停，它检索 PubMed、Europe PMC 和 ChinaXiv，返回标有「随机对照试验」「tier 4」「corrected」的文献卡片，并指出列表中那条 Meta 分析没有评级。" width="880">
+</p>
+
+<p align="center"><sub>十秒真实输出：一个问题、一次覆盖四个数据库的检索，以及助手在回答前读取的标注。</sub></p>
 
 `med-research-mcp` 是一个 [MCP](https://modelcontextprotocol.io)（模型上下文协议）服务器。它让 AI 助手能够检索 PubMed、Europe PMC 和 ChinaRxiv（含 ChinaXiv 与 RussiaRxiv 数据源），并告诉助手每条结果属于哪一类研究。这样，助手在回答之前就能分清 Meta 分析和病例报告，也能识别出已撤稿的论文。它专为医学、临床和膳食补充剂研究而设计：在这些领域，“证据究竟说明了什么”比一串摘要更重要。
 
