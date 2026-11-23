@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.emilkrebs/med-research-mcp",
   "title": "Med Research",
-  "description": "PubMed, Europe PMC and ChinaRxiv search with study-design and retraction labels.",
+  "description": "Evidence-graded literature search: PubMed, Europe PMC, ChinaXiv, RussiaRxiv with study-design tiers.",
   "repository": {
     "id": "1299183077",
     "url": "https://github.com/emilkrebs/med-research-mcp",
