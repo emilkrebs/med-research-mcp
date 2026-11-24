@@ -5,8 +5,12 @@
  * The registry matches a published npm package to a server name through the
  * package's `mcpName`, and the schema it validates against fixes the shape of
  * server.json, so the two files can disagree only by being edited separately.
- * This check runs in CI (`npm run check:registry`) before a publish that the
- * registry would otherwise reject.
+ * This check runs in CI (`npm run check:registry`) and in the release job before
+ * `npm publish`, so a server.json the registry would reject fails before the
+ * version is on npm rather than at `mcp-publisher publish`.
+ *
+ * It checks what the registry needs from this project, not the whole schema:
+ * every entry in `packages` is this npm package, at this version, over stdio.
  */
 
 import { readFileSync } from "node:fs";
@@ -21,22 +25,37 @@ const DESCRIPTION_LIMIT = 100;
 
 const pkg = readJson("package.json");
 const server = readJson("server.json");
-const pkgEntry = server.packages?.[0] ?? {};
 
 const failures = [];
 function expectEqual(actual, wanted, what) {
   if (actual !== wanted) failures.push(`${what} is ${JSON.stringify(actual)}, expected ${JSON.stringify(wanted)}`);
 }
+function expectNonEmptyString(value, what) {
+  if (typeof value !== "string" || value.trim() === "") failures.push(`${what} is ${JSON.stringify(value)}, expected a non-empty string`);
+}
 
-expectEqual(pkg.mcpName, server.name, "package.json mcpName and server.json name");
-expectEqual(pkgEntry.identifier, pkg.name, "server.json packages[0].identifier and package.json name");
-expectEqual(pkgEntry.version, pkg.version, "server.json packages[0].version and package.json version");
-expectEqual(server.version, pkg.version, "server.json version and package.json version");
 expectEqual(server.$schema, SCHEMA, "server.json $schema");
-expectEqual(pkgEntry.transport?.type, "stdio", "server.json packages[0].transport.type");
+expectNonEmptyString(pkg.mcpName, "package.json mcpName");
+expectNonEmptyString(server.name, "server.json name");
+expectEqual(pkg.mcpName, server.name, "package.json mcpName and server.json name");
+expectEqual(server.version, pkg.version, "server.json version and package.json version");
 
-if (typeof server.description !== "string" || server.description.length > DESCRIPTION_LIMIT) {
-  failures.push(`server.json description is ${server.description?.length ?? "missing"} characters, the registry allows at most ${DESCRIPTION_LIMIT}`);
+const { description } = server;
+if (typeof description !== "string" || description.trim() === "" || description.length > DESCRIPTION_LIMIT) {
+  const length = typeof description === "string" ? `${description.length} characters` : "missing";
+  failures.push(`server.json description is ${length}, the registry requires 1 to ${DESCRIPTION_LIMIT}`);
+}
+
+if (!Array.isArray(server.packages) || server.packages.length === 0) {
+  failures.push("server.json packages is missing or empty, expected the npm package");
+} else {
+  server.packages.forEach((entry, i) => {
+    const at = `server.json packages[${i}]`;
+    expectEqual(entry?.registryType, "npm", `${at}.registryType`);
+    expectEqual(entry?.identifier, pkg.name, `${at}.identifier and package.json name`);
+    expectEqual(entry?.version, pkg.version, `${at}.version and package.json version`);
+    expectEqual(entry?.transport?.type, "stdio", `${at}.transport.type`);
+  });
 }
 
 if (failures.length > 0) {

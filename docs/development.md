@@ -70,7 +70,7 @@ The job publishes nothing when `main` has moved past the commit, since the newer
 
    ```bash
    npm ci
-   npm run typecheck && npm test
+   npm run typecheck && npm run check:registry && npm test
    npm run build && npm run build:mcpb
    npm pack --dry-run   # should list dist/core, dist/mcp, dist/http, src, skills, mcpb/manifest.json
    ```
@@ -83,7 +83,7 @@ The job publishes nothing when `main` has moved past the commit, since the newer
    gh release create v<x.y.z> dist/med-research-mcp.mcpb --target main --title v<x.y.z> --generate-notes --draft
    ```
 
-Publishing the release runs [`publish.yml`](../.github/workflows/publish.yml). It checks that the tag is `v` plus the version in `package.json` and that the release's pre-release setting matches the version, runs the typecheck and tests, and runs `npm publish` with [trusted publishing](https://docs.npmjs.com/trusted-publishers): no token, and npm adds provenance. A pre-release goes to the `next` dist-tag and any other version to `latest`. The trusted publisher on npmjs.com names the workflow file and the `publish` environment, so renaming either stops publishing until it's changed there too. A run that fails before `npm publish` has published nothing: fix the cause and re-run it, or, if the fix needs a new commit, delete the release and its tag and create them again.
+Publishing the release runs [`publish.yml`](../.github/workflows/publish.yml). It checks that the tag is `v` plus the version in `package.json` and that the release's pre-release setting matches the version, runs the registry metadata check, the typecheck and tests, and runs `npm publish` with [trusted publishing](https://docs.npmjs.com/trusted-publishers): no token, and npm adds provenance. A pre-release goes to the `next` dist-tag and any other version to `latest`. The trusted publisher on npmjs.com names the workflow file and the `publish` environment, so renaming either stops publishing until it's changed there too. A run that fails before `npm publish` has published nothing: fix the cause and re-run it, or, if the fix needs a new commit, delete the release and its tag and create them again.
 
 Once it has published, check the package the way a client runs it, from a directory outside the repository and with no environment variables set: it must start, keep stdout clean (stdout is the MCP channel; logs go to stderr), and list three tools.
 
@@ -98,7 +98,7 @@ printf '%s\n' \
 
 ### Publishing the registry entry
 
-[`server.json`](../server.json) lists the server in the [official MCP registry](https://registry.modelcontextprotocol.io). `package.json`'s `mcpName` ties the npm package to that entry, and the registry fetches `med-research-mcp@<x.y.z>` from npm to check it, so publish the entry only after the release's `publish.yml` run has put the version on npm. The `io.github.emilkrebs/…` namespace is proven by logging in as the GitHub account that owns the repository.
+[`server.json`](../server.json) lists the server in the [official MCP registry](https://registry.modelcontextprotocol.io). `package.json`'s `mcpName` ties the npm package to that entry, and the registry fetches `med-research-mcp@<x.y.z>` from npm to check it, so publish the entry only after the release's `publish.yml` run has put the version on npm. Skip it for a pre-release: the registry makes the highest semver version its latest, and `0.9.0-next.0` sorts above `0.8.1`, so registry clients would be offered the pre-release, while npm's `latest` and GitHub's latest release stay on the last stable version. The `io.github.emilkrebs/…` namespace is proven by logging in as the GitHub account that owns the repository.
 
 ```bash
 brew install mcp-publisher   # once, or download a release binary

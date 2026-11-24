@@ -57,7 +57,7 @@
     "dev": "tsx watch src/mcp/index.ts",
     "dev:http": "tsx watch src/http/index.ts",
     "build": "tsup && tsc --emitDeclarationOnly",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.public-types.json",
     "check:registry": "node scripts/check-registry.mjs",
     "start": "node dist/mcp/index.js",
     "start:http": "node dist/http/index.js",

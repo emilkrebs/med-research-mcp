@@ -20,7 +20,7 @@
       "environmentVariables": [
         {
           "name": "NCBI_EMAIL",
-          "description": "Your email address, so NCBI can contact you instead of blocking an IP that exceeds its rate limits.",
+          "description": "Your contact email, sent with every NCBI (PubMed) request as its usage policy asks, so NCBI can reach you before blocking an IP that exceeds its limits. Also used for Unpaywall and ChinaRxiv when their own emails aren't set. Without one, NCBI and Unpaywall requests carry the project's contact address instead.",
           "isRequired": false,
           "format": "string",
           "isSecret": false
@@ -31,6 +31,20 @@
           "isRequired": false,
           "format": "string",
           "isSecret": true
+        },
+        {
+          "name": "MED_RESEARCH_UNPAYWALL_EMAIL",
+          "description": "Contact email for Unpaywall, which literature_fulltext asks for open-access copies. Falls back to NCBI_EMAIL, then to the project's contact address.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "MED_RESEARCH_PROXY_PREFIX",
+          "description": "Your institution's EZproxy host for doi.org, e.g. https://doi-org.ezproxy.your-university.edu, to read paywalled papers you have access to. It works only if the proxy lets this machine in without a login, e.g. on the campus network or VPN. Use it only if your institution's licences allow it: many publishers forbid using subscription content with AI tools.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
         }
       ]
     }
