@@ -42,7 +42,7 @@ export type {
   RecordFlag,
   Correction,
   CorrectionType,
-  Article as NcbiArticle,
+  Article,
   GradedArticle,
   DateRange,
   SearchFilters,
@@ -56,3 +56,7 @@ export type {
   FulltextData,
   FulltextSource,
 } from "./types.js";
+
+import type { Article } from "./types.js";
+/** @deprecated Use {@link Article}. Up to 0.8.0 this entry exported the type only under this name. */
+export type NcbiArticle = Article;

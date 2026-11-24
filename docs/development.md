@@ -48,7 +48,7 @@ The `.mcpb` is one esbuild bundle plus two exceptions ([`scripts/build-mcpb.mjs`
 
 ## CI
 
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on every push to `main` and every pull request, on Node 22.22.2, 24 and 26: typecheck, tests, both builds, a smoke test that unpacks the `.mcpb`, checks it answers `initialize` with the package version and resolves an HTML page and a PDF through it from a local server, and the benchmark harness's offline tests.
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on every push to `main` and every pull request, on Node 22.22.2, 24 and 26: typecheck, the registry metadata check, tests, both builds, a smoke test that unpacks the `.mcpb`, checks it answers `initialize` with the package version and resolves an HTML page and a PDF through it from a local server, and the benchmark harness's offline tests.
 
 ## Next releases
 
@@ -65,12 +65,12 @@ The job publishes nothing when `main` has moved past the commit, since the newer
 ## Releasing
 
 1. Make sure CI is green on `main`.
-2. Set the version in `package.json` with `npm version <x.y.z> --no-git-tag-version`, then in `mcpb/manifest.json`, `plugin.json` and `mcp.json` (`build:mcpb` refuses a manifest version that differs from `package.json`). A pre-release has a suffix: `0.7.0-next.0`, `0.7.0-next.1`, …
+2. Set the version in `package.json` with `npm version <x.y.z> --no-git-tag-version`, then in `mcpb/manifest.json`, `plugin.json`, `mcp.json` and `server.json` (`build:mcpb` refuses a manifest version that differs from `package.json`, and `npm run check:registry` fails when `server.json` and `package.json` disagree). A pre-release has a suffix: `0.7.0-next.0`, `0.7.0-next.1`, …
 3. Run the checks the release depends on, then commit and push to `main`, or merge a pull request with the change:
 
    ```bash
    npm ci
-   npm run typecheck && npm test
+   npm run typecheck && npm run check:registry && npm test
    npm run build && npm run build:mcpb
    npm pack --dry-run   # should list dist/core, dist/mcp, dist/http, src, skills, mcpb/manifest.json
    ```
@@ -83,7 +83,7 @@ The job publishes nothing when `main` has moved past the commit, since the newer
    gh release create v<x.y.z> dist/med-research-mcp.mcpb --target main --title v<x.y.z> --generate-notes --draft
    ```
 
-Publishing the release runs [`publish.yml`](../.github/workflows/publish.yml). It checks that the tag is `v` plus the version in `package.json` and that the release's pre-release setting matches the version, runs the typecheck and tests, and runs `npm publish` with [trusted publishing](https://docs.npmjs.com/trusted-publishers): no token, and npm adds provenance. A pre-release goes to the `next` dist-tag and any other version to `latest`. The trusted publisher on npmjs.com names the workflow file and the `publish` environment, so renaming either stops publishing until it's changed there too. A run that fails before `npm publish` has published nothing: fix the cause and re-run it, or, if the fix needs a new commit, delete the release and its tag and create them again.
+Publishing the release runs [`publish.yml`](../.github/workflows/publish.yml). It checks that the tag is `v` plus the version in `package.json` and that the release's pre-release setting matches the version, runs the registry metadata check, the typecheck and tests, and runs `npm publish` with [trusted publishing](https://docs.npmjs.com/trusted-publishers): no token, and npm adds provenance. A pre-release goes to the `next` dist-tag and any other version to `latest`; a version that went to `latest` then goes to the MCP registry too ([below](#the-registry-entry)). The trusted publisher on npmjs.com names the workflow file and the `publish` environment, so renaming either stops publishing until it's changed there too. A run that fails before `npm publish` has published nothing: fix the cause and re-run it, or, if the fix needs a new commit, delete the release and its tag and create them again.
 
 Once it has published, check the package the way a client runs it, from a directory outside the repository and with no environment variables set: it must start, keep stdout clean (stdout is the MCP channel; logs go to stderr), and list three tools.
 
@@ -94,4 +94,25 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
   | npx -y med-research-mcp@<x.y.z>
+```
+
+### The registry entry
+
+[`server.json`](../server.json) lists the server in the [official MCP registry](https://registry.modelcontextprotocol.io). `package.json`'s `mcpName` ties the npm package to that entry, and the registry reads `med-research-mcp@<x.y.z>` from npm to check it, so the entry can only be published once npm has the version.
+
+For a stable release, the `registry` job in `publish.yml` publishes it after `npm publish`: it waits until npm serves the version, logs in to the registry with the workflow's GitHub OIDC token, which proves the `io.github.emilkrebs/…` namespace, and runs `mcp-publisher publish`. It skips a pre-release: the registry makes the highest semver version its latest, and `0.9.0-next.0` sorts above `0.8.1`, so registry clients would be offered the pre-release while npm's `latest` and GitHub's latest release stay on the last stable version. The job runs the `mcp-publisher` release named in `MCP_PUBLISHER_VERSION` and checks its Sigstore signature first; raise that version deliberately.
+
+If the job fails, re-run the failed job from the run's page, which doesn't repeat `npm publish`, or publish by hand from a checkout of the release's tag, logged in as the GitHub account that owns the repository:
+
+```bash
+brew install mcp-publisher   # once, or download a release binary
+mcp-publisher login github
+mcp-publisher validate
+mcp-publisher publish
+```
+
+`status` takes the server name, a version and the new status; it does not list versions. To deprecate one without deleting the entry:
+
+```bash
+mcp-publisher status --status deprecated io.github.emilkrebs/med-research-mcp <x.y.z>
 ```

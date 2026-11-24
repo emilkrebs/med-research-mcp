@@ -1,0 +1,12 @@
+{
+  // Type-checks tests/public-types.test.ts, part of `npm run typecheck`.
+  // tsconfig.json covers src only and vitest strips types without checking
+  // them, so without this the test would pass whatever src/core exports.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "files": ["tests/public-types.test.ts"],
+  "include": []
+}

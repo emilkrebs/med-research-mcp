@@ -4,6 +4,8 @@
 # - `next`, when CI passes on a push to main: a build of that commit, versioned
 #   by scripts/next-version.mjs (0.8.1-next.2.gb28f2da), goes to `next`. No tag,
 #   no GitHub release, and nothing is committed.
+# A third, `registry`, follows `publish` for a stable version only and lists
+# it in the official MCP registry from server.json.
 # npm trusted publishing authenticates both (OIDC, no token), and npm adds
 # provenance. The trusted publisher on npmjs.com names this file and the
 # `publish` environment, which is why both jobs live here.
@@ -41,6 +43,8 @@ jobs:
     permissions:
       contents: read
       id-token: write # npm trusted publishing and provenance
+    outputs:
+      dist-tag: ${{ steps.version.outputs.dist-tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -79,6 +83,7 @@ jobs:
           fi
           echo "dist-tag=$dist_tag" >> "$GITHUB_OUTPUT"
 
+      - run: npm run check:registry
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
@@ -87,6 +92,63 @@ jobs:
       - run: npm publish --tag "$DIST_TAG"
         env:
           DIST_TAG: ${{ steps.version.outputs.dist-tag }}
+
+  registry:
+    name: MCP registry
+    needs: publish
+    # Stable versions only: the registry makes the highest semver version its
+    # latest, so a pre-release (0.9.0-next.0 sorts above 0.8.1) would be offered
+    # ahead of the last stable release. A job of its own, so no npm dependency
+    # runs with its OIDC token, and a failed run is re-run without npm publish.
+    if: needs.publish.outputs.dist-tag == 'latest'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # the registry's GitHub OIDC login
+    env:
+      # Upgrade deliberately, never to releases/latest: the step below checks
+      # that this tag's release workflow in modelcontextprotocol/registry built
+      # the binary.
+      MCP_PUBLISHER_VERSION: v1.8.16
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      - name: Download and verify mcp-publisher
+        working-directory: ${{ runner.temp }}
+        run: |
+          archive=mcp-publisher_linux_amd64.tar.gz
+          base_url="https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION"
+          curl --fail --location --silent --show-error --remote-name "$base_url/$archive"
+          curl --fail --location --silent --show-error --remote-name "$base_url/$archive.sigstore.json"
+          cosign verify-blob \
+            --bundle "$archive.sigstore.json" \
+            --certificate-identity "https://github.com/modelcontextprotocol/registry/.github/workflows/release.yml@refs/tags/$MCP_PUBLISHER_VERSION" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$archive"
+          tar xzf "$archive" mcp-publisher
+
+      # The registry reads the package's mcpName from registry.npmjs.org, which
+      # can take a moment to serve a version that npm publish has just added.
+      - name: Wait for npm to serve the version
+        run: |
+          name=$(jq -r .name server.json)
+          url="https://registry.npmjs.org/$(jq -r '.packages[0].identifier' server.json)/$(jq -r '.packages[0].version' server.json)"
+          for _ in $(seq 20); do
+            if [ "$(curl --fail --silent "$url" | jq -r .mcpName)" = "$name" ]; then exit 0; fi
+            sleep 15
+          done
+          echo "::error::$url didn't serve mcpName $name within 5 minutes."
+          exit 1
+
+      - name: Publish server.json
+        run: |
+          "$RUNNER_TEMP/mcp-publisher" login github-oidc
+          "$RUNNER_TEMP/mcp-publisher" publish
+          echo "Published \`$(jq -r .name server.json)\` $(jq -r .version server.json) to the MCP registry." >> "$GITHUB_STEP_SUMMARY"
 
   next:
     name: npm (next)
