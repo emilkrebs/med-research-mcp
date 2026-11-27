@@ -4,7 +4,7 @@ import { NcbiClient, searchPubMed } from "../src/core/pubmed";
 import { EuropePmcAdapter } from "../src/core/adapters/europepmc";
 import type { AdapterHttp } from "../src/core/adapters/http";
 import { LRUBackend } from "../src/core/cache";
-import { classifyDesign, designPublicationTypes, excludedPublicationTypes, filteredPageWarning } from "../src/core/grader";
+import { classifyArticle, classifyDesign, designPublicationTypes, excludedPublicationTypes, filteredPageWarning, mergeDuplicate } from "../src/core/grader";
 import { STUDY_TYPES } from "../src/core/types";
 import type { DatabaseAdapter } from "../src/core/adapters/types";
 import type { NcbiArticle, StudyType } from "../src/core/types";
@@ -381,5 +381,49 @@ describe("de-duplication of records that share a PMID", () => {
   it("still merges a DOI-less record that one database returned twice", async () => {
     const twice = record("ru-1", { database: "russiarxiv" });
     expect((await run(fakeAdapter("russiarxiv", [twice, twice]))).articles).toHaveLength(1);
+  });
+});
+
+describe("the identifiers of a merged copy", () => {
+  const run = (...adapters: DatabaseAdapter[]) => searchLiterature({ query: "x", database: adapters.map((a) => a.id) }, new LRUBackend(), adapters);
+  const rct = ["Randomized Controlled Trial"];
+
+  it("takes the DOI of the dropped copy when the kept one has none: a pubmed copy that wins over the europepmc copy with the DOI", async () => {
+    const pubmed = record("42", { publicationTypes: rct, authors: ["Royer GL Jr"] });
+    const europepmc = record("42", { doi: "10.1234/42", database: "europepmc", authors: ["Royer GL"], url: "https://europepmc.org/article/MED/42" });
+    const out = await run(fakeAdapter("pubmed", [pubmed]), fakeAdapter("europepmc", [europepmc]));
+    expect(out.articles).toHaveLength(1);
+    expect(out.articles[0]).toMatchObject({ id: "42", studyType: "randomized-controlled-trial", doi: "10.1234/42", authors: ["Royer GL Jr"] });
+    // Only the two identifiers are taken: the other copy's url, database and the rest stay with it.
+    expect(out.articles[0]!.database).toBeUndefined();
+    expect(out.articles[0]!.url).toBeUndefined();
+  });
+
+  it("never replaces a DOI or PMCID the kept copy has", async () => {
+    const pubmed = record("42", { doi: "10.1234/kept", pmcid: "PMC1", publicationTypes: rct });
+    const europepmc = record("42", { doi: "10.1234/other", pmcid: "PMC2", database: "europepmc" });
+    const out = await run(fakeAdapter("pubmed", [pubmed]), fakeAdapter("europepmc", [europepmc]));
+    expect(out.articles).toHaveLength(1);
+    expect(out.articles[0]).toMatchObject({ doi: "10.1234/kept", pmcid: "PMC1" });
+  });
+
+  it("takes the PMCID of the dropped copy when the kept one has none, and a DOI and a PMCID separately", async () => {
+    const pubmed = record("42", { doi: "10.1234/kept", publicationTypes: rct });
+    const europepmc = record("42", { doi: "10.1234/kept", pmcid: "PMC3", database: "europepmc" });
+    const out = await run(fakeAdapter("pubmed", [pubmed]), fakeAdapter("europepmc", [europepmc]));
+    expect(out.articles[0]).toMatchObject({ doi: "10.1234/kept", pmcid: "PMC3" });
+
+    const noDoi = record("43", { pmcid: "PMC4", publicationTypes: rct });
+    const noPmcid = record("43", { doi: "10.1234/43", database: "europepmc" });
+    const both = await run(fakeAdapter("pubmed", [noDoi]), fakeAdapter("europepmc", [noPmcid]));
+    expect(both.articles[0]).toMatchObject({ doi: "10.1234/43", pmcid: "PMC4" });
+  });
+
+  it("returns the kept copy itself when there is nothing to add", () => {
+    const first = classifyArticle(record("1", { doi: "10.1234/a", pmcid: "PMC1", publicationTypes: rct }));
+    const second = classifyArticle(record("1", { database: "europepmc" }));
+    expect(mergeDuplicate(first, second)).toBe(first);
+    expect(mergeDuplicate(first, { ...second, doi: "10.1234/b", pmcid: "PMC2" })).toBe(first);
+    expect(mergeDuplicate(classifyArticle(record("1")), classifyArticle(record("1", { doi: "10.1234/a" })))).toMatchObject({ doi: "10.1234/a" });
   });
 });

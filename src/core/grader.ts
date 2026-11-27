@@ -418,7 +418,9 @@ function mergeCorrections(kept: Correction[] | undefined, other: Correction[] | 
 /**
  * Merge two records of the same paper (same DOI or PMID): keep the higher-ranked one (the first on a tie) and
  * add the other's paper-level flags and the links (`corrections`) it has that the kept one lacks, so a
- * retraction, or the published version of a preprint, known to only one database is not lost.
+ * retraction, or the published version of a preprint, known to only one database is not lost. Copies merged on
+ * a PMID may differ in what they hold, so the kept one also takes the other's `doi` and `pmcid` when it has none
+ * of its own (`literature_fulltext` and citations need them); a value it has is never replaced, and no other field is copied.
  */
 export function mergeDuplicate(first: GradedArticle, second: GradedArticle): GradedArticle {
   const [kept, other] = rankKey(second) > rankKey(first) ? [second, first] : [first, second];
@@ -426,9 +428,14 @@ export function mergeDuplicate(first: GradedArticle, second: GradedArticle): Gra
   const corrections = mergeCorrections(kept.corrections, other.corrections);
   const moreFlags = flags.length > (kept.flags?.length ?? 0);
   const moreLinks = corrections !== kept.corrections;
-  if (!moreFlags && !moreLinks) return kept;
+  const doi = !kept.doi && other.doi ? { doi: other.doi } : {};
+  const pmcid = !kept.pmcid && other.pmcid ? { pmcid: other.pmcid } : {};
+  const moreIds = Object.keys(doi).length + Object.keys(pmcid).length > 0;
+  if (!moreFlags && !moreLinks && !moreIds) return kept;
   return {
     ...kept,
+    ...doi,
+    ...pmcid,
     ...(moreFlags ? { flags, ...(flags.some((f) => NOT_EVIDENCE.has(f)) ? { designTier: 0 } : {}) } : {}),
     ...(moreLinks ? { corrections } : {}),
   };
