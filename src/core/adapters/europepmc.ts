@@ -73,7 +73,7 @@
 import { LRUCache } from "lru-cache";
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { cleanDoi, first, isoDateBound, pageWindow, publicationDateClause, splitAuthors, strArray, toEuropePmcQuery, toIso1 } from "./util.js";
+import { canonicalPmid, cleanDoi, first, isoDateBound, pageWindow, publicationDateClause, splitAuthors, strArray, toEuropePmcQuery, toIso1 } from "./util.js";
 import { designPublicationTypes } from "../grader.js";
 import { htmlToText } from "../text.js";
 import type { Article, Correction, CorrectionType, SearchInput } from "../types.js";
@@ -285,6 +285,11 @@ export class EuropePmcAdapter extends RestAdapter {
     const next = data?.nextCursorMark;
     if (next && next !== cursor) known.cursors.set(offset + (data?.resultList?.result?.length ?? 0), next);
     return { count, ids: articles.map((a) => a.id) };
+  }
+
+  /** A PMID as the bare number its MEDLINE records are keyed on; PMCIDs, `PPR…` and `SRC:id` ids are left as given. */
+  normalizeId(id: string): string {
+    return canonicalPmid(id);
   }
 
   protected async fetchOne(id: string): Promise<Article | null> {

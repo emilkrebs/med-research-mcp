@@ -56,6 +56,12 @@ export interface DatabaseAdapter {
    */
   fetch(ids: string[], cache: Cache, warn?: (warning: string) => void): Promise<Article[]>;
   /**
+   * The id in the form this database keys its records on, for the ids a caller typed by hand ("PMID:9500320" and
+   * "00012345" for "9500320"). `fetchLiterature` applies it, so `fetch` only ever gets canonical ids, and so that two
+   * spellings of one id fetch (and come back) once. Absent, an id is already canonical.
+   */
+  normalizeId?(id: string): string;
+  /**
    * Complete records for an explicit fetch (`literature_fetch`), for databases
    * whose search endpoint only returns previews (e.g. ChinaXiv cuts abstracts at
    * 500 characters). `search` keeps using `fetch` and its cheap previews; when

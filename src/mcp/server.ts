@@ -305,7 +305,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
 
   const literatureFetchShape = {
     ids: z
-      .array(z.string())
+      .array(z.string().trim().min(1, "An id can't be empty."))
       .min(1)
       .max(50)
       .describe(

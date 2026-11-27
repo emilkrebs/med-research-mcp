@@ -471,6 +471,11 @@ export async function searchLiterature(
  * results (studyType, designTier, flags) and with the MeSH headings that search leaves out.
  * Throws INVALID_INPUT for an unknown database.
  *
+ * Ids are trimmed, and each is fetched once however often and however it is spelled ("PMID:9500320",
+ * "00009500320" and " 9500320 " are one PubMed id, see {@link DatabaseAdapter.normalizeId}), so a record comes
+ * back once, in the order of its first id. `missing` lists the ids as the caller sent them (trimmed), each
+ * spelling once, so that the caller can match them up; an empty id asks for nothing and is missing.
+ *
  * @param adapter explicit adapter; defaults to the one named by `input.database`.
  */
 export async function fetchLiterature(
@@ -482,13 +487,29 @@ export async function fetchLiterature(
   if (!resolved) throw unknownDatabase([input.database]);
 
   const warnings: string[] = [];
-  const articles = resolved.fetchFull
-    ? await resolved.fetchFull(input.ids, cache)
-    : await resolved.fetch(input.ids, cache, (w) => warnings.push(w));
+  const sent = [...new Set(input.ids.map((id) => id.trim()))];
+  const canonical = (id: string): string => resolved.normalizeId?.(id) ?? id;
+  // Keyed in upper case, as the found ids are below: Europe PMC reads "ppr12345" and "PPR12345" as one id.
+  const wanted = new Map<string, string>();
+  for (const id of sent) {
+    const asked = canonical(id);
+    if (asked !== "" && !wanted.has(asked.toUpperCase())) wanted.set(asked.toUpperCase(), asked);
+  }
+  const ids = [...wanted.values()];
+  const fetched =
+    ids.length === 0
+      ? []
+      : resolved.fetchFull
+        ? await resolved.fetchFull(ids, cache)
+        : await resolved.fetch(ids, cache, (w) => warnings.push(w));
+  // A PMCID and the PMID of its record are two ids, and Europe PMC returns that record for each.
+  const articles = [...new Map(fetched.map((a) => [a.id, a])).values()];
   // Case-insensitive: adapters return canonical ids ("PPR123456") for any input case. A PMCID
   // fetched from Europe PMC comes back under its PMID, so it counts as found through `pmcid`.
-  const found = new Set(articles.flatMap((a) => [a.id, a.pmcid ?? ""]).map((id) => id.toUpperCase()));
-  const missing = input.ids.filter((id) => !found.has(id.toUpperCase()));
+  const found = new Set(
+    articles.flatMap((a) => [a.id, a.pmcid]).filter((id): id is string => !!id).map((id) => id.toUpperCase()),
+  );
+  const missing = sent.filter((id) => !found.has(canonical(id).toUpperCase()));
   if (missing.length > 0) warnings.push(`${missing.length} id(s) could not be fetched from ${resolved.name}.`);
 
   return { articles: articles.map((a) => classifyArticle(a)), missing, ...(warnings.length > 0 ? { warnings } : {}) };

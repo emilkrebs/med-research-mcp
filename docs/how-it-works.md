@@ -238,7 +238,7 @@ The PubMed counts quoted above (77%, 16%) were measured on PubMed by the project
 
 ### `literature_fetch`
 
-It returns the stored records, with the whole abstract, publication types, MeSH headings and correction links, and grades each one like a search result (`studyType`, `designTier`, `flags`; the MeSH headings feed the grade and are kept, where search drops them). Records come back in the order requested, and ids that couldn't be fetched are listed in `missing`. The library's `fetchPubMed`, the PubMed-only function `fetchLiterature` builds on, returns the records ungraded.
+It returns the stored records, with the whole abstract, publication types, MeSH headings and correction links, and grades each one like a search result (`studyType`, `designTier`, `flags`; the MeSH headings feed the grade and are kept, where search drops them). Ids are trimmed and de-duplicated first (the adapter's `normalizeId` also reads `PMID:9500320`, `MED:9500320` and `00009500320` as the PMID `9500320`, for PubMed and Europe PMC), so a record is fetched and returned once, in the order of its first id; ids that couldn't be fetched are listed in `missing`, as the caller sent them. The library's `fetchPubMed`, the PubMed-only function `fetchLiterature` builds on, returns the records ungraded.
 
 - **PubMed** runs `esummary` and `efetch`, as in search.
 - **Europe PMC** looks an id up by `EXT_ID` and `SRC` and accepts only an exact match. A bare number would run a full-text search and return unrelated papers.
