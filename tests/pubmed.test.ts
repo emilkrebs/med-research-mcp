@@ -321,7 +321,10 @@ describe("searchPubMed orchestration", () => {
     const out = await searchPubMed({ query: "x", minDesignTier: 4 }, new LRUBackend(), fakeClient());
     expect(out.articles).toHaveLength(1);
     expect(out.articles[0]?.id).toBe("11111111");
-    expect(out.warnings).toEqual([expect.stringContaining("leaves out every record with an unknown design tier")]);
+    expect(out.warnings).toEqual([
+      expect.stringContaining("leaves out every record with an unknown design tier"),
+      expect.stringContaining("filter kept 1 of the 2 records this page fetched"),
+    ]);
   });
 
   it("says what the filter leaves out when PubMed returns nothing", async () => {
@@ -336,7 +339,7 @@ describe("searchPubMed orchestration", () => {
 
   it("explains an animal-study filter that finds none, unless minDesignTier is what left them out", async () => {
     const none = await searchPubMed({ query: "x", studyTypes: ["animal-study"] }, new LRUBackend(), fakeClient());
-    expect(none.warnings).toEqual([expect.stringContaining("flagged animals-not-humans")]);
+    expect(none.warnings).toEqual([expect.stringContaining("filter kept 0 of the 2 records"), expect.stringContaining("flagged animals-not-humans")]);
 
     const esearch = vi.fn();
     const client = fakeClient();

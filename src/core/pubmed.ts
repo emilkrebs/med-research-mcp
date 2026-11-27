@@ -15,7 +15,7 @@ import { firstPublished, pageWindow } from "./adapters/util.js";
 import { requestWithRetries } from "./request.js";
 import { xmlToText } from "./text.js";
 import { contactEmail, envSetting, PROJECT_TOOL, USER_AGENT } from "./version.js";
-import { classifyArticle, designPublicationTypes, filterWarnings, noAnimalStudiesWarning } from "./grader.js";
+import { classifyArticle, designPublicationTypes, excludedPublicationTypes, filteredPageWarning, filterWarnings, noAnimalStudiesWarning } from "./grader.js";
 import { CORRECTION_TYPES } from "./types.js";
 import type { Correction, CorrectionType, FetchInput, FetchOutput, GradedArticle, Article, SearchInput, SearchOutput, StudyType } from "./types.js";
 
@@ -409,7 +409,8 @@ export class NcbiClient {
   /**
    * Returns the PMIDs of the page asked for (`page`, `maxResults`), the total count, and whether
    * a later page can hold records. A studyTypes or minDesignTier filter narrows the query to the
-   * publication types it can keep (see designPublicationTypes), so the count is of candidates for it.
+   * publication types it can keep and away from those that give another design (see designPublicationTypes and
+   * excludedPublicationTypes), so the count is of candidates for it.
    * With `sort: "date"`, the PMIDs are those first published last, newest first (see
    * {@link newest}). An identical search within `searchTtlMs` returns the same PMIDs, and
    * its later pages are cut from the same list. A search matching more than PubMed's first 9,999
@@ -424,7 +425,15 @@ export class NcbiClient {
     const { offset, size } = pageWindow(input);
     const types = designPublicationTypes(input.studyTypes, input.minDesignTier);
     if (types?.length === 0) return { count: 0, pmids: [], more: false };
-    const term = types ? `(${input.query}) AND (${types.map((t) => `"${t}"[pt]`).join(" OR ")})` : input.query;
+    // [pt] includes the narrower types ("Clinical Trial"[pt] finds every RCT), so a type is excluded as a [pt:noexp] tag, which finds
+    // just the records that carry it, as the classifier reads them. A tag that no record has is dropped from the NOT without harm.
+    const excluded = excludedPublicationTypes(input.studyTypes, input.minDesignTier);
+    const term =
+      types || excluded.length > 0
+        ? `(${input.query})` +
+          (types ? ` AND (${types.map((t) => `"${t}"[pt]`).join(" OR ")})` : "") +
+          (excluded.length > 0 ? ` NOT (${excluded.map((t) => `"${t}"[pt:noexp]`).join(" OR ")})` : "")
+        : input.query;
     const params = new URLSearchParams({ db: "pubmed", term, retmode: "json" });
     if (input.dateRange?.from || input.dateRange?.to) {
       params.set("datetype", "pdat");
@@ -878,16 +887,20 @@ export async function searchPubMed(
   const typeFilter = input.studyTypes?.length ? new Set<StudyType>(input.studyTypes) : null;
 
   const articles: GradedArticle[] = [];
+  let fetched = 0;
   for (const pmid of pmids) {
     const summary = summaries.get(pmid);
     if (!summary) continue;
     const abstract = abstracts.get(pmid);
     const article: Article = abstract ? { ...summary, abstract } : summary;
     const graded = classifyArticle(article);
+    fetched++;
     if ((graded.designTier ?? 0) < minTier) continue;
     if (typeFilter && !typeFilter.has(graded.studyType)) continue;
     articles.push(graded);
   }
+  const cut = filteredPageWarning(articles.length, fetched);
+  if (cut) warnings.push(cut);
   const noAnimals = noAnimalStudiesWarning(input.studyTypes, input.minDesignTier, articles);
   if (noAnimals) warnings.push(noAnimals);
 

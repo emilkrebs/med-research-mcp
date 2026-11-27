@@ -11,7 +11,8 @@
  * MEDLINE records carry the same NLM PublicationType tags, MeSH headings and
  * retraction/correction links as PubMed, so they classify the same way;
  * preprints are tagged "Preprint". A studyTypes or minDesignTier filter narrows
- * the query with PUB_TYPE, as the PubMed client does with [pt].
+ * the query with PUB_TYPE, as the PubMed client does with [pt], and for `unknown` and the
+ * trial designs below the RCT also with NOT PUB_TYPE (see excludedPublicationTypes).
  *
  * Links (`commentCorrectionList` of `core` results; the types we map are in CORRECTION_TYPES below):
  * a preprint with a published version has "Preprint of" with the article's id (source MED), and the
@@ -74,7 +75,7 @@ import { LRUCache } from "lru-cache";
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
 import { canonicalPmid, cleanDoi, first, isoDateBound, pageWindow, publicationDateClause, splitAuthors, strArray, toEuropePmcQuery, toIso1 } from "./util.js";
-import { designPublicationTypes } from "../grader.js";
+import { designPublicationTypes, excludedPublicationTypes } from "../grader.js";
 import { htmlToText } from "../text.js";
 import type { Article, Correction, CorrectionType, SearchInput } from "../types.js";
 
@@ -83,6 +84,27 @@ const CURSOR_MEMO_MAX = 500;
 const CURSOR_MEMO_TTL_MS = 60 * 60 * 1000;
 /** The most ids an `idlist` request returns. */
 const WALK_PAGE_SIZE = 1000;
+
+/**
+ * Europe PMC matches `PUB_TYPE:"x"` as a run of words in a publication type, so a design's tag also finds the longer
+ * types that contain it. Those that are designs themselves (Controlled Clinical Trial, "Observational Study, Veterinary",
+ * ...) are excluded whenever the shorter tag is. The others are not designs, so an exclusion of the tag alone would drop
+ * records that `unknown` keeps: it takes the tag less these types (2026-11-27: `PUB_TYPE:"Clinical Trial Protocol" AND
+ * NOT PUB_TYPE:"Clinical Trial"` finds none of the 24,574 protocols, and `PUB_TYPE:"Book Review" AND NOT
+ * PUB_TYPE:"Review"` none of the 123,323 book reviews; the 281 scientific integrity reviews are the same). NLM's list of
+ * publication types (reviewed July 2026) has no other that contains the name of a design tag without being one.
+ */
+const OTHER_TYPES_CONTAINING: Record<string, string[]> = {
+  "Clinical Trial": ["Clinical Trial Protocol"],
+  Review: ["Book Review", "Scientific Integrity Review"],
+};
+
+/** The exclusion of a publication type: its tag, less the records of the longer types of {@link OTHER_TYPES_CONTAINING}. */
+function excludeType(type: string): string {
+  const tag = `PUB_TYPE:"${type}"`;
+  const longer = OTHER_TYPES_CONTAINING[type] ?? [];
+  return longer.length > 0 ? `(${tag}${longer.map((l) => ` AND NOT PUB_TYPE:"${l}"`).join("")})` : tag;
+}
 
 /** What earlier requests of one query learned: the `cursorMark` at each position, and the hit count. */
 interface QueryPaging {
@@ -230,7 +252,7 @@ export class EuropePmcAdapter extends RestAdapter {
     super(http);
   }
 
-  private buildQuery(input: SearchInput, types: string[] | null): string {
+  private buildQuery(input: SearchInput, types: string[] | null, excluded: string[]): string {
     // A PubMed field tag would be searched as a word: translated into the field that holds the same, or removed.
     const query = toEuropePmcQuery(input.query);
     const clauses: string[] = [];
@@ -239,6 +261,7 @@ export class EuropePmcAdapter extends RestAdapter {
     const to = isoDateBound(input.dateRange?.to, "to");
     // The date clause comes in parentheses from its helper (it is an OR of three fields), so it is not wrapped again.
     if (from || to) clauses.push(publicationDateClause(from ?? "1900-01-01", to ?? "3000-01-01"));
+    if (excluded.length > 0) clauses.push(`NOT (${excluded.map(excludeType).join(" OR ")})`);
     // Each clause and the query are in parentheses, so that a clause filters the whole query and not just the last operand of an OR in it.
     return clauses.length > 0 ? [`(${query})`, ...clauses].join(" AND ") : query;
   }
@@ -249,7 +272,8 @@ export class EuropePmcAdapter extends RestAdapter {
     const types = designPublicationTypes(input.studyTypes, input.minDesignTier);
     if (types?.length === 0) return { count: 0, ids: [] };
     const { offset, size } = pageWindow(input);
-    const base = new URLSearchParams({ query: this.buildQuery(input, types), format: "json" });
+    const excluded = excludedPublicationTypes(input.studyTypes, input.minDesignTier);
+    const base = new URLSearchParams({ query: this.buildQuery(input, types, excluded), format: "json" });
     if (input.sort === "date") base.set("sort", "FIRST_PDATE_D desc");
     const key = base.toString();
     let paging = this.paging.get(key);

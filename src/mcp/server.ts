@@ -229,6 +229,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .describe(
         "Keep only these study types. PubMed and Europe PMC are queried for their publication types, so a page holds " +
           "matching records, short only of those classified as another type (a meta-analysis also tagged as a trial); " +
+          "a short page comes with a warning, and total and nextPage count the records before the filter. " +
           "chinaxiv and russiarxiv, whose records are all unknown, are skipped unless unknown is asked for. cohort, case-control, " +
           "cross-sectional and in-vitro are never assigned from metadata (tagged observational studies come back as " +
           "observational), so filtering on them returns nothing. animal-study comes only from veterinary publication types; " +
@@ -276,7 +277,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         "preprints, letters, machine-translated text and machine-generated abstracts (chinaxiv, russiarxiv: check originalUrl " +
         "before relying on a number). " +
         "id is the database's own id; pmid is set only for a PMID: cite any other (PPR…, CBA:…, chinaxiv-…, ru-…) " +
-        "by id with the database, or by doi/url. Results are merged, de-duplicated by DOI and sorted, a page at a time: " +
+        "by id with the database, or by doi/url. Results are merged, de-duplicated by DOI or PMID and sorted, a page at a time: " +
         "when nextPage is set, more follow; a record held by two databases counts twice in total. " +
         "Use literature_fetch for full metadata of given ids, literature_fulltext for the article body.",
       // Strict, so a misnamed key (e.g. `databases`) errors instead of being stripped and silently searching PubMed.

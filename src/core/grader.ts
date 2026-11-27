@@ -302,6 +302,35 @@ export function designPublicationTypes(studyTypes?: readonly StudyType[], minDes
   return [...new Set(types)];
 }
 
+/**
+ * Publication types a database query can exclude for a studyTypes / minDesignTier filter, for the filters whose query
+ * would otherwise fill pages with records the classifier gives another design: `unknown`, which no tag narrows, and the
+ * two trial designs below the RCT, whose tags PubMed's [pt] expands to every RCT (checked 2026-11-27: "Clinical Trial"
+ * finds 1,065,791 records and 537,751 with [pt:noexp]; "Controlled Clinical Trial" 766,952 and 95,901). Any other filter
+ * gets []: its tags name its design, and the records they wrongly find are the rare ones with two tags (an RCT also
+ * tagged Observational Study classifies as observational), which the classifier still drops afterwards.
+ *
+ * A tag is listed when no record carrying it, with any of the other design tags, classifies as a wanted type at the tier
+ * asked: the classifier itself is asked about every combination of the tag groups, so the precedence between
+ * tags is its own. For `unknown` that is every design tag; for `clinical-trial` every tag but those of the Clinical
+ * Trial group and Review, as a record tagged Clinical Trial and Randomized Controlled Trial is an RCT, one tagged
+ * Clinical Trial and Review a clinical trial. Tags that name no design (Letter, Retracted Publication, ...) leave the
+ * design alone and can only lower the tier, so leaving them out of the combinations can only shorten the list.
+ */
+export function excludedPublicationTypes(studyTypes?: readonly StudyType[], minDesignTier?: number): string[] {
+  const wanted = studyTypes && studyTypes.length > 0 ? new Set(studyTypes) : null;
+  if (!wanted || !(wanted.has("unknown") || wanted.has("clinical-trial") || wanted.has("non-randomized-trial"))) return [];
+  const minTier = minDesignTier ?? 0;
+  // The tag groups some wanted combination uses: their tags can't be excluded, as a record with them may be kept.
+  const kept = new Set<Tag>();
+  for (let combination = 0; combination < 1 << DESIGN_TAGS.length; combination++) {
+    const present = DESIGN_TAGS.filter((_, i) => combination & (1 << i));
+    const { studyType, designTier } = classifyDesign({ title: "", publicationTypes: present.map((d) => d.tags.names[0]!) });
+    if (wanted.has(studyType) && (designTier ?? 0) >= minTier) for (const d of present) kept.add(d.tags);
+  }
+  return DESIGN_TAGS.filter((d) => !kept.has(d.tags)).flatMap((d) => d.tags.names);
+}
+
 /** Study types that NLM metadata never produces, so a studyTypes filter on them alone keeps nothing. */
 export function unassignedStudyTypes(studyTypes?: readonly StudyType[]): StudyType[] {
   const assigned = new Set<StudyType>([...DESIGN_TAGS.map((d) => d.design), "unknown"]);
@@ -387,7 +416,7 @@ function mergeCorrections(kept: Correction[] | undefined, other: Correction[] | 
 }
 
 /**
- * Merge two records of the same paper (same DOI): keep the higher-ranked one (the first on a tie) and
+ * Merge two records of the same paper (same DOI or PMID): keep the higher-ranked one (the first on a tie) and
  * add the other's paper-level flags and the links (`corrections`) it has that the kept one lacks, so a
  * retraction, or the published version of a preprint, known to only one database is not lost.
  */
@@ -441,6 +470,22 @@ export function filterWarnings(studyTypes?: readonly StudyType[], minDesignTier?
   const unrated = unratedExcludedWarning(studyTypes, minDesignTier);
   if (unrated) warnings.push(unrated);
   return warnings;
+}
+
+/**
+ * The warning for a page that the studyTypes / minDesignTier filter cut after the databases returned it, or undefined
+ * when it kept every record. The query is only narrowed to the publication types that can give a design (see
+ * {@link designPublicationTypes} and {@link excludedPublicationTypes}), so the classifier drops the rest, here, and
+ * `total` and `nextPage`, which come from the databases, count what it drops: a page can be short or empty while
+ * later pages hold records.
+ */
+export function filteredPageWarning(kept: number, fetched: number): string | undefined {
+  if (kept >= fetched) return undefined;
+  return (
+    `The studyTypes/minDesignTier filter kept ${kept} of the ${fetched} records this page fetched; the others are classified as ` +
+    `another study type or rank below minDesignTier. total and nextPage count records before this filter, so this page ` +
+    `can be short or empty while later pages hold more.`
+  );
 }
 
 /**

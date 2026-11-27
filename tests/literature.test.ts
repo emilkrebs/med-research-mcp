@@ -1212,6 +1212,7 @@ describe("searchLiterature input and design filters", () => {
     expect(out.articles.map((a) => a.id)).toEqual(["E1"]);
     expect(out.warnings).toEqual([
       "animal-study (designTier 0) and review (designTier 1) records are below minDesignTier 2, so none are kept. Lower minDesignTier to keep them.",
+      expect.stringContaining("filter kept 1 of the 2 records this page fetched"),
     ]);
   });
 
@@ -1222,7 +1223,7 @@ describe("searchLiterature input and design filters", () => {
       fakeAdapter("europepmc", [mouseStudy]),
     ]);
     expect(out.articles).toEqual([]);
-    expect(out.warnings).toEqual([expect.stringContaining("flagged animals-not-humans")]);
+    expect(out.warnings).toEqual([expect.stringContaining("filter kept 0 of the 1 records"), expect.stringContaining("flagged animals-not-humans")]);
 
     const vet: NcbiArticle = { ...epmcRct, id: "V1", publicationTypes: ["Clinical Trial, Veterinary"] };
     const found = await searchLiterature({ query: "x", database: "europepmc", studyTypes: ["animal-study"] }, new LRUBackend(), [
