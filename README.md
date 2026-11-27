@@ -18,6 +18,7 @@
 </p>
 
 <p align="center">
+  <a href="https://emilkrebs.dev/med-research-mcp/">Website</a> ·
   <a href="#install">Install</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#tools">Tools</a> ·
