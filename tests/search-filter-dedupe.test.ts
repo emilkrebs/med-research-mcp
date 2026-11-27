@@ -219,6 +219,14 @@ describe("the Europe PMC query of a design filter", () => {
     expect(q).not.toContain("[pt");
   });
 
+  it("asks for Clinical Trial less the protocols its phrase also finds, and for no other tag less its longer types", async () => {
+    const q = (await query({ query: "tirzepatide apnea", studyTypes: ["clinical-trial"] }))!;
+    expect(q.startsWith('(tirzepatide apnea) AND ((PUB_TYPE:"Clinical Trial" AND NOT PUB_TYPE:"Clinical Trial Protocol") OR PUB_TYPE:"Clinical Trial, Phase I" OR ')).toBe(true);
+    expect(q).toContain(' AND NOT (PUB_TYPE:"Network Meta-Analysis" OR ');
+    // A review filter keeps Review as the tag finds it: nothing says a book review has no Review tag of its own.
+    expect(await query({ query: "x", studyTypes: ["review"] })).toBe('(x) AND (PUB_TYPE:"Review" OR PUB_TYPE:"Scoping Review")');
+  });
+
   it("writes the whole query for a controlled trial that is not randomized, after the date clause", async () => {
     const dates = "(FIRST_PDATE:[1900-01-01 TO 1985-12-31] OR E_PDATE:[1900-01-01 TO 1985-12-31] OR P_PDATE:[1900-01-01 TO 1985-12-31])";
     expect(await query({ query: "creatine[tiab]", studyTypes: ["non-randomized-trial"], dateRange: { to: "1985" } })).toBe(

@@ -106,6 +106,18 @@ function excludeType(type: string): string {
   return longer.length > 0 ? `(${tag}${longer.map((l) => ` AND NOT PUB_TYPE:"${l}"`).join("")})` : tag;
 }
 
+/**
+ * The tag a filter asks for. "Clinical Trial" is asked for less the protocols, which are most of what it finds on a topic
+ * with few trials: 7 of the 10 records of `tirzepatide apnea` for clinical-trial were protocols (2026-11-27). That loses no
+ * record the filter keeps: no protocol carries the tag itself (PubMed: none of the 24,577 `"Clinical Trial Protocol"[pt:noexp]`
+ * records has `"Clinical Trial"[pt:noexp]`, and all 24,574 protocols of Europe PMC are MEDLINE records), and the other trial
+ * types are asked for by clauses of their own. The longer types of any other tag are not left out when asked for: nothing
+ * says that a book review never carries the tag Review itself.
+ */
+function includeType(type: string): string {
+  return type === "Clinical Trial" ? excludeType(type) : `PUB_TYPE:"${type}"`;
+}
+
 /** What earlier requests of one query learned: the `cursorMark` at each position, and the hit count. */
 interface QueryPaging {
   cursors: Map<number, string>;
@@ -256,7 +268,7 @@ export class EuropePmcAdapter extends RestAdapter {
     // A PubMed field tag would be searched as a word: translated into the field that holds the same, or removed.
     const query = toEuropePmcQuery(input.query);
     const clauses: string[] = [];
-    if (types) clauses.push(`(${types.map((t) => `PUB_TYPE:"${t}"`).join(" OR ")})`);
+    if (types) clauses.push(`(${types.map(includeType).join(" OR ")})`);
     const from = isoDateBound(input.dateRange?.from, "from");
     const to = isoDateBound(input.dateRange?.to, "to");
     // The date clause comes in parentheses from its helper (it is an OR of three fields), so it is not wrapped again.
