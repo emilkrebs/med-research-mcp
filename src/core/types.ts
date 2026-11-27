@@ -270,8 +270,9 @@ export interface FulltextInput {
   id: string;
   /**
    * DOI, as "10.…" or a https://doi.org/ link; a record's url is not one. Needed only for an id outside
-   * the list above, which Europe PMC has no record of. With a PMID it skips the id→DOI lookup; any
-   * Europe PMC id without it takes the DOI of Europe PMC's record, if it has one.
+   * the list above, which Europe PMC has no record of. With a PMID it must be the DOI of that PMID's
+   * record, which is read to check it: a different one is refused (INVALID_INPUT), and a PMID without it
+   * takes the record's DOI; any Europe PMC id without it takes the DOI of Europe PMC's record, if it has one.
    */
   doi?: string;
   /** Character position in the full text to return it from: a previous call's `nextOffset`. Default 0. */
@@ -323,4 +324,6 @@ export interface FulltextData {
   format: "markdown" | "pdf";
   /** Unix epoch millis when this was resolved. Used to expire stale entries (URLs rot). */
   fetchedAt: number;
+  /** The DOI the text belongs to, as far as its source says: the DOI Unpaywall was asked for, or the DOI of the record of the PMCID Europe PMC's text was fetched by. Absent when that record has none. */
+  doi?: string;
 }

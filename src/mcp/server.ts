@@ -364,8 +364,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .optional()
       .describe(
         "The record's doi (10.… or a https://doi.org/ link), from a search result's doi field; a url or originalUrl is " +
-          "not one. Needed only for an id outside those above. With a PMID it saves the id→DOI lookup; a Europe PMC id " +
-          "without it uses the doi of Europe PMC's record.",
+          "not one. Needed only for an id outside those above. With a PMID it must be that PMID's doi: a different one is " +
+          "refused. A Europe PMC id without it uses the doi of Europe PMC's record.",
       ),
     offset: z
       .number()

@@ -135,8 +135,11 @@ export class NullCache implements Cache {
  * preprint or earlier version, see `CORRECTION_TYPES` in types.ts).
  * 3 (0.8.0): a summary holds the record's id under `id` (`Article.id`); summaries of earlier versions hold it
  * under `pmid` and would come back without one. The key column of the tables is `id` (`pmid` up to version 2).
+ * 4: a full text is kept under the source it was fetched from, and with the DOI it belongs to (see
+ * `fulltextCacheKey` in fulltext.ts); earlier versions kept it under the id the caller asked with, which could
+ * hold the text of another article, and the table has a `doi` column.
  */
-export const CACHE_FORMAT_VERSION = 3;
+export const CACHE_FORMAT_VERSION = 4;
 
 const SUMMARIES = `summaries_v${CACHE_FORMAT_VERSION}`;
 const ABSTRACTS = `abstracts_v${CACHE_FORMAT_VERSION}`;
@@ -160,7 +163,8 @@ CREATE TABLE IF NOT EXISTS ${FULLTEXTS} (
     source     TEXT NOT NULL,
     fulltext   TEXT NOT NULL,
     format     TEXT NOT NULL,
-    fetched_at INTEGER NOT NULL
+    fetched_at INTEGER NOT NULL,
+    doi        TEXT
 );
 `;
 
@@ -169,6 +173,7 @@ interface FulltextRow {
   fulltext: string;
   format: string;
   fetched_at: number;
+  doi: string | null;
 }
 
 /**
@@ -207,7 +212,7 @@ export class SQLiteBackend implements Cache {
     getAbstract: SqliteDatabase.Statement<[string]>;
     setAbstract: SqliteDatabase.Statement<[string, string, number]>;
     getFulltext: SqliteDatabase.Statement<[string]>;
-    setFulltext: SqliteDatabase.Statement<[string, string, string, string, number]>;
+    setFulltext: SqliteDatabase.Statement<[string, string, string, string, number, string | null]>;
     delFulltext: SqliteDatabase.Statement<[string]>;
     vacuumFulltext: SqliteDatabase.Statement<[number]>;
   };
@@ -227,9 +232,9 @@ export class SQLiteBackend implements Cache {
       delSummary: this.db.prepare(`DELETE FROM ${SUMMARIES} WHERE id = ?`),
       getAbstract: this.db.prepare(`SELECT abstract FROM ${ABSTRACTS} WHERE id = ?`),
       setAbstract: this.db.prepare(`INSERT OR REPLACE INTO ${ABSTRACTS} (id, abstract, fetched_at) VALUES (?, ?, ?)`),
-      getFulltext: this.db.prepare(`SELECT source, fulltext, format, fetched_at FROM ${FULLTEXTS} WHERE id = ?`),
+      getFulltext: this.db.prepare(`SELECT source, fulltext, format, fetched_at, doi FROM ${FULLTEXTS} WHERE id = ?`),
       setFulltext: this.db.prepare(
-        `INSERT OR REPLACE INTO ${FULLTEXTS} (id, source, fulltext, format, fetched_at) VALUES (?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO ${FULLTEXTS} (id, source, fulltext, format, fetched_at, doi) VALUES (?, ?, ?, ?, ?, ?)`,
       ),
       delFulltext: this.db.prepare(`DELETE FROM ${FULLTEXTS} WHERE id = ?`),
       vacuumFulltext: this.db.prepare(`DELETE FROM ${FULLTEXTS} WHERE fetched_at < ?`),
@@ -279,11 +284,12 @@ export class SQLiteBackend implements Cache {
       fulltext: row.fulltext,
       format: row.format === "pdf" ? "pdf" : "markdown",
       fetchedAt: row.fetched_at,
+      ...(row.doi ? { doi: row.doi } : {}),
     };
   }
 
   setFulltext(id: string, data: FulltextData): void {
-    this.stmts.setFulltext.run(id, data.source, data.fulltext, data.format, data.fetchedAt ?? Date.now());
+    this.stmts.setFulltext.run(id, data.source, data.fulltext, data.format, data.fetchedAt ?? Date.now(), data.doi ?? null);
   }
 
   /**

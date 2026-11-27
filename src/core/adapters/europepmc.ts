@@ -56,6 +56,11 @@
  * August 2026, and records published online on 2026-10-20 didn't make the first page
  * (2026-10-22).
  *
+ * A DOI is looked up with `DOI:"<doi>"` (fetchByDoi), as a `core` search that carries the types and links of any
+ * record. Checked 2026-11-27: the DOIs of PMIDs 38711552, 38453139 (both retracted) and 16060722 each found that one
+ * record, the retracted ones with "Retracted Publication" in pubTypeList and a "Retraction in" link; the match ignores
+ * case (`10.1371/JOURNAL.PMED.0020124` found 16060722), and neither a DOI cut short nor one with a trailing period finds anything.
+ *
  * Titles and abstracts carry HTML (`<h4>` section headings, `<sup>`, `<i>`), titles
  * of MEDLINE records sometimes escaped (`&lt;i&gt;`); both are turned into text.
  *
@@ -361,6 +366,19 @@ export class EuropePmcAdapter extends RestAdapter {
   normalizeId(id: string): string {
     const pmid = canonicalPmid(id);
     return /^\d+$/.test(pmid) ? pmid : pmid.toUpperCase();
+  }
+
+  /**
+   * The record Europe PMC holds for a DOI, or null when it has none: the first result whose own DOI is that DOI
+   * (compared without case), so that a query the API matches loosely can't return another article's record. Throws
+   * when the request fails.
+   */
+  async fetchByDoi(doi: string): Promise<Article | null> {
+    // A quote or backslash would end the phrase; a DOI that has one finds no record, as a DOI that is not one does.
+    const params = new URLSearchParams({ query: `DOI:"${doi.replace(/["\\]/g, "")}"`, format: "json", resultType: "core", pageSize: "5" });
+    const data = await this.http.json<EpmcResponse>(`${BASE}?${params.toString()}`);
+    const wanted = doi.toLowerCase();
+    return parseEuropePmc(data).articles.find((a) => a.doi?.toLowerCase() === wanted) ?? null;
   }
 
   protected async fetchOne(id: string): Promise<Article | null> {
