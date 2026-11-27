@@ -12,15 +12,18 @@
  *                       Europe PMC copies come from Europe PMC's full-text API
  *   3. Proxy          — an institutional EZproxy prefix, if configured
  *   4. Direct DOI     — https://doi.org/{DOI} (works on IP-authed networks / OA)
- *   5. Fallback       — the abstract, with `source: "none"` and a warning that
- *                       says what each location answered
+ *   5. Fallback       — the abstract (cut to `maxChars`, and never paged), with
+ *                       `source: "none"` and a warning that says what each
+ *                       location answered
  *
  * The abstract of a PMID comes from PubMed. For any other id (a preprint's, another
  * Europe PMC source's such as CBA:… or IND…, or another database's passed with its
  * DOI) it comes from the record that database's adapter holds, and the DOI of Europe
  * PMC's record opens steps 2 to 4 for a PMCID, preprint or other Europe PMC id passed
  * without one (see {@link lookUpRecord}). An id Europe PMC has no record of, given
- * without a DOI, is NOT_FOUND.
+ * without a DOI, is NOT_FOUND; so is a PMCID or preprint id it has neither a record nor
+ * a full text of (a real one without open-access text gets the abstract), and a ChinaXiv
+ * or RussiaRxiv id that ChinaRxiv answers 404 for.
  *
  * The warning opens with the article's standing when a record of it is known and flagged retracted, a notice,
  * or with an expression of concern (see {@link standingNote}), whether or not a text was found. A record is
@@ -138,7 +141,7 @@ export interface FetchedResource {
  * and from ChinaRxiv's the complete record and the translated text.
  */
 export type RecordSource = Pick<DatabaseAdapter, "fetch" | "fetchFull"> & {
-  /** The text of a record, or null when there is none; throws when the request fails. */
+  /** The text of a record, or null when there is none; throws NOT_FOUND when the database has no such record, and when the request fails. */
   fetchText?(id: string): Promise<string | null>;
 };
 
@@ -359,7 +362,7 @@ export async function fetchFulltext(
     const reason = isPmid(id)
       ? "Could not resolve a DOI for this id, so no full-text source could be tried."
       : `Europe PMC's record for this id has no DOI, so no full-text source could be tried.${article.url ? ` A browser may open ${article.url}.` : ""}`;
-    return noneResult(id, undefined, text, offset, reason, standing());
+    return noneResult(id, undefined, text, offset, maxChars, reason, standing());
   }
 
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -437,8 +440,18 @@ export async function fetchFulltext(
       }
       misses.push({ source, kind: "no-text" });
     } catch (err) {
+      // ChinaRxiv answered 404: it has no record of the id (see ChinaRxivApiAdapter.fetchText). Without a DOI there is nothing
+      // else to try, so that is NOT_FOUND; with one, the DOI routes may still have the text, and the warning says 404.
+      const unknown = isMedResearchError(err) && err.code === "NOT_FOUND";
+      if (unknown && !doi) throw err;
       const rateLimited = isMedResearchError(err) && err.code === "RATE_LIMIT";
-      misses.push(rateLimited ? { source, kind: "status", status: 429, host: "chinarxiv.org" } : { source, kind: "unreachable" });
+      misses.push(
+        rateLimited
+          ? { source, kind: "status", status: 429, host: "chinarxiv.org" }
+          : unknown
+            ? { source, kind: "status", status: 404, host: "chinarxiv.org" }
+            : { source, kind: "unreachable" },
+      );
     }
   }
   if (pmcid) {
@@ -469,11 +482,20 @@ export async function fetchFulltext(
   await standingLookup;
   const doiUnknown = misses.some((m) => m.source === "direct" && m.kind === "status" && (m.status === 404 || m.status === 410) && m.host === "doi.org");
   if (doi && doiUnknown && !text) throw errors.doiNotFound(doi);
+  // A PMCID or preprint id that no route found text for, and of which Europe PMC answers a lookup of the record with none,
+  // names no article: not an outage, nor a paywall. How the full-text request failed says nothing either way: on 2026-11-27
+  // Europe PMC answered it HTTP 500, after 4 to 27 s, both for PMC999999999, which doesn't exist, and for PMC6181682, which
+  // does and has no open-access text. Only the record tells them apart, and a real one gets its abstract. A record lookup
+  // that failed is no answer about the id, and a DOI given is left to the routes above.
+  if (europePmcId && !doi && !(await record()) && (await holdsNoRecord(europePmcId, cache, adapterFor))) {
+    throw errors.notFound(id, "Europe PMC");
+  }
   return noneResult(
     id,
     doi,
     text,
     offset,
+    maxChars,
     fallbackWarning({
       doi,
       pmcid,
@@ -762,31 +784,53 @@ async function resolveAbstract(
 }
 
 /**
+ * Whether Europe PMC answered a lookup of `id` with no record, as against one that failed or had no adapter to ask:
+ * {@link lookUpRecord} reports all three as no record, and the last two say nothing of the id. Asked again, and only for an
+ * id that no record was found for.
+ */
+async function holdsNoRecord(id: string, cache: Cache, adapterFor: NonNullable<FulltextDeps["adapter"]>): Promise<boolean> {
+  try {
+    const found = await (await adapterFor("europepmc"))?.fetch([id], cache);
+    return found !== undefined && found.length === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The fallback: the abstract, and why there is no full text, after the article's `standing` when its records
  * give one. A caller reading on from an offset gets no text, since it would take the abstract for the next
  * part of the full text it was reading.
+ *
+ * The abstract is cut to `maxChars` as a text's first part is (see {@link part}: at a break near the end, `truncated` and
+ * `totalChars`, here the abstract's length), but is never paged: a later call with an offset gets no text, so there is no
+ * `nextOffset` to read on from, and the warning sends the caller to literature_fetch, which returns the abstract whole.
  */
 function noneResult(
   id: string,
   doi: string | undefined,
   abstract: string | undefined,
   offset: number,
+  maxChars: number,
   reason: string,
   standing: string | undefined,
 ): FulltextOutput {
+  const shown = abstract && offset === 0 ? part(abstract, 0, maxChars) : undefined;
   const returned =
     offset > 0
       ? `No full text found, so there is no part from offset ${offset}; call without offset for the abstract.`
-      : abstract
-        ? "No full text found; returned the abstract only."
-        : "No full text found, and no abstract is available.";
+      : shown?.truncated
+        ? `No full text found; returned the abstract only, cut to its first ${shown.fulltext!.length} of ${shown.totalChars} characters to fit maxChars: literature_fetch returns it whole.`
+        : abstract
+          ? "No full text found; returned the abstract only."
+          : "No full text found, and no abstract is available.";
   return {
     id,
     ...(doi ? { doi } : {}),
     source: "none",
-    ...(abstract && offset === 0 ? { fulltext: abstract } : {}),
+    ...(shown ? { fulltext: shown.fulltext, totalChars: shown.totalChars } : {}),
     format: "markdown",
-    truncated: false,
+    truncated: shown?.truncated ?? false,
     warning: joinNotes(standing, reason ? `${returned} ${reason}` : returned)!,
   };
 }

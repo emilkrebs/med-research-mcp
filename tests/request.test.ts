@@ -64,7 +64,7 @@ describe("requestWithRetries", () => {
     vi.stubGlobal("fetch", fetchMock);
     const pending = requestWithRetries("https://upstream.example/x", options).catch((e: unknown) => e);
     await vi.advanceTimersByTimeAsync(2000);
-    expect(await pending).toMatchObject({ code: "NETWORK_ERROR", recoverable: true, message: "Network error: Europe PMC returned HTTP 503 (attempt 3)" });
+    expect(await pending).toMatchObject({ code: "NETWORK_ERROR", recoverable: true, message: "Network error: Europe PMC returned HTTP 503 (attempt 3)", httpStatus: 503 });
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
@@ -74,6 +74,7 @@ describe("requestWithRetries", () => {
     await expect(requestWithRetries("https://upstream.example/x", options)).rejects.toMatchObject({
       code: "NETWORK_ERROR",
       message: "Network error: Europe PMC returned HTTP 404",
+      httpStatus: 404,
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -120,7 +121,10 @@ describe("requestWithRetries", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     // The retry gets the 4.5 s left of the 20 s budget, and the budget allows no third attempt.
     await vi.advanceTimersByTimeAsync(4_500);
-    expect(await pending).toMatchObject({ code: "NETWORK_ERROR", message: "Network error: Europe PMC didn't answer within 4.5 s" });
+    const failed = await pending;
+    expect(failed).toMatchObject({ code: "NETWORK_ERROR", message: "Network error: Europe PMC didn't answer within 4.5 s" });
+    // No response came, so there is no status to tell a caller that the id is unknown.
+    expect((failed as { httpStatus?: number }).httpStatus).toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 

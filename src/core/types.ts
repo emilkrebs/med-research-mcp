@@ -276,7 +276,7 @@ export interface FulltextInput {
   doi?: string;
   /** Character position in the full text to return it from: a previous call's `nextOffset`. Default 0. */
   offset?: number;
-  /** The most characters to return, up to the configured limit (`FulltextDeps.maxChars`). */
+  /** The most characters to return, of the text or of the abstract returned in its place, up to the configured limit (`FulltextDeps.maxChars`). */
   maxChars?: number;
 }
 
@@ -290,11 +290,17 @@ export interface FulltextOutput {
    */
   fulltext?: string;
   format: "markdown" | "pdf";
-  /** True if the text goes on past the part returned; `nextOffset` says where. */
+  /**
+   * True if the text goes on past the part returned; `nextOffset` says where. On the abstract fallback (source "none"),
+   * true when `maxChars` cut the abstract, which is never paged: there is no `nextOffset`, and `literature_fetch` returns it whole.
+   */
   truncated: boolean;
-  /** Length of the whole full text, of which `fulltext` is the part from the requested offset. Absent on the abstract fallback. */
+  /**
+   * Length of the whole full text, of which `fulltext` is the part from the requested offset; on the abstract fallback,
+   * the length of the whole abstract. Absent when no text is returned.
+   */
   totalChars?: number;
-  /** Set when `truncated`: pass it as `offset` to read on. */
+  /** Set when `truncated`, except on the abstract fallback: pass it as `offset` to read on. */
   nextOffset?: number;
   /**
    * What to know before relying on `fulltext`, in this order. First, when a record of the article is known

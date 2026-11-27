@@ -939,13 +939,13 @@ describe("fetchFulltext — Europe PMC by PMCID", () => {
       expect(out.doi).toBe(DOI);
     });
 
-    it("carries on as before when the lookup fails or finds nothing", async () => {
+    it("carries on as before when the lookup fails or has no adapter to ask", async () => {
       const failing: FulltextDeps["adapter"] = () => ({
         fetch: async () => {
           throw new Error("Europe PMC is down");
         },
       });
-      for (const adapter of [failing, noRecords, fakeEuropePmc().adapter]) {
+      for (const adapter of [failing, noRecords]) {
         const out = await fetchFulltext({ id: "PPR123456" }, new LRUBackend(), fakeClient(), { fetchUrl: noText, adapter });
         expect(out.source).toBe("none");
         expect(out.fulltext).toBeUndefined();

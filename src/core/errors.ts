@@ -29,14 +29,17 @@ export class ResearchApiException extends Error implements ResearchError {
   readonly userMessage: string;
   readonly recoverable: boolean;
   readonly retryAfter?: number;
+  /** The HTTP status the upstream answered, for a failure that was one; not in {@link toJSON}: the message names it. */
+  readonly httpStatus?: number;
 
-  constructor(error: ResearchError) {
+  constructor(error: ResearchError & { httpStatus?: number }) {
     super(error.message);
     this.name = "ResearchApiException";
     this.code = error.code;
     this.userMessage = error.userMessage;
     this.recoverable = error.recoverable;
     this.retryAfter = error.retryAfter;
+    this.httpStatus = error.httpStatus;
   }
 
   /** Plain serializable shape — safe to return in tool results. */
@@ -87,12 +90,14 @@ export const errors = {
     });
   },
 
-  network(detail: string): ResearchApiException {
+  /** @param httpStatus the status the upstream answered, when the failure was a response, so that a caller can tell a 404 from an outage. */
+  network(detail: string, httpStatus?: number): ResearchApiException {
     return new ResearchApiException({
       code: "NETWORK_ERROR",
       message: `Network error: ${detail}`,
       userMessage: "Couldn't reach the database. Check your connection and try again.",
       recoverable: true,
+      ...(httpStatus !== undefined ? { httpStatus } : {}),
     });
   },
 
@@ -113,11 +118,14 @@ export const errors = {
     });
   },
 
-  notFound(pmid: string): ResearchApiException {
+  /** @param database the database that has no record of the id, when it isn't PubMed (and `id` isn't a PMID). */
+  notFound(id: string, database?: string): ResearchApiException {
     return new ResearchApiException({
       code: "NOT_FOUND",
-      message: `PMID ${pmid} not found`,
-      userMessage: `No PubMed article found for PMID ${pmid}. Check the identifier.`,
+      message: database ? `${database} has no record ${id}` : `PMID ${id} not found`,
+      userMessage: database
+        ? `${database} has no record of "${id}". Check the identifier: pass the id of a literature_search result exactly as it gave it.`
+        : `No PubMed article found for PMID ${id}. Check the identifier.`,
       recoverable: false,
     });
   },

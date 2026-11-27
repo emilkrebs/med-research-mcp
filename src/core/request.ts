@@ -64,7 +64,9 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 /**
  * GET a URL and return the body of the successful response. Throws RATE_LIMIT for a 429 its
  * retries don't clear, TIMEOUT when the call's deadline cuts an attempt short or leaves no time to send
- * one, and NETWORK_ERROR for any other failure, after retrying the transient ones.
+ * one, and NETWORK_ERROR for any other failure, after retrying the transient ones. A NETWORK_ERROR
+ * that was an HTTP response carries its status as `httpStatus`: a caller can tell an id the upstream
+ * has no record of (404) from an outage.
  */
 export async function requestWithRetries(url: string, options: RequestOptions): Promise<string> {
   const started = Date.now();
@@ -76,9 +78,9 @@ export async function requestWithRetries(url: string, options: RequestOptions): 
   /** What the last attempt got, and its message without the error code's prefix. */
   let failure: ResearchApiException | undefined;
   let detail: string | undefined;
-  const fail = (message: string): ResearchApiException => {
+  const fail = (message: string, httpStatus?: number): ResearchApiException => {
     detail = message;
-    return (failure = errors.network(message));
+    return (failure = errors.network(message, httpStatus));
   };
   for (let attempt = 1; ; attempt += 1) {
     await options.beforeAttempt?.();
@@ -105,8 +107,8 @@ export async function requestWithRetries(url: string, options: RequestOptions): 
       if (res.ok) return await res.text();
       await res.body?.cancel();
       const message = `${options.source} returned HTTP ${res.status}${attempt > 1 ? ` (attempt ${attempt})` : ""}`;
-      if (!TRANSIENT_STATUSES.has(res.status)) throw errors.network(message);
-      fail(message);
+      if (!TRANSIENT_STATUSES.has(res.status)) throw errors.network(message, res.status);
+      fail(message, res.status);
     } catch (err) {
       if (isMedResearchError(err)) throw err;
       if (ac.signal.aborted) {
