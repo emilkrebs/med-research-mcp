@@ -22,14 +22,15 @@ A **keyed query** is one with ground truth: an answer key of kind `values`, `rej
 | --- | --- |
 | Accuracy on keyed queries | 0 to 10, the mean over keyed queries (runs are averaged per query first). A run with no answer counts 0 |
 | Accuracy in PubMed, beyond PubMed | the same, split by the `beyondPubmed` flag (see [the held-out set](#held-out-set)); two extra columns in `summary.md` when a split has both kinds |
-| Fabricated studies rejected | share of fabricated-study queries where the answer rejects the study and cites no fabricated record |
+| Fabricated studies rejected | share of fabricated-study queries where the answer rejects the study and cites no fabricated record. A run with no answer counts as not rejected |
+| Rejected, answered runs; No answer (fabricated) | beside it, run counts: how many of the fabricated-study runs that answered rejected the study, and how many runs ended without an answer. They tell a failure to reject from a run that never answered |
 | Real studies accepted | share of real-study control queries where the answer does not reject the study, or cites its record |
 | Fabricated-citation rate | cited records that do not exist, or exist but mention none of the query's `topics` (a short word list kept with each query), divided by all cited records |
 | Misattribution rate | of the valid citations with a checkable claim next to them, the share where a stated year, author, design or figure contradicts the record (the summary calls these "contradicted claims") |
 | Failed and missing runs | the share of runs per status |
 | Median tokens, median time | over scored runs |
 | Mean design tier | 0 to 5, of the cited records. Descriptive: it says what was cited, not whether the answer is right |
-| Rubric accuracy | only from human grades; kept out of everything above |
+| Rubric accuracy | only from human grades; kept out of everything above. "Rubric runs without an answer" counts the rubric runs scored 0 for no answer |
 
 The rejection and acceptance rates are a pair. A model that rejects everything gets every fabricated study right and every real one wrong; neither number means anything alone. Accuracy on keyed queries pools the three key kinds, so look at the pair as well.
 
@@ -173,7 +174,7 @@ At present `--publish` plans 1,638 responses per condition (91 queries, 6 enable
 
 npm scripts: `bench`, `smoke`, `smoke-baselines`, `grade`, `rescore`, `merge`, `verify-keys`, `sample-heldout`, `merge-heldout`, `typecheck`, `test`.
 
-**The agent loop.** One loop per query, condition, model and run, with the same system prompt apart from D. The MCP conditions get a fresh server, client and cache per run; tool names, descriptions and schemas come from the server itself. One process-wide NCBI client (the rate limiter, no data) serves all runs and the scorer, so concurrency cannot exceed NCBI's budget. A run has a wall-clock timeout (`BENCH_TIMEOUT_MS`) and the AI SDK's 2 retries per call, with no whole-run reruns. The final step is forced to answer with tool calls disabled. `raw/` keeps full tool outputs, timings, finish reason, step count and tokens.
+**The agent loop.** One loop per query, condition, model and run, with the same system prompt apart from D. The MCP conditions get a fresh server, client and cache per run; tool names, descriptions and schemas come from the server itself. One process-wide NCBI client (the rate limiter, no data) serves all runs and the scorer, so concurrency cannot exceed NCBI's budget. A run has a wall-clock timeout (`BENCH_TIMEOUT_MS`) and the AI SDK's 2 retries per call, with no whole-run reruns. The final step is forced to answer with tool calls disabled. If the loop still ends without text (some models emit a tool call when no tools are defined), one extra call without tools gets the conversation so far and "You are out of tool budget. Answer now from the evidence above. Do not call tools." The record carries `forcedCompletion: true`, its tokens include that call, and its step count does not. If that call is empty too, the run is `no-answer`. `raw/` keeps full tool outputs, timings, finish reason, step count and tokens.
 
 ## What a run writes
 
@@ -234,7 +235,7 @@ The summary averages accuracy and time over scored rows, tokens over scored rows
 
 **Statistics.** The query is the unit: runs are averaged per query first, and every mean is a mean of per-query means with a seeded (20261109) percentile-bootstrap 95% interval over queries (10,000 resamples; none for fewer than two queries). Paired tests compare conditions on keyed accuracy per query with the exact Wilcoxon signed-rank test (zero differences dropped, ties handled, exact up to 300 non-zero pairs and a normal approximation beyond), a bootstrap interval for the mean difference and the rank-biserial effect size. The comparisons are `mcp` vs `closed-book`, `mcp` vs `web-search`, `mcp` vs `pubmed` and `mcp-skill` vs `mcp`, each per model and split, when both conditions ran. `mcp` vs `pubmed` is tested on all keyed queries, on those in PubMed and on those beyond PubMed (`keyed`, `keyed-in-pubmed`, `keyed-beyond-pubmed`; the last two when the pair's queries have both kinds). The closed-book comparison is repeated without `retrievalOnly` queries when the set has both kinds. All p-values in a report are Holm-adjusted as one family. `summary.md` prints a p-value below 0.0001 as `p<0.0001`; `summary.json` keeps the value. Fabricated-citation and misattribution rates are pooled over answers and have no interval.
 
-**Scorer version.** `SCORER_VERSION` (now 9, in [`lib/scoring/score.ts`](lib/scoring/score.ts)) is stored in every scored record. Change scoring in a way that alters scores and bump it, so `--rescore` scores stored runs again.
+**Scorer version.** `SCORER_VERSION` (now 10, in [`lib/scoring/score.ts`](lib/scoring/score.ts)) is stored in every scored record. Change scoring in a way that alters scores and bump it, so `--rescore` scores stored runs again.
 
 ## Grading rubric answers
 

@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { tool } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { z } from "zod";
-import { runOne } from "../lib/agent.js";
+import { FORCED_COMPLETION_PROMPT, runOne } from "../lib/agent.js";
 import { DEFAULT_MODELS, MODELS, missingKeyFor, type ModelSpec } from "../lib/config.js";
+import { runOutcome } from "../lib/status.js";
 import type { BenchmarkQuery } from "../lib/types.js";
 
 const query: BenchmarkQuery = {
@@ -138,22 +139,23 @@ describe("runOne", () => {
     expect(rec.finishReason).toBe("stop");
   });
 
-  it("forces toolChoice none on the last step and records provenance, output, durations", async () => {
+  it("removes the tools on the last step and records provenance, output, durations", async () => {
     let n = 0;
     const llm = new MockLanguageModelV4({
       doGenerate: async (options) => {
         n++;
-        // Step 3 (the last allowed with maxSteps=3) must have tools disabled.
-        if (options.toolChoice?.type === "none") return textResult("final answer");
+        // Step 3 (the last allowed with maxSteps=3) must have the tools removed.
+        if (!options.tools?.length) return textResult("final answer");
         return toolCallResult(`call-${n}`);
       },
     });
     const rec = await runOne(query, "mcp", spec, 0, { maxSteps: 3, languageModel: llm, tools: stubTools });
 
     expect(rec.error).toBeUndefined();
-    expect(llm.doGenerateCalls.map((c) => c.toolChoice?.type)).toEqual(["auto", "auto", "none"]);
+    expect(llm.doGenerateCalls.map((c) => c.tools?.length ?? 0)).toEqual([1, 1, 0]);
     expect(rec.text).toBe("final answer");
     expect(rec.finishReason).toBe("stop");
+    expect(rec.forcedCompletion).toBeUndefined();
     expect(rec.stepCount).toBe(3);
     expect(rec.provider).toBe("openai");
     expect(rec.modelId).toBe("mock-1");
@@ -164,6 +166,112 @@ describe("runOne", () => {
     expect(rec.toolS).toBeGreaterThanOrEqual(0.03);
     expect(rec.toolS).toBeLessThanOrEqual(rec.speedS);
     expect(rec.usage.totalTokens).toBeGreaterThan(0);
+  });
+
+  describe("forced completion after a loop that ends without an answer", () => {
+    type Prompt = (typeof MockLanguageModelV4.prototype.doGenerateCalls)[number]["prompt"];
+    const isCompletionCall = (prompt: Prompt): boolean => {
+      const last = prompt.at(-1);
+      return last?.role === "user" && last.content.some((p) => p.type === "text" && p.text === FORCED_COMPLETION_PROMPT);
+    };
+
+    it("records the stray tool call of the forced step, then answers from one extra call without tools", async () => {
+      // DeepSeek's behaviour: it emits a tool call even when the request defines no tools.
+      const llm = new MockLanguageModelV4({
+        doGenerate: async (options) => (isCompletionCall(options.prompt) ? textResult("final answer") : toolCallResult(`c${options.prompt.length}`)),
+      });
+      const rec = await runOne(query, "mcp", spec, 0, { maxSteps: 2, languageModel: llm, tools: stubTools });
+
+      expect(rec.error).toBeUndefined();
+      expect(llm.doGenerateCalls.map((c) => c.tools?.length ?? 0)).toEqual([1, 0, 0]);
+      expect(llm.doGenerateCalls.map((c) => c.toolChoice?.type ?? "unset")).not.toContain("none");
+      // The extra call sees the whole conversation: the question, both steps (the executed tool result too), the nudge.
+      const prompt = llm.doGenerateCalls[2]!.prompt;
+      expect(prompt.map((m) => m.role)).toEqual(["system", "user", "assistant", "tool", "assistant", "tool", "user"]);
+      expect(JSON.stringify(prompt[3])).toContain("PMID 123");
+      expect(JSON.stringify(prompt[5])).toContain("AI_NoSuchToolError");
+
+      expect(rec.text).toBe("final answer");
+      expect(rec.forcedCompletion).toBe(true);
+      expect(rec.finishReason).toBe("stop");
+      expect(runOutcome(rec)).toBeUndefined();
+      // Usage covers all three model calls (10 in / 5 out each); steps stay the loop's two.
+      expect(rec.usage).toEqual({ inputTokens: 30, outputTokens: 15, totalTokens: 45 });
+      expect(rec.stepCount).toBe(2);
+      expect(rec.stepInputTokens).toEqual([10, 10]);
+      expect(rec.toolCallCount).toBe(2);
+      expect(rec.toolCalls[1]).toMatchObject({ toolName: "lookup", isError: true });
+      expect(String(rec.toolCalls[1]?.output)).toContain("AI_NoSuchToolError");
+    });
+
+    it("stays a no-answer when the extra call is empty too, and makes only one", async () => {
+      const llm = new MockLanguageModelV4({ doGenerate: async (options) => toolCallResult(`c${options.prompt.length}`) });
+      const rec = await runOne(query, "mcp", spec, 0, { maxSteps: 2, languageModel: llm, tools: stubTools });
+      expect(llm.doGenerateCalls.length).toBe(3);
+      expect(rec.forcedCompletion).toBe(true);
+      expect(rec.text).toBe("");
+      expect(rec.finishReason).toBe("tool-calls");
+      expect(runOutcome(rec)).toBe("no-answer");
+    });
+
+    it("also answers a forced step cut off by the length limit with no text", async () => {
+      const cutOff = { content: [], finishReason: { unified: "length" as const, raw: undefined }, usage, warnings: [] };
+      const llm = new MockLanguageModelV4({
+        doGenerate: async (options) =>
+          isCompletionCall(options.prompt) ? textResult("final answer") : options.tools?.length ? toolCallResult("c1") : cutOff,
+      });
+      const rec = await runOne(query, "mcp", spec, 0, { maxSteps: 2, languageModel: llm, tools: stubTools });
+      expect(llm.doGenerateCalls.length).toBe(3);
+      expect(rec.forcedCompletion).toBe(true);
+      expect(rec.text).toBe("final answer");
+    });
+
+    it("keeps the tool definitions with toolChoice none on Anthropic's extra call", async () => {
+      const cutOff = { content: [], finishReason: { unified: "length" as const, raw: undefined }, usage, warnings: [] };
+      const llm = new MockLanguageModelV4({
+        doGenerate: async (options) =>
+          isCompletionCall(options.prompt) ? textResult("final answer") : options.toolChoice?.type === "none" ? cutOff : toolCallResult("c1"),
+      });
+      const anthropic: ModelSpec = { ...spec, provider: "anthropic", apiKeyEnv: "ANTHROPIC_API_KEY" };
+      const rec = await runOne(query, "mcp", anthropic, 0, { maxSteps: 2, languageModel: llm, tools: stubTools });
+      expect(llm.doGenerateCalls.map((c) => [c.tools?.length ?? 0, c.toolChoice?.type])).toEqual([
+        [1, "auto"],
+        [1, "none"],
+        [1, "none"],
+      ]);
+      expect(rec.text).toBe("final answer");
+      expect(rec.forcedCompletion).toBe(true);
+    });
+
+    it("makes no extra call without tools (closed-book), or when the loop ended with text", async () => {
+      const empty = { content: [], finishReason: { unified: "length" as const, raw: undefined }, usage, warnings: [] };
+      const closed = new MockLanguageModelV4({ doGenerate: async () => empty });
+      const rec = await runOne(query, "closed-book", spec, 0, { languageModel: closed });
+      expect(closed.doGenerateCalls.length).toBe(1);
+      expect(rec.forcedCompletion).toBeUndefined();
+      expect(runOutcome(rec)).toBe("no-answer");
+
+      const answered = new MockLanguageModelV4({ doGenerate: async (o) => (o.tools?.length ? toolCallResult("c1") : textResult("done")) });
+      const ok = await runOne(query, "mcp", spec, 0, { maxSteps: 2, languageModel: answered, tools: stubTools });
+      expect(answered.doGenerateCalls.length).toBe(2);
+      expect(ok.forcedCompletion).toBeUndefined();
+    });
+
+    it("reports the extra call as a forced step in the progress events", async () => {
+      const llm = new MockLanguageModelV4({
+        doGenerate: async (options) => (isCompletionCall(options.prompt) ? textResult("final answer") : toolCallResult(`c${options.prompt.length}`)),
+      });
+      const forced: (string | undefined)[] = [];
+      await runOne(query, "mcp", spec, 0, {
+        maxSteps: 2,
+        languageModel: llm,
+        tools: stubTools,
+        onEvent: (e) => {
+          if (e.type === "step-start") forced.push(`${e.step}:${e.forced ?? "-"}`);
+        },
+      });
+      expect(forced).toEqual(["0:-", "1:step limit", "2:forced completion"]);
+    });
   });
 
   it("flags contextTruncated when a later step reports fewer input tokens", async () => {

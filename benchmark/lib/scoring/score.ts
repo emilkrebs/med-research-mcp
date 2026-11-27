@@ -50,9 +50,11 @@ import { queryById } from "../queries.js";
  * v9 = a Europe PMC title and abstract (a cited preprint or CBA record, scored through `defaultRegionalLookup`) is
  * read with the server's own `htmlToText`, not with `replace(/<[^>]+>/g, "")`, which deleted everything from a
  * "<" to the next ">" ("P < 0.001 … effect sizes > 0.5" lost the text between): the off-topic and figure checks of
- * an answer that cites such a record now read the whole abstract the server shows a model.
+ * an answer that cites such a record now read the whole abstract the server shows a model;
+ * v10 = rejection language is matched after typographic hyphens, dashes, no-break spaces and curly quotes are
+ * mapped to ASCII ("I could not find any Delgado‑Ruiz 2022 meta‑analysis" with U+2011 was not a rejection).
  */
-export const SCORER_VERSION = 9;
+export const SCORER_VERSION = 10;
 
 /** First scorer version without the rubric citation proxy. */
 const FIRST_VERSION_WITHOUT_PROXY = 8;

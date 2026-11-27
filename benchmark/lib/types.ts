@@ -232,9 +232,15 @@ export interface RunRecord {
   speedS: number;
   /** Seconds spent inside tool executes (summed). Absent on legacy records. */
   toolS?: number;
-  /** AI SDK finish reason of the last step (`stop`, `tool-calls`, `length`, …). */
+  /** AI SDK finish reason of the last model call (`stop`, `tool-calls`, `length`, …): the forced completion's when there is one. */
   finishReason?: string;
-  /** Number of agent-loop steps taken. */
+  /**
+   * True when the tool loop ended without an answer (no text; still calling tools or cut off by the
+   * length limit) and one extra call without tools, told to answer from the evidence so far, wrote
+   * `text`. `usage` includes that call; `stepCount` and `stepInputTokens` don't. Absent otherwise.
+   */
+  forcedCompletion?: boolean;
+  /** Number of agent-loop steps taken (a forced completion call is not one). */
   stepCount?: number;
   /**
    * `usage.inputTokens` reported for each agent-loop step, for auditing. Steps
