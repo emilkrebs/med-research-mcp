@@ -19,6 +19,7 @@
 </p>
 
 <p align="center">
+  <a href="https://emilkrebs.dev/zh/med-research-mcp/">官网</a> ·
   <a href="#安装">安装</a> ·
   <a href="#配置">配置</a> ·
   <a href="#工具">工具</a> ·

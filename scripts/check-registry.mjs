@@ -39,6 +39,9 @@ expectNonEmptyString(pkg.mcpName, "package.json mcpName");
 expectNonEmptyString(server.name, "server.json name");
 expectEqual(pkg.mcpName, server.name, "package.json mcpName and server.json name");
 expectEqual(server.version, pkg.version, "server.json version and package.json version");
+// The project site is the one homepage users should land on, so it cannot drift
+// between what npm shows and what the registry lists.
+expectEqual(server.websiteUrl, pkg.homepage, "server.json websiteUrl and package.json homepage");
 
 const { description } = server;
 if (typeof description !== "string" || description.trim() === "" || description.length > DESCRIPTION_LIMIT) {
