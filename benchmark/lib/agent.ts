@@ -11,7 +11,7 @@
  *   D mcp-skill   → C's tools plus the shipped `med-research` skill in the system prompt
  */
 
-import { generateText, stepCountIs, type LanguageModel, type ToolSet } from "ai";
+import { generateText, stepCountIs, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
 import { DEFAULTS, systemPromptFor, type ModelSpec } from "./config.js";
 import { resolveModel } from "./providers.js";
 import { mcpTools } from "./tools/literature.js";
@@ -87,12 +87,13 @@ export function detectContextTruncation(stepInputTokens: (number | undefined)[])
  * Live progress events from one run, for the runner's progress output. They are
  * purely observational: nothing in the RunRecord depends on them.
  *  - `step-start`: a model call is about to be made (`forced` = tools removed,
- *    the model must answer; `reason` says why).
+ *    the model must answer, and why; "forced completion" is the extra call after
+ *    a loop that ended without an answer, see FORCED_COMPLETION_PROMPT).
  *  - `tool-start` / `tool-end`: one tool execution (the model asked for it).
  *  - `step-end`: the model call and its tool executions finished.
  */
 export type RunEvent =
-  | { type: "step-start"; step: number; forced?: "step limit" | "token cap"; tokensSoFar: number }
+  | { type: "step-start"; step: number; forced?: "step limit" | "token cap" | "forced completion"; tokensSoFar: number }
   | { type: "tool-start"; step: number; toolName: string; input: unknown }
   | { type: "tool-end"; step: number; toolName: string; durationMs: number; outputChars: number; error?: string }
   | {
@@ -163,6 +164,20 @@ function timeTools(
     } as ToolSet[string];
   }
   return wrapped;
+}
+
+/**
+ * The user turn of the one extra call made when a tool loop ends without an
+ * answer (see `runOne`). Harness text, not part of the system prompt, so it does
+ * not enter the run fingerprint.
+ */
+export const FORCED_COMPLETION_PROMPT = "You are out of tool budget. Answer now from the evidence above. Do not call tools.";
+
+/** Every message the loop produced, in order (v7 `responseMessages`; `response.messages` holds the last step only). */
+function loopMessages(result: Record<string, unknown>): ModelMessage[] {
+  const all = result.responseMessages as ModelMessage[] | undefined;
+  if (Array.isArray(all)) return all;
+  return ((result.response as { messages?: ModelMessage[] } | undefined)?.messages ?? []) as ModelMessage[];
 }
 
 /** Flatten tool calls (full outputs, durations) across every step of the loop. */
@@ -274,7 +289,29 @@ export async function runOne(
     // Anthropic honors `toolChoice: "none"` and 400s ("Requests which include tool_use or
     // tool_result blocks must define tools") once the history holds tool calls but the request
     // defines no tools, so its forced step keeps the definitions and relies on toolChoice alone.
+    // Every other provider gets the tools removed and no toolChoice: with no tools, the OpenAI,
+    // DeepSeek and Ollama adapters send no tool_choice anyway, and since ai 7.0.149 an SDK-level
+    // "none" turns a stray tool call (DeepSeek emits them with no tools defined) into a thrown
+    // ToolChoiceViolationError that loses the run. Without it the stray call is recorded as an
+    // AI_NoSuchToolError tool error, the loop ends without text, and the completion call below answers.
     const keepToolsWhenForced = model.provider === "anthropic";
+
+    const onStepEnd = (step: {
+      usage?: { inputTokens?: number; outputTokens?: number };
+      finishReason?: string;
+      toolCalls?: unknown[];
+      text?: string;
+    }): void => {
+      emit({
+        type: "step-end",
+        step: currentStep,
+        ...(typeof step.usage?.inputTokens === "number" ? { inputTokens: step.usage.inputTokens } : {}),
+        ...(typeof step.usage?.outputTokens === "number" ? { outputTokens: step.usage.outputTokens } : {}),
+        ...(step.finishReason !== undefined ? { finishReason: String(step.finishReason) } : {}),
+        toolCalls: step.toolCalls?.length ?? 0,
+        textChars: step.text?.length ?? 0,
+      });
+    };
 
     // First step with the tools removed. Dropping the tool definitions shrinks the prompt, so
     // that step's input tokens legitimately fall; it must not be read as context truncation.
@@ -291,7 +328,7 @@ export async function runOne(
       // last allowed step is maxSteps - 1. With tools, forbid tool calls there (or
       // once the token cap is spent) so the model must write its answer instead of
       // leaving `text` empty. Some providers ignore `toolChoice: "none"`, so the
-      // tools are also taken off the table (except on Anthropic, see above).
+      // tools are taken off the table instead (except on Anthropic, see above).
       prepareStep: ({ stepNumber, steps }: { stepNumber: number; steps: Array<{ usage?: { totalTokens?: number } }> }) => {
         currentStep = stepNumber;
         const spent = steps.reduce((sum, st) => sum + (st.usage?.totalTokens ?? 0), 0);
@@ -305,42 +342,63 @@ export async function runOne(
         if (forced && forcedAt === undefined) forcedAt = stepNumber;
         emit({ type: "step-start", step: stepNumber, ...(forced ? { forced } : {}), tokensSoFar: spent });
         if (!forced) return undefined;
-        return keepToolsWhenForced ? { toolChoice: "none" as const } : { toolChoice: "none" as const, activeTools: [] };
+        return keepToolsWhenForced ? { toolChoice: "none" as const } : { activeTools: [] };
       },
-      onStepEnd: (step: {
-        usage?: { inputTokens?: number; outputTokens?: number };
-        finishReason?: string;
-        toolCalls?: unknown[];
-        text?: string;
-      }) => {
-        emit({
-          type: "step-end",
-          step: currentStep,
-          ...(typeof step.usage?.inputTokens === "number" ? { inputTokens: step.usage.inputTokens } : {}),
-          ...(typeof step.usage?.outputTokens === "number" ? { outputTokens: step.usage.outputTokens } : {}),
-          ...(step.finishReason !== undefined ? { finishReason: String(step.finishReason) } : {}),
-          toolCalls: step.toolCalls?.length ?? 0,
-          textChars: step.text?.length ?? 0,
-        });
-      },
+      onStepEnd,
     })) as unknown as Record<string, unknown>;
 
-    const toolCalls = extractToolCalls(result, timings);
-    const toolsUsed = [...new Set(toolCalls.map((c) => c.toolName))];
     const steps = (result.steps ?? []) as unknown[];
     const stepTokens = extractStepInputTokens(result);
+    const loopUsage = extractUsage(result);
+    const loopText = String(result.text ?? "");
+    const loopFinish = result.finishReason !== undefined ? String(result.finishReason) : undefined;
+
+    // A tool loop that ends still calling tools (or cut off by the output limit) with no text has
+    // no answer, even after the forced step: some models emit a tool call with no tools defined.
+    // One extra call, without tools, on the whole conversation so far asks for the answer. It is
+    // flagged `forcedCompletion`; its usage is added to the run's, and `stepCount` stays the loop's.
+    // When this call is empty too, the run is a real no-answer.
+    let completion: Record<string, unknown> | undefined;
+    if (tools && loopText.trim() === "" && (loopFinish === "tool-calls" || loopFinish === "length")) {
+      currentStep = steps.length;
+      emit({ type: "step-start", step: currentStep, forced: "forced completion", tokensSoFar: loopUsage.totalTokens });
+      completion = (await generateText({
+        model: llm,
+        system: systemPrompt,
+        messages: [{ role: "user", content: query.prompt }, ...loopMessages(result), { role: "user", content: FORCED_COMPLETION_PROMPT }],
+        ...(model.fixedSampling ? {} : { temperature }),
+        maxRetries,
+        abortSignal,
+        // Anthropic needs the definitions whenever the history holds tool calls (see above).
+        ...(keepToolsWhenForced ? { tools, toolChoice: "none" as const } : {}),
+        onStepEnd,
+      })) as unknown as Record<string, unknown>;
+    }
+
+    const toolCalls = [...extractToolCalls(result, timings), ...(completion ? extractToolCalls(completion, timings) : [])];
+    const toolsUsed = [...new Set(toolCalls.map((c) => c.toolName))];
     const toolS = toolCalls.reduce((sum, c) => sum + (c.durationMs ?? 0), 0) / 1000;
+    const completionUsage = completion ? extractUsage(completion) : undefined;
+    const usage: Usage = completionUsage
+      ? {
+          inputTokens: loopUsage.inputTokens + completionUsage.inputTokens,
+          outputTokens: loopUsage.outputTokens + completionUsage.outputTokens,
+          totalTokens: loopUsage.totalTokens + completionUsage.totalTokens,
+        }
+      : loopUsage;
+    const finishReason = completion ? (completion.finishReason !== undefined ? String(completion.finishReason) : undefined) : loopFinish;
 
     return {
       ...base,
-      text: String(result.text ?? ""),
+      text: completion ? String(completion.text ?? "") : loopText,
       toolCalls,
       toolCallCount: toolCalls.length,
       toolsUsed,
-      usage: extractUsage(result),
+      usage,
       speedS: (Date.now() - t0) / 1000,
       toolS,
-      ...(result.finishReason !== undefined ? { finishReason: String(result.finishReason) } : {}),
+      ...(finishReason !== undefined ? { finishReason } : {}),
+      ...(completion ? { forcedCompletion: true } : {}),
       stepCount: steps.length,
       // Unreported steps are stored as 0 so the array stays index-aligned with steps.
       ...(stepTokens.length > 0 ? { stepInputTokens: stepTokens.map((t) => t ?? 0) } : {}),

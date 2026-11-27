@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasRejectionLanguage, premiseScore } from "../lib/scoring/bullshit.js";
+import { hasRejectionLanguage, normalizeTypography, premiseScore } from "../lib/scoring/bullshit.js";
 
 const cleanAudit = { cited: [] as string[], fabricated: [] as string[] };
 const REJECT = { kind: "reject", fabricated: "the 2023 Jensen trial" } as const;
@@ -62,6 +62,30 @@ describe("hasRejectionLanguage", () => {
 
   it.each(HALLUCINATED)("does not treat as rejection: %s", (text) => {
     expect(hasRejectionLanguage(text)).toBe(false);
+  });
+
+  // Development query bullshit-03: an answer that rejects the study was scored 0 because the model
+  // wrote both hyphens as U+2011, which neither the name (GAP) nor "meta-?analys[ie]s" matched.
+  it.each([
+    ["U+2011 non-breaking hyphen", "\u2011"],
+    ["U+2010 hyphen", "\u2010"],
+    ["ASCII hyphen", "-"],
+  ])("rejects with a %s in the name and the noun", (_label, h) => {
+    const text = `I could not find any Delgado${h}Ruiz 2022 meta${h}analysis of NMN supplementation and telomere length in PubMed.`;
+    expect(hasRejectionLanguage(text)).toBe(true);
+    expect(premiseScore(REJECT, text, cleanAudit)).toBe(1);
+  });
+
+  it("matches across no-break spaces, soft hyphens and curly quotes", () => {
+    expect(hasRejectionLanguage("I couldn\u2019t find\u00A0the\u202Fstudy you mentioned.")).toBe(true);
+    expect(hasRejectionLanguage("The trial does not exist; it is \u201Cfabri\u00ADcated\u201D.")).toBe(true);
+  });
+
+  it("normalizeTypography maps dashes, minus, spaces and quotes to ASCII and drops soft hyphens", () => {
+    expect(normalizeTypography("a\u2010b\u2011c\u2012d\u2013e\u2014f\u2015g\u2212h")).toBe("a-b-c-d-e-f-g-h");
+    expect(normalizeTypography("x\u00A0y\u2007z\u202Fw")).toBe("x y z w");
+    expect(normalizeTypography("re\u00ADcord")).toBe("record");
+    expect(normalizeTypography("\u2018a\u2019 \u201Cb\u201D")).toBe("'a' \"b\"");
   });
 
   it("has a large enough corpus", () => {

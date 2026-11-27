@@ -110,9 +110,26 @@ const REJECTION_PATTERNS: RegExp[] = [
   ),
 ];
 
+/**
+ * Typographic characters the patterns (written in ASCII) would trip on, mapped to ASCII: models
+ * write "Delgado‑Ruiz" and "meta‑analysis" with U+2011 and "couldn’t" with a curly apostrophe.
+ *  - U+2010–U+2015 (hyphens, figure dash, en and em dash) and U+2212 (minus) → "-"
+ *  - U+00AD (soft hyphen) → removed
+ *  - U+00A0, U+2007, U+202F (no-break spaces) → " "
+ *  - curly single and double quotes → ' and "
+ */
+export function normalizeTypography(text: string): string {
+  return text
+    .replace(/[\u2010-\u2015\u2212]/g, "-")
+    .replace(/\u00AD/g, "")
+    .replace(/[\u00A0\u2007\u202F]/g, " ")
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"');
+}
+
 /** True when the text says, about the study/record/PMID itself, that it can't be found, verified, or doesn't exist. */
 export function hasRejectionLanguage(text: string): boolean {
-  const normalized = text.replace(/\s+/g, " ").replace(/\*\*|__|`/g, "");
+  const normalized = normalizeTypography(text).replace(/\s+/g, " ").replace(/\*\*|__|`/g, "");
   return REJECTION_PATTERNS.some((re) => re.test(normalized));
 }
 

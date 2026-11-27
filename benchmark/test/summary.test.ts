@@ -213,6 +213,107 @@ describe("premise and citation rates", () => {
   });
 });
 
+describe("a run without an answer is not a failure to reject", () => {
+  const reject = (over: Partial<ScoreRow>): ScoreRow =>
+    row({ query_id: "f1", key_kind: "reject", category: "bullshit", accuracy_source: "reject", ...over });
+  const answered = (run: number): ScoreRow => reject({ run, accuracy: 10, bullshit_score: 1 });
+  const silent = (run: number): ScoreRow => reject({ run, accuracy: 0, bullshit_score: 0, status: "no-answer", accuracy_source: "failed" });
+  const rows = [answered(1), answered(2), silent(3), silent(4)];
+  const s = buildSummary(rows, meta(["mcp"]));
+  const c = cond(s, "mcp");
+
+  it("keeps the headline rate intention-to-treat and adds the two counts beside it", () => {
+    expect(c.fabricated_rejected.mean).toBe(0.5);
+    expect(c.fabricated_rejected_answered).toEqual({ rejected: 2, answered: 2 });
+    expect(c.fabricated_no_answer).toEqual({ runs: 2, of: 4 });
+  });
+
+  it("shows them as two columns right after the headline one", () => {
+    const md = toMarkdown(s);
+    expect(md).toContain("| Fabricated studies rejected | Rejected, answered runs | No answer (fabricated) | Real studies accepted |");
+    const line = md.split("\n").find((l) => l.startsWith("| mcp |"))!;
+    expect(line).toContain("| 50% (n=1) | 2/2 (100%) | 2/4 (50%) | — |");
+    expect(line.split("|").length).toBe(md.split("\n").find((l) => l.startsWith("| Condition | Runs scored"))!.split("|").length);
+  });
+
+  it("a timeout counts as no answer too; a rejection missed in an answer is a failure to reject", () => {
+    const more = buildSummary([answered(1), reject({ run: 2, accuracy: 0, bullshit_score: 0 }), reject({ run: 3, accuracy: 0, bullshit_score: 0, status: "timeout", accuracy_source: "failed" })], meta(["mcp"]));
+    expect(cond(more, "mcp").fabricated_rejected_answered).toEqual({ rejected: 1, answered: 2 });
+    expect(cond(more, "mcp").fabricated_no_answer).toEqual({ runs: 1, of: 3 });
+  });
+
+  it("a provider error is missing data: in neither count", () => {
+    const withError = buildSummary([...rows, reject({ run: 5, accuracy: Number.NaN, bullshit_score: Number.NaN, status: "provider-error", accuracy_source: "failed" })], meta(["mcp"]));
+    const e = cond(withError, "mcp");
+    expect(e.fabricated_rejected_answered).toEqual({ rejected: 2, answered: 2 });
+    expect(e.fabricated_no_answer).toEqual({ runs: 2, of: 4 });
+    expect(e.fabricated_rejected.mean).toBe(0.5);
+    expect(e.runs_missing).toBe(1);
+  });
+
+  it("are counts of 0 and a dash when the split has no fabricated-study queries", () => {
+    const none = buildSummary([row({})], meta(["mcp"]));
+    expect(cond(none, "mcp").fabricated_rejected_answered).toEqual({ rejected: 0, answered: 0 });
+    expect(cond(none, "mcp").fabricated_no_answer).toEqual({ runs: 0, of: 0 });
+    const line = toMarkdown(none).split("\n").find((l) => l.startsWith("| mcp |"))!;
+    expect(line).toContain("| — | — | — | — |");
+  });
+
+  it("survive JSON, and the older fields are still there", () => {
+    const json = JSON.parse(JSON.stringify(s)).splits.dev.models.m1.mcp;
+    expect(json.fabricated_rejected_answered).toEqual({ rejected: 2, answered: 2 });
+    expect(json.fabricated_no_answer).toEqual({ runs: 2, of: 4 });
+    expect(json.fabricated_rejected).toMatchObject({ mean: 0.5, queries: 1 });
+    expect(json.rubric_runs_graded).toBe(0);
+  });
+
+  it("the tables explain the difference", () => {
+    const md = toMarkdown(s);
+    expect(md).toContain('"Fabricated studies rejected" counts a run without an answer as not rejected');
+    expect(md).toContain("a failure to reject can be told from a run that never answered");
+  });
+});
+
+describe("rubric runs without an answer", () => {
+  const rubric = (run: number, over: Partial<ScoreRow>): ScoreRow =>
+    row({ query_id: `r${run}`, key_kind: "rubric", category: "synthesis", run, accuracy: 8, accuracy_source: "human", accuracy_graders: 2, ...over });
+  const rows = [
+    rubric(1, {}),
+    rubric(2, {}),
+    rubric(3, {}),
+    rubric(4, { accuracy: 0, status: "no-answer", accuracy_source: "failed" }),
+    rubric(5, { accuracy: 0, status: "timeout", accuracy_source: "failed" }),
+  ];
+
+  it("are counted next to the graded runs, which still include them at accuracy 0", () => {
+    const c = cond(buildSummary(rows, meta(["mcp"])), "mcp");
+    expect(c.rubric_runs_no_answer).toBe(2);
+    expect(c.rubric_runs_graded).toBe(5);
+    expect(c.rubric_runs_ungraded).toBe(0);
+    expect(c.accuracy_rubric.mean).toBeCloseTo((8 * 3) / 5, 4);
+  });
+
+  it("show in the detail table of each split", () => {
+    const both = buildSummary([...rows, ...rows.map((r) => ({ ...r, split: "test" as const }))], meta(["mcp"]));
+    const md = toMarkdown(both);
+    expect(md).toContain("| Rubric answers graded | Rubric runs without an answer | Graders per answer |");
+    const lines = md.split("\n").filter((l) => l.includes("| 5/5 | 2/5 (40%) |"));
+    expect(lines).toHaveLength(2); // held-out and development
+  });
+
+  it("do not count an ungraded answer or a provider error, and show a dash with no rubric runs", () => {
+    const mixed = buildSummary(
+      [rubric(1, {}), rubric(2, { accuracy: Number.NaN, accuracy_source: "ungraded" }), rubric(3, { accuracy: Number.NaN, status: "provider-error" })],
+      meta(["mcp"]),
+    );
+    expect(cond(mixed, "mcp").rubric_runs_no_answer).toBe(0);
+    expect(toMarkdown(mixed)).toContain("| 1/2 | 0/2 (0%) |");
+    const none = toMarkdown(buildSummary([row({})], meta(["mcp"])));
+    expect(none).toContain("| — | — | — | — |");
+    expect(cond(buildSummary([row({})], meta(["mcp"])), "mcp").rubric_runs_no_answer).toBe(0);
+  });
+});
+
 describe("paired tests", () => {
   it("compare keyed accuracy per query with the exact Wilcoxon test and a bootstrap interval", () => {
     const t = tests(buildSummary(dataset([1]), meta()))[0]!;
@@ -440,14 +541,14 @@ describe("queries whose answer is beyond PubMed", () => {
   it("show as two table columns when the split has both kinds, and only then", () => {
     const md = toMarkdown(s);
     expect(md).toContain("| Condition | Runs scored | Accuracy, keyed queries (0–10) | Accuracy, in PubMed (0–10) | Accuracy, beyond PubMed (0–10) | Fabricated studies rejected |");
-    expect(md).toContain("|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--|");
+    expect(md).toContain("|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--|");
     const columns = (md: string): number => md.split("\n").find((l) => l.startsWith("| mcp |"))!.split("|").length;
     const header = (md: string): number => md.split("\n").find((l) => l.startsWith("| Condition | Runs scored"))!.split("|").length;
     expect(columns(md)).toBe(header(md));
     const one = toMarkdown(buildSummary(mixed(10, 0), meta(["mcp", "pubmed"])));
     expect(one).not.toContain("beyond PubMed");
     expect(one).toContain("| Condition | Runs scored | Accuracy, keyed queries (0–10) | Fabricated studies rejected |");
-    expect(one).toContain("|---|--:|--:|--:|--:|--:|--:|--:|--:|--|");
+    expect(one).toContain("|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--|");
     expect(toMarkdown(buildSummary(mixed(0, 10), meta(["mcp", "pubmed"])))).not.toContain("Accuracy, in PubMed");
   });
 

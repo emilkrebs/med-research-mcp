@@ -6,6 +6,8 @@
  *
  *  - accuracy on the keyed queries (`values`, `reject`, `accept`: the ones with ground truth),
  *  - the share of fabricated studies rejected and of real-study controls accepted,
+ *  - beside it, how a failure to reject differs from a run that gave no answer: the fabricated
+ *    studies rejected among the runs that answered, and the runs without an answer (also for rubric queries),
  *  - the share of cited records that are fabricated (don't exist, or are about something else),
  *  - the share of checkable claims next to a citation that contradict the cited record,
  *  - median tokens and wall-clock time,
@@ -39,7 +41,7 @@
 import type { Category, ConditionId, RunStatus, ScoreRow, Split } from "../types.js";
 import { CONDITION_LETTER, DEFAULTS } from "../config.js";
 import { bootstrapMeanCI, comparePaired, holm, mean, median, roundP, type PairedResult } from "../stats.js";
-import { RUN_STATUSES, isScored } from "../status.js";
+import { RUN_STATUSES, isFailure, isScored } from "../status.js";
 
 /** A mean of per-query means. */
 export interface Estimate {
@@ -72,10 +74,25 @@ export interface ConditionSummary {
   rubric_runs_graded: number;
   /** Scored rubric runs still waiting for a human grade. */
   rubric_runs_ungraded: number;
+  /** Scored rubric runs that ended without an answer (`no-answer`, `timeout`). They are in `rubric_runs_graded` too, at accuracy 0. */
+  rubric_runs_no_answer: number;
   /** Fewest graders behind any human-graded answer; null when none is graded. */
   rubric_min_graders: number | null;
-  /** Share of fabricated-study queries correctly rejected (0–1). */
+  /**
+   * Share of fabricated-study queries correctly rejected (0–1), intention to treat: a run without an answer
+   * counts as not rejected. Read it with `fabricated_rejected_answered` and `fabricated_no_answer`.
+   */
   fabricated_rejected: Estimate;
+  /**
+   * Pooled over runs, not queries: of the fabricated-study runs that produced an answer (`ok`), how many
+   * rejected the study. A failure to reject, without the runs that never answered.
+   */
+  fabricated_rejected_answered: { rejected: number; answered: number };
+  /**
+   * Pooled over runs: of the scored fabricated-study runs, how many ended without an answer (`no-answer`,
+   * `timeout`; for example at the step limit). Those count as not rejected in `fabricated_rejected`.
+   */
+  fabricated_no_answer: { runs: number; of: number };
   /** Share of real-study control queries not rejected (0–1). */
   real_accepted: Estimate;
   pmids_cited: number;
@@ -216,6 +233,8 @@ function summarizeCondition(rows: ScoreRow[]): ConditionSummary {
 
   const rubric = scored.filter((r) => r.key_kind === "rubric");
   const graded = rubric.filter((r) => Number.isFinite(r.accuracy));
+  const reject = scored.filter((r) => r.key_kind === "reject");
+  const rejectAnswered = reject.filter((r) => r.status === "ok" && Number.isFinite(r.bullshit_score));
   const graders = graded.filter((r) => r.accuracy_source === "human").map((r) => r.accuracy_graders ?? 1);
 
   const cited = ok.reduce((s, r) => s + r.pmids_cited, 0);
@@ -240,8 +259,11 @@ function summarizeCondition(rows: ScoreRow[]): ConditionSummary {
     accuracy_rubric: estimate([...perQuery(rubric, (r) => r.accuracy).values()]),
     rubric_runs_graded: graded.length,
     rubric_runs_ungraded: rubric.length - graded.length,
+    rubric_runs_no_answer: rubric.filter((r) => isFailure(r.status)).length,
     rubric_min_graders: graders.length > 0 ? Math.min(...graders) : null,
-    fabricated_rejected: estimate([...perQuery(scored.filter((r) => r.key_kind === "reject"), (r) => r.bullshit_score).values()]),
+    fabricated_rejected: estimate([...perQuery(reject, (r) => r.bullshit_score).values()]),
+    fabricated_rejected_answered: { rejected: rejectAnswered.filter((r) => r.bullshit_score === 1).length, answered: rejectAnswered.length },
+    fabricated_no_answer: { runs: reject.filter((r) => isFailure(r.status)).length, of: reject.length },
     real_accepted: estimate([...perQuery(scored.filter((r) => r.key_kind === "accept"), (r) => r.bullshit_score).values()]),
     pmids_cited: cited,
     pmids_unresolved: fabricated - offTopic,
@@ -390,6 +412,11 @@ function fmtEstimate(e: Estimate, format: (x: number) => string = (x) => x.toFix
 
 const fmtShare = (e: Estimate): string => fmtEstimate(e, (x) => `${Math.round(x * 100)}%`);
 
+/** "18/36 (50%)"; "—" when there are no runs to count. */
+function fmtCount(n: number, of: number): string {
+  return of > 0 ? `${n}/${of} (${Math.round((n / of) * 100)}%)` : "—";
+}
+
 /** 1234 → "1.2k". */
 function fmtTokens(n: number | null): string {
   if (n === null) return "—";
@@ -422,13 +449,14 @@ function hasBothKinds(part: SplitSummary): boolean {
 
 function conditionTable(perCondition: Record<string, ConditionSummary>, split = false): string {
   const header =
-    `| Condition | Runs scored | Accuracy, keyed queries (0–10) |${split ? " Accuracy, in PubMed (0–10) | Accuracy, beyond PubMed (0–10) |" : ""} Fabricated studies rejected | Real studies accepted | Fabricated citations | Contradicted claims | Median tokens | Median time (s) | Failed or missing |\n` +
-    `|---|--:|--:|${split ? "--:|--:|" : ""}--:|--:|--:|--:|--:|--:|--|`;
+    `| Condition | Runs scored | Accuracy, keyed queries (0–10) |${split ? " Accuracy, in PubMed (0–10) | Accuracy, beyond PubMed (0–10) |" : ""} Fabricated studies rejected | Rejected, answered runs | No answer (fabricated) | Real studies accepted | Fabricated citations | Contradicted claims | Median tokens | Median time (s) | Failed or missing |\n` +
+    `|---|--:|--:|${split ? "--:|--:|" : ""}--:|--:|--:|--:|--:|--:|--:|--:|--|`;
   const rows = Object.entries(perCondition).map(([c, s]) => {
     const incomplete = s.runs_missing > 0 ? " ⚠️" : "";
     const halves = split ? ` ${fmtEstimate(s.accuracy_in_pubmed)} | ${fmtEstimate(s.accuracy_beyond_pubmed)} |` : "";
     return (
-      `| ${c} | ${s.runs_scored}/${s.runs}${incomplete} | ${fmtEstimate(s.accuracy_keyed)} |${halves} ${fmtShare(s.fabricated_rejected)} | ${fmtShare(s.real_accepted)} | ` +
+      `| ${c} | ${s.runs_scored}/${s.runs}${incomplete} | ${fmtEstimate(s.accuracy_keyed)} |${halves} ${fmtShare(s.fabricated_rejected)} | ` +
+      `${fmtCount(s.fabricated_rejected_answered.rejected, s.fabricated_rejected_answered.answered)} | ${fmtCount(s.fabricated_no_answer.runs, s.fabricated_no_answer.of)} | ${fmtShare(s.real_accepted)} | ` +
       `${fmtRate(s.fabrication_rate, s.pmids_cited)} | ${fmtRate(s.misattribution_rate, s.citations_checked)} | ${fmtTokens(s.tokens_median)} | ` +
       `${s.speed_s_median === null ? "—" : s.speed_s_median.toFixed(1)} | ${failures(s)} |`
     );
@@ -439,13 +467,13 @@ function conditionTable(perCondition: Record<string, ConditionSummary>, split = 
 /** What was cited, and the human-graded rubric answers. */
 function detailTable(perCondition: Record<string, ConditionSummary>): string {
   const header =
-    "| Condition | PMIDs cited | Don't exist | Off-topic | Mean design tier of citations (descriptive) | Rubric accuracy, human-graded (0–10) | Rubric answers graded | Graders per answer |\n" +
-    "|---|--:|--:|--:|--:|--:|--:|--:|";
+    "| Condition | PMIDs cited | Don't exist | Off-topic | Mean design tier of citations (descriptive) | Rubric accuracy, human-graded (0–10) | Rubric answers graded | Rubric runs without an answer | Graders per answer |\n" +
+    "|---|--:|--:|--:|--:|--:|--:|--:|--:|";
   const rows = Object.entries(perCondition).map(([c, s]) => {
     const rubricRuns = s.rubric_runs_graded + s.rubric_runs_ungraded;
     return (
       `| ${c} | ${s.pmids_cited} | ${s.pmids_unresolved} | ${s.pmids_off_topic} | ${s.design_tier_mean === null ? "—" : s.design_tier_mean.toFixed(2)} | ` +
-      `${fmtEstimate(s.accuracy_rubric)} | ${rubricRuns > 0 ? `${s.rubric_runs_graded}/${rubricRuns}` : "—"} | ${s.rubric_min_graders === null ? "—" : `≥${s.rubric_min_graders}`} |`
+      `${fmtEstimate(s.accuracy_rubric)} | ${rubricRuns > 0 ? `${s.rubric_runs_graded}/${rubricRuns}` : "—"} | ${fmtCount(s.rubric_runs_no_answer, rubricRuns)} | ${s.rubric_min_graders === null ? "—" : `≥${s.rubric_min_graders}`} |`
     );
   });
   return [header, ...rows].join("\n");
@@ -567,6 +595,9 @@ export function toMarkdown(summary: Summary): string {
   parts.push(
     `**Reading the tables.** Accuracy is over queries with ground truth: an exact answer key, a fabricated study to reject, ` +
       `or a real study not to reject. A run that produced no answer or timed out counts as 0; a missing run is left out and flagged. ` +
+      `"Fabricated studies rejected" counts a run without an answer as not rejected. "Rejected, answered runs" counts only the runs that answered, ` +
+      `and "No answer (fabricated)" counts the runs that ended without one (at the step limit, for example), so a failure to reject can be told from a run that never answered. ` +
+      `"Rubric answers graded" includes a run without an answer, scored 0; "Rubric runs without an answer" counts those. ` +
       `Means are means of per-query means, with a 95% bootstrap interval over queries in brackets. ` +
       `A fabricated citation is a cited record that doesn't exist or is about something else; a contradicted claim is a year, author, ` +
       `design or figure stated next to a valid citation that the record contradicts. Both rates are pooled over the condition's answers.`,
