@@ -710,10 +710,13 @@ describe("NcbiClient requests", () => {
     const client = quick();
     const before = await client.esearch({ query: "x", maxResults: 50, page: 199 });
     expect(before).toMatchObject({ pmids: range(9901, 9950), more: true });
-    expect(before).not.toHaveProperty("warning");
+    // Before the cap's own warning, the search is only said to be broad: the count, and that the rest can't be reached.
+    expect(before.warning).toMatch(/^PubMed matched 20,000 records, so the query is broad: it serves only the first 9,999 of them/);
     // Page 200 of 50 starts at record 9,951: it holds the 49 records served.
     const last = await client.esearch({ query: "x", maxResults: 50, page: 200 });
     expect(last).toMatchObject({ pmids: range(9951, 9999), more: false, warning: expect.stringContaining("first 9,999 records") });
+    // The cap's warning says the same, so the broad one gives way to it.
+    expect(last.warning).not.toContain("PubMed matched");
 
     const edge = quick();
     expect(await edge.esearch({ query: "y", maxResults: 3, page: 3333 })).toMatchObject({ pmids: range(9997, 9999), warning: expect.any(String) });
@@ -1094,6 +1097,11 @@ describe("NcbiClient contact email", () => {
   });
 });
 
+// A search over 10,000 records also says that it is broad, ahead of the warnings about its terms (see tests/pubmed-query-errors.test.ts).
+// The tests of those leave it out, as several of them use the real counts of the queries they stand for.
+const withoutBroad = (warning: string | undefined): string | undefined =>
+  warning?.replace(/^PubMed matched [\d,]+ records, so the query is broad:.*?a studyTypes filter\. ?/, "") || undefined;
+
 // esearch reports a term found in no record under errorlist.phrasesnotfound (checked live 2026-11-16, see the comment
 // on UnknownTerms in pubmed.ts): in a query of plain words it drops the word, in a quoted, tagged or ANDed one it keeps it.
 describe("esearch: words that no record contains", () => {
@@ -1120,7 +1128,7 @@ describe("esearch: words that no record contains", () => {
     vi.stubGlobal("fetch", vi.fn(async () => answer(71644, ["qzxvbnmk"], '"sleep apnoea"[All Fields] OR "sleep apnea"[All Fields]')));
     const out = await quick().esearch({ query: "sleep apnea qzxvbnmk" });
     expect(out.count).toBe(71644);
-    expect(out.warning).toBe('PubMed ignored "qzxvbnmk": no record contains it, so it searched without it.');
+    expect(withoutBroad(out.warning)).toBe('PubMed ignored "qzxvbnmk": no record contains it, so it searched without it.');
   });
 
   it("names the words, also when the rest of the query found nothing", async () => {
@@ -1138,7 +1146,7 @@ describe("esearch: words that no record contains", () => {
 
   it("says nothing of a kept term in a search that found records (a NOT operand), or without the query it ran", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => answer(38542, ["qzxvbnmk"], "metformin NOT qzxvbnmk")));
-    expect(await quick().esearch({ query: "metformin NOT qzxvbnmk" })).not.toHaveProperty("warning");
+    expect(withoutBroad((await quick().esearch({ query: "metformin NOT qzxvbnmk" })).warning)).toBeUndefined();
     // No querytranslation: whether the term was left out is unknown.
     const bare = { esearchresult: { count: "5", idlist: ["1"], errorlist: { phrasesnotfound: ["x"] } } };
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(bare), { status: 200 })));
@@ -1150,8 +1158,8 @@ describe("esearch: words that no record contains", () => {
     vi.stubGlobal("fetch", fetchMock);
     const client = quick();
     const sentence = 'PubMed ignored "qzxvbnmk": no record contains it, so it searched without it.';
-    expect((await client.esearch({ query: "sleep qzxvbnmk" })).warning).toBe(sentence);
-    expect((await client.esearch({ query: "sleep qzxvbnmk" })).warning).toBe(sentence);
+    expect(withoutBroad((await client.esearch({ query: "sleep qzxvbnmk" })).warning)).toBe(sentence);
+    expect(withoutBroad((await client.esearch({ query: "sleep qzxvbnmk" })).warning)).toBe(sentence);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const capped = await client.esearch({ query: "sleep qzxvbnmk", maxResults: 50, page: 200 });
     expect(capped.warning).toMatch(/^PubMed serves only the first 9,999 records .* PubMed ignored "qzxvbnmk"/);
@@ -1190,11 +1198,11 @@ describe("esearch: quoted terms that no record contains", () => {
       }),
       { status: 200 },
     );
-  // The threshold is raised: the counts of "sleep qzxvbnmk" (373,649) and "COVID-19" (495,549) are above the default 100,000.
-  const quick = () => new NcbiClient({ email: "test@example.com", apiKey: "test-key", broadThreshold: 1_000_000 });
+  // The counts of "sleep qzxvbnmk" (373,649) and "COVID-19" (495,549) are served too: a broad query is never refused.
+  const quick = () => new NcbiClient({ email: "test@example.com", apiKey: "test-key" });
   const warningOf = async (query: string, response: Response): Promise<string | undefined> => {
     vi.stubGlobal("fetch", vi.fn(async () => response.clone()));
-    return (await quick().esearch({ query })).warning;
+    return withoutBroad((await quick().esearch({ query })).warning);
   };
 
   // "sleep" and its variants, as esearch expanded the word in the answers for `"sleep qzxvbnmk"` and the phrases of three known words.
@@ -1222,7 +1230,7 @@ describe("esearch: quoted terms that no record contains", () => {
   it("says nothing of a quoted term that stays in a search that found records (a NOT operand)", async () => {
     const response = answer(71648, 'sleep apnea NOT "qzxvbnmk"', ['"qzxvbnmk"']);
     vi.stubGlobal("fetch", vi.fn(async () => response.clone()));
-    expect(await quick().esearch({ query: 'sleep apnea NOT "qzxvbnmk"' })).not.toHaveProperty("warning");
+    expect(withoutBroad((await quick().esearch({ query: 'sleep apnea NOT "qzxvbnmk"' })).warning)).toBeUndefined();
   });
 
   it("says that a quoted phrase PubMed has no phrase for was searched as its words, whatever the count", async () => {
@@ -1275,7 +1283,7 @@ describe("esearch: quoted terms that no record contains", () => {
     for (const [query, count, translation] of real) {
       const bare = { esearchresult: { count: String(count), idlist: ["1"], querytranslation: translation } };
       vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(bare), { status: 200 })));
-      expect(await quick().esearch({ query }), query).not.toHaveProperty("warning");
+      expect(withoutBroad((await quick().esearch({ query })).warning), query).toBeUndefined();
     }
     // Lists that are there and empty say nothing either, nor does a list without the query it ran.
     expect(await warningOf('"sleep apnea"', answer(66630, '"sleep apnea"[All Fields]', []))).toBeUndefined();
