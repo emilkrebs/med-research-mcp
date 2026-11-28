@@ -460,7 +460,7 @@ export async function searchLiterature(
   const deduped = dedupeRecords(graded);
   const merged = deduped.filter((a) => (a.designTier ?? 0) >= minTier && (!typeFilter || typeFilter.has(a.studyType)));
   // The databases count what this filter drops (total, nextPage): say so, as the page can come back short.
-  const cut = filteredPageWarning(merged.length, deduped.length);
+  const cut = filteredPageWarning(merged.length, deduped.length, more && hasNextPage);
   if (cut) warnings.push(cut);
   const noAnimals = noAnimalStudiesWarning(input.studyTypes, input.minDesignTier, merged);
   if (noAnimals) warnings.push(noAnimals);

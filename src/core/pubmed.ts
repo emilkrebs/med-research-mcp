@@ -899,7 +899,7 @@ export async function searchPubMed(
     if (typeFilter && !typeFilter.has(graded.studyType)) continue;
     articles.push(graded);
   }
-  const cut = filteredPageWarning(articles.length, fetched);
+  const cut = filteredPageWarning(articles.length, fetched, more);
   if (cut) warnings.push(cut);
   const noAnimals = noAnimalStudiesWarning(input.studyTypes, input.minDesignTier, articles);
   if (noAnimals) warnings.push(noAnimals);

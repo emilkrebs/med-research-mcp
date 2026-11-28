@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { searchLiterature } from "../src/core/literature";
 import { NcbiClient, searchPubMed } from "../src/core/pubmed";
-import { EuropePmcAdapter } from "../src/core/adapters/europepmc";
+import { EuropePmcAdapter, excludedOnEuropePmc } from "../src/core/adapters/europepmc";
 import type { AdapterHttp } from "../src/core/adapters/http";
 import { LRUBackend } from "../src/core/cache";
 import { classifyArticle, classifyDesign, designPublicationTypes, excludedPublicationTypes, filteredPageWarning, mergeDuplicate } from "../src/core/grader";
@@ -141,16 +141,6 @@ describe("excludedPublicationTypes", () => {
     }
   });
 
-  it("excludes every longer design type that contains an excluded name, as Europe PMC matches a PUB_TYPE phrase by its words", () => {
-    // PUB_TYPE:"Observational Study" also finds "Observational Study, Veterinary", "Meta-Analysis" "Network Meta-Analysis", and so on.
-    for (const studyTypes of [["unknown"], ["clinical-trial"], ["non-randomized-trial"], ["unknown", "randomized-controlled-trial"], ["unknown", "review"]] as StudyType[][]) {
-      const excluded = excludedPublicationTypes(studyTypes);
-      for (const name of excluded) {
-        const wider = ALL_DESIGN_NAMES.filter((other) => other !== name && containsRun(words(other), words(name)));
-        expect(wider.filter((other) => !excluded.includes(other)), `${studyTypes}: ${name}`).toEqual([]);
-      }
-    }
-  });
 });
 
 describe("the PubMed query of a design filter", () => {
@@ -209,13 +199,15 @@ describe("the Europe PMC query of a design filter", () => {
     return new URL(urls[0]!).searchParams.get("query");
   }
 
-  it("takes unknown away from every design type, leaving the records of the longer types that are not designs", async () => {
+  it("takes unknown away from the design types whose phrase finds no other type string, and from no other", async () => {
     const q = (await query({ query: "creatine", studyTypes: ["unknown"] }))!;
-    expect(q.startsWith("(creatine) AND NOT (")).toBe(true);
-    // PUB_TYPE:"Review" finds 123,323 book reviews and 281 scientific integrity reviews, "Clinical Trial" 24,574 protocols (2026-11-27).
-    expect(q).toContain('(PUB_TYPE:"Review" AND NOT PUB_TYPE:"Book Review" AND NOT PUB_TYPE:"Scientific Integrity Review")');
-    expect(q).toContain('(PUB_TYPE:"Clinical Trial" AND NOT PUB_TYPE:"Clinical Trial Protocol")');
-    for (const name of excludedPublicationTypes(["unknown"])) expect(q).toContain(`PUB_TYPE:"${name}"`);
+    expect(q).toBe(`(creatine) AND NOT (${excludedOnEuropePmc(["unknown"]).map((t) => `PUB_TYPE:"${t}"`).join(" OR ")})`);
+    for (const name of ["Randomized Controlled Trial", "Meta-Analysis", "Network Meta-Analysis", "Observational Study", "Case Reports", "Controlled Clinical Trial"]) {
+      expect(q).toContain(`PUB_TYPE:"${name}"`);
+    }
+    // These phrases find "systematic-review", "review-article" and "book-review", "product-review", and "Clinical Trial Protocol" (2026-11-28).
+    for (const name of ["Review", "Systematic Review", "Clinical Trial"]) expect(q).not.toContain(`PUB_TYPE:"${name}"`);
+    expect(q).not.toContain("AND NOT PUB_TYPE");
     expect(q).not.toContain("[pt");
   });
 
@@ -223,6 +215,7 @@ describe("the Europe PMC query of a design filter", () => {
     const q = (await query({ query: "tirzepatide apnea", studyTypes: ["clinical-trial"] }))!;
     expect(q.startsWith('(tirzepatide apnea) AND ((PUB_TYPE:"Clinical Trial" AND NOT PUB_TYPE:"Clinical Trial Protocol") OR PUB_TYPE:"Clinical Trial, Phase I" OR ')).toBe(true);
     expect(q).toContain(' AND NOT (PUB_TYPE:"Network Meta-Analysis" OR ');
+    expect(q).not.toContain('PUB_TYPE:"Systematic Review"');
     // A review filter keeps Review as the tag finds it: nothing says a book review has no Review tag of its own.
     expect(await query({ query: "x", studyTypes: ["review"] })).toBe('(x) AND (PUB_TYPE:"Review" OR PUB_TYPE:"Scoping Review")');
   });
@@ -231,7 +224,7 @@ describe("the Europe PMC query of a design filter", () => {
     const dates = "(FIRST_PDATE:[1900-01-01 TO 1985-12-31] OR E_PDATE:[1900-01-01 TO 1985-12-31] OR P_PDATE:[1900-01-01 TO 1985-12-31])";
     expect(await query({ query: "creatine[tiab]", studyTypes: ["non-randomized-trial"], dateRange: { to: "1985" } })).toBe(
       `(TITLE_ABS:creatine) AND (PUB_TYPE:"Controlled Clinical Trial") AND ${dates} AND NOT (PUB_TYPE:"Network Meta-Analysis" OR ` +
-        'PUB_TYPE:"Meta-Analysis" OR PUB_TYPE:"Systematic Review" OR PUB_TYPE:"Randomized Controlled Trial" OR PUB_TYPE:"Equivalence Trial" OR ' +
+        'PUB_TYPE:"Meta-Analysis" OR PUB_TYPE:"Randomized Controlled Trial" OR PUB_TYPE:"Equivalence Trial" OR ' +
         'PUB_TYPE:"Observational Study" OR PUB_TYPE:"Case Reports" OR PUB_TYPE:"Clinical Trial, Veterinary" OR ' +
         'PUB_TYPE:"Randomized Controlled Trial, Veterinary" OR PUB_TYPE:"Observational Study, Veterinary")',
     );
@@ -240,6 +233,107 @@ describe("the Europe PMC query of a design filter", () => {
   it("leaves the query of other filters as it was", async () => {
     expect(await query({ query: "creatine[tiab]", studyTypes: ["case-report"] })).toBe('(TITLE_ABS:creatine) AND (PUB_TYPE:"Case Reports")');
     expect(await query({ query: "creatine" })).toBe("creatine");
+  });
+});
+
+describe("the Europe PMC exclusions against the type strings it holds besides NLM's", () => {
+  // Europe PMC finds a PUB_TYPE phrase as a run of words in any type string of a record, and a record carries the publisher's
+  // JATS article type too. The classifier gives such a string no design (it compares whole NLM strings), so a record typed
+  // by one alone is `unknown`, and the exclusion of a phrase that finds it would drop a record the filter keeps.
+  const JATS = [
+    "abstract", "addendum", "announcement", "article-commentary", "book-review", "books-received", "brief-report", "calendar", "case-report",
+    "clinical-instruction", "collection", "correction", "discussion", "dissertation", "editorial", "in-brief", "introduction", "letter",
+    "meeting-report", "news", "obituary", "oration", "partial-retraction", "product-review", "rapid-communication", "reply", "reprint",
+    "research-article", "review-article", "retraction", "translation",
+  ];
+  // Seen in Europe PMC results (2026-11-28), besides NLM's design tags and Journal Article: Cochrane's own type, NLM types that are no design.
+  const SEEN = [
+    "systematic-review", "Product Review", "Book Review", "Scientific Integrity Review", "Clinical Trial Protocol", "reviewer-report",
+    "case-study", "methods-article", "data-paper", "author-comment", "other", "Preprint", "Journal Article", "Research Support, Non-U.S. Gov't",
+  ];
+  const foreign = [...JATS, ...SEEN];
+  const holds = (name: string, type: string): boolean => containsRun(words(type), words(name));
+  const FILTERS: [StudyType[], number | undefined][] = [
+    [["unknown"], undefined],
+    [["clinical-trial"], undefined],
+    [["non-randomized-trial"], undefined],
+    [["unknown", "randomized-controlled-trial"], undefined],
+    [["unknown", "review"], undefined],
+    [["unknown", "observational", "case-report"], undefined],
+    [["clinical-trial", "review"], undefined],
+    [["clinical-trial", "meta-analysis"], undefined],
+    [["unknown", "clinical-trial"], undefined],
+    [["clinical-trial", "randomized-controlled-trial"], 4],
+    [["clinical-trial", "non-randomized-trial", "randomized-controlled-trial"], 2],
+  ];
+
+  it("leaves out of the list every design name that a JATS or other type string holds, and no other name", () => {
+    const excluded = excludedOnEuropePmc(["unknown"]);
+    for (const name of ["Review", "Systematic Review", "Clinical Trial"]) {
+      expect(excluded).not.toContain(name);
+      expect(excludedPublicationTypes(["unknown"])).toContain(name);
+    }
+    for (const name of ["Network Meta-Analysis", "Meta-Analysis", "Randomized Controlled Trial", "Equivalence Trial", "Controlled Clinical Trial", "Observational Study", "Case Reports"]) {
+      expect(excluded).toContain(name);
+    }
+    expect(excludedOnEuropePmc(["clinical-trial"])).not.toContain("Systematic Review");
+    expect(excludedOnEuropePmc(["clinical-trial"])).toContain("Randomized Controlled Trial");
+    // A filter that excludes nothing, or that is not narrowed, gets nothing.
+    expect(excludedOnEuropePmc(["randomized-controlled-trial"])).toEqual([]);
+    expect(excludedOnEuropePmc()).toEqual([]);
+  });
+
+  it("does not exclude a record typed with a JATS or other string alone when the filter keeps it: unknown keeps them all", () => {
+    const excluded = excludedOnEuropePmc(["unknown"]);
+    for (const types of [
+      ["systematic-review", "Journal Article"], // a Cochrane review, PMID 42803656
+      ["review-article", "Journal Article"], // a MEDLINE record not yet indexed
+      ["product-review", "Product Review"], // a PMC record
+      ["book-review"],
+      ["Book Review"],
+      ["Scientific Integrity Review"],
+      ["Clinical Trial Protocol"],
+    ]) {
+      expect(classifyDesign({ title: "", publicationTypes: types }).studyType, types.join()).toBe("unknown");
+      expect(excluded.filter((name) => types.some((type) => holds(name, type))), types.join()).toEqual([]);
+    }
+  });
+
+  it("does not exclude a clinical trial that also carries a JATS type: PMID 32895128", () => {
+    const types = ["Clinical Trial", "systematic-review", "Journal Article"];
+    expect(classifyDesign({ title: "", publicationTypes: types }).studyType).toBe("clinical-trial");
+    expect(excludedOnEuropePmc(["clinical-trial"]).filter((name) => types.some((type) => holds(name, type)))).toEqual([]);
+  });
+
+  it("never finds, by a name it excludes, a type string of a record the filter keeps: every design tag combination with each string", () => {
+    for (const [studyTypes, minDesignTier] of FILTERS) {
+      const excluded = excludedOnEuropePmc(studyTypes, minDesignTier);
+      for (const extra of foreign) {
+        for (let mask = 0; mask < 1 << GROUPS.length; mask++) {
+          const types = [...GROUPS.filter((_, i) => mask & (1 << i)), extra];
+          const { studyType, designTier } = classifyDesign({ title: "", publicationTypes: types });
+          const keeps = studyTypes.includes(studyType) && (designTier ?? 0) >= (minDesignTier ?? 0);
+          if (keeps) {
+            const found = excluded.filter((name) => types.some((type) => holds(name, type)));
+            expect(found, `${studyTypes} tier ${minDesignTier}: ${types}`).toEqual([]);
+          }
+        }
+      }
+    }
+  });
+
+  it("excludes every longer design name that holds an excluded name, which the phrase finds as well", () => {
+    // PUB_TYPE:"Observational Study" also finds "Observational Study, Veterinary", "Meta-Analysis" finds "Network Meta-Analysis".
+    const pairs = STUDY_TYPES.flatMap((a, i) => STUDY_TYPES.slice(i).map((b) => [a, b] as StudyType[]));
+    for (const studyTypes of [...pairs, ...FILTERS.map(([types]) => types)]) {
+      for (const minDesignTier of [undefined, 2, 4]) {
+        const excluded = excludedOnEuropePmc(studyTypes, minDesignTier);
+        for (const name of excluded) {
+          const wider = ALL_DESIGN_NAMES.filter((other) => other !== name && holds(name, other));
+          expect(wider.filter((other) => !excluded.includes(other)), `${studyTypes} tier ${minDesignTier}: ${name}`).toEqual([]);
+        }
+      }
+    }
   });
 });
 
@@ -308,9 +402,21 @@ describe("the warning for a page the design filter cut", () => {
   });
 
   it("has nothing to say for a page that kept every record", () => {
-    expect(filteredPageWarning(3, 3)).toBeUndefined();
-    expect(filteredPageWarning(0, 0)).toBeUndefined();
-    expect(filteredPageWarning(0, 1)).toContain("kept 0 of the 1 records");
+    expect(filteredPageWarning(3, 3, true)).toBeUndefined();
+    expect(filteredPageWarning(0, 0, false)).toBeUndefined();
+    expect(filteredPageWarning(0, 1, true)).toContain("kept 0 of the 1 records");
+  });
+
+  it("mentions nextPage and later pages only when the result has a nextPage", async () => {
+    expect(filteredPageWarning(1, 3, true)).toContain("total and nextPage count records before this filter, so this page can be short or empty while later pages hold more.");
+    expect(filteredPageWarning(1, 3, false)).toBe(
+      "The studyTypes/minDesignTier filter kept 1 of the 3 records this page fetched; the others are classified as another study type or rank " +
+        "below minDesignTier. total counts records before this filter, so this page can be short or empty.",
+    );
+    // The last page: the count is 3, the page holds all three, and there is no nextPage.
+    const out = await searchLiterature({ query: "x", studyTypes: ["clinical-trial"], maxResults: 10 }, new LRUBackend(), [fakeAdapter("pubmed", [rct, trial, review], 3)]);
+    expect(out).not.toHaveProperty("nextPage");
+    expect(out.warnings).toEqual([expect.stringMatching(/ total counts records before this filter, so this page can be short or empty\.$/)]);
   });
 });
 

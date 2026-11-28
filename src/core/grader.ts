@@ -316,6 +316,10 @@ export function designPublicationTypes(studyTypes?: readonly StudyType[], minDes
  * Trial group and Review, as a record tagged Clinical Trial and Randomized Controlled Trial is an RCT, one tagged
  * Clinical Trial and Review a clinical trial. Tags that name no design (Letter, Retracted Publication, ...) leave the
  * design alone and can only lower the tier, so leaving them out of the combinations can only shorten the list.
+ *
+ * The list is exact for a database that finds a tag as the tag it is (PubMed's [pt:noexp]). One that matches a phrase
+ * against every type string of a record finds more (Europe PMC: "Review" finds "review-article", which the classifier
+ * gives no design), so it asks for less: see `excludedOnEuropePmc`.
  */
 export function excludedPublicationTypes(studyTypes?: readonly StudyType[], minDesignTier?: number): string[] {
   const wanted = studyTypes && studyTypes.length > 0 ? new Set(studyTypes) : null;
@@ -484,14 +488,16 @@ export function filterWarnings(studyTypes?: readonly StudyType[], minDesignTier?
  * when it kept every record. The query is only narrowed to the publication types that can give a design (see
  * {@link designPublicationTypes} and {@link excludedPublicationTypes}), so the classifier drops the rest, here, and
  * `total` and `nextPage`, which come from the databases, count what it drops: a page can be short or empty while
- * later pages hold records.
+ * later pages hold records. `hasNextPage` is whether the result has a `nextPage`: without one there are no later pages to mention.
  */
-export function filteredPageWarning(kept: number, fetched: number): string | undefined {
+export function filteredPageWarning(kept: number, fetched: number, hasNextPage: boolean): string | undefined {
   if (kept >= fetched) return undefined;
   return (
     `The studyTypes/minDesignTier filter kept ${kept} of the ${fetched} records this page fetched; the others are classified as ` +
-    `another study type or rank below minDesignTier. total and nextPage count records before this filter, so this page ` +
-    `can be short or empty while later pages hold more.`
+    `another study type or rank below minDesignTier. ` +
+    (hasNextPage
+      ? `total and nextPage count records before this filter, so this page can be short or empty while later pages hold more.`
+      : `total counts records before this filter, so this page can be short or empty.`)
   );
 }
 
