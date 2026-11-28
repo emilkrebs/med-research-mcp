@@ -21,4 +21,6 @@ export class SovietRxivAdapter extends ChinaRxivApiAdapter {
   readonly id = "russiarxiv";
   readonly name = "RussiaRxiv (via ChinaRxiv)";
   protected readonly corpus = "russiarxiv";
+  /** Every record is a Russian original: the ChinaRxiv API's original_language=ru counts 25,456 of its 25,456 (2026-11-28). */
+  readonly languages = ["ru"];
 }

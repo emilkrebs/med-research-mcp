@@ -1163,7 +1163,8 @@ describe("searchLiterature input and design filters", () => {
     expect(adaptersFor("PubMed").map((a) => a.id)).toEqual(["pubmed"]);
     expect(adaptersFor([" EuropePMC ", "pubmed", "pubmed"]).map((a) => a.id)).toEqual(["europepmc", "pubmed"]);
     expect(adaptersFor(undefined).map((a) => a.id)).toEqual(["pubmed"]);
-    expect(adaptersFor([]).map((a) => a.id)).toEqual(["pubmed"]);
+    // An empty list is refused, no longer read as pubmed (tests/input-handling.test.ts).
+    expect(() => adaptersFor([])).toThrow(expect.objectContaining({ code: "INVALID_INPUT" }));
     expect(adaptersFor("ALL")).toHaveLength(4);
   });
 

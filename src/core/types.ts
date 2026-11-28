@@ -192,14 +192,17 @@ export interface SearchInput {
    */
   sort?: "relevance" | "date";
   /**
-   * Preferred content language (ISO 639-1). Only the ChinaXiv adapter reads it:
-   * "ru" searches the Russian collection. Ignored by the others.
+   * Content language, a two-letter ISO 639-1 code in any case; any other value is INVALID_INPUT, and a blank one is none.
+   * Only "ru" is applied, by ChinaXiv (it searches the Russian collection) and RussiaRxiv (all Russian); for any other
+   * code a warning names the databases searched that it was not applied to (see `DatabaseAdapter.languages`).
    */
   language?: string;
   /**
    * The most characters an abstract keeps in the results; a whole number, 0 or more. Longer ones are cut at a
-   * word boundary and end with "…" (within the limit), and the article gets `abstractTruncated`. 0 leaves
-   * abstracts out. Default: whole abstracts. `literature_fetch` always returns the whole abstract.
+   * word boundary and end with "…" (within the limit), and the article gets `abstractTruncated`. When the first word
+   * and the "…" don't fit, there is no boundary to cut at and that word is cut where it stands ("Supplementing" at 5
+   * becomes "Supp…"); 1 leaves no room for a letter before the "…", so the abstract is left out, as 0 does, and the
+   * flag still says there was one. Default: whole abstracts. `literature_fetch` always returns the whole abstract.
    */
   abstractMaxChars?: number;
 }
@@ -265,11 +268,13 @@ export interface FulltextInput {
   /**
    * A PMID, a PMCID ("PMC…"), an id of Europe PMC's other records as `literature_search` returns it ("PPR…"
    * preprints, "CBA:…", "IND…", with any prefix) or a ChinaXiv or RussiaRxiv id ("chinaxiv-…", "ru-…"), each
-   * on its own. A bare number is a PMID. An id none of them knows needs `doi`.
+   * on its own. A bare number is a PMID, and so is one written "PMID:9500320" or "MED:9500320" (Europe PMC's prefix
+   * for PubMed records); the result's `id` is the number. An id none of them knows needs `doi`.
    */
   id: string;
   /**
-   * DOI, as "10.…" or a https://doi.org/ link; a record's url is not one. Needed only for an id outside
+   * DOI, as "10.…", "doi:10.…" or a link to doi.org (https://doi.org/10.…, with or without the scheme, `dx.` or `www.`
+   * before the host, the DOI's slash as %2F or not); a record's url is not one. Needed only for an id outside
    * the list above, which Europe PMC has no record of. With a PMID it must be the DOI of that PMID's
    * record, which is read to check it: a different one is refused (INVALID_INPUT), and a PMID without it
    * takes the record's DOI; any Europe PMC id without it takes the DOI of Europe PMC's record, if it has one.

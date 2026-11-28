@@ -74,7 +74,7 @@
 import { LRUCache } from "lru-cache";
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { cleanAuthors, cleanDoi, first, isoDateBound, pageWindow, withoutPubMedTags } from "./util.js";
+import { cleanAuthors, cleanDoi, first, isoDateBound, normalizeLanguage, pageWindow, withoutPubMedTags } from "./util.js";
 import type { Cache } from "../cache.js";
 import { errors, isMedResearchError } from "../errors.js";
 import type { Article, SearchInput } from "../types.js";
@@ -329,7 +329,10 @@ export class ChinaRXivAdapter extends ChinaRxivApiAdapter {
   readonly name = "ChinaXiv (via ChinaRxiv)";
   protected readonly corpus = "chinaxiv";
 
+  /** "ru" is read as RussiaRxiv, in any case ("RU" too); no other code is. */
+  readonly languages = ["ru"];
+
   protected override sourceFor(input: SearchInput): ChinaRxivCorpus {
-    return input.language === "ru" ? "russiarxiv" : "chinaxiv";
+    return normalizeLanguage(input.language) === "ru" ? "russiarxiv" : "chinaxiv";
   }
 }

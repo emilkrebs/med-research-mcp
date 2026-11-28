@@ -559,3 +559,34 @@ export function canonicalPmid(id: string): string {
   const digits = /^(?:(?:PMID|MED)\s*:\s*)?(\d+)$/i.exec(id)?.[1];
   return digits === undefined ? id : digits.replace(/^0+(?=\d)/, "");
 }
+
+/**
+ * The two-letter codes of ISO 639-1 that the Library of Congress, the registration authority for ISO 639-2, lists beside
+ * the three-letter ones in its table (https://www.loc.gov/standards/iso639-2/ISO-639-2_utf-8.txt, read 2026-11-28): 183.
+ * `bh` (Bihari languages, a collective code) is not among them: the table gives `bih` no two-letter code.
+ */
+const ISO_639_1 = new Set(
+  [
+    "aa ab ae af ak am an ar as av ay az ba be bg bi bm bn bo br bs ca ce ch co cr cs cu cv cy da de dv dz ee el en",
+    "eo es et eu fa ff fi fj fo fr fy ga gd gl gn gu gv ha he hi ho hr ht hu hy hz ia id ie ig ii ik io is it iu ja",
+    "jv ka kg ki kj kk kl km kn ko kr ks ku kv kw ky la lb lg li ln lo lt lu lv mg mh mi mk ml mn mr ms mt my na nb",
+    "nd ne ng nl nn no nr nv ny oc oj om or os pa pi pl ps pt qu rm rn ro ru rw sa sc sd se sg si sk sl sm sn so sq",
+    "sr ss st su sv sw ta te tg th ti tk tl tn to tr ts tt tw ty ug uk ur uz ve vi vo wa wo xh yi yo za zh zu",
+  ]
+    .join(" ")
+    .split(" "),
+);
+
+/**
+ * The `language` of a search as the adapters read it: trimmed and in lower case ("RU" is "ru"), or undefined for none
+ * (an empty or blank one, which a client may send for "no preference", as a blank dateRange bound is none).
+ * It is not checked: {@link isIso639_1} does that.
+ */
+export function normalizeLanguage(language: string | undefined): string | undefined {
+  return language?.trim().toLowerCase() || undefined;
+}
+
+/** Whether `code` is a two-letter ISO 639-1 code (see {@link ISO_639_1}), in lower case. */
+export function isIso639_1(code: string): boolean {
+  return ISO_639_1.has(code);
+}
