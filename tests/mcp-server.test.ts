@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { LRUBackend, NcbiClient, PROJECT_CONTACT_EMAIL, isPmidRecord } from "../src/core/index.js";
 import { parseChinaRXiv, parseEuropePmc } from "../src/core/index.js";
+import { fulltextCacheKey } from "../src/core/fulltext.js";
 import { printedArticle, printedResult } from "../src/mcp/output.js";
 import { contactEmailWarning, createServer } from "../src/mcp/server.js";
 
@@ -268,7 +269,7 @@ describe("createServer", () => {
   it("literature_fulltext reads a long text in parts with offset and maxChars", async () => {
     const cache = new LRUBackend();
     const text = "word ".repeat(400);
-    cache.setFulltext("PMC1234567", { source: "europepmc", fulltext: text, format: "markdown", fetchedAt: Date.now() });
+    cache.setFulltext(fulltextCacheKey("europepmc", "PMC1234567"), { source: "europepmc", fulltext: text, format: "markdown", fetchedAt: Date.now() });
     const server = createServer({ cache });
     const client = new Client({ name: "test", version: "0.0.0" });
     const [ct, st] = InMemoryTransport.createLinkedPair();
