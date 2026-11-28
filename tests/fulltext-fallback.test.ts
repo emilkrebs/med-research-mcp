@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchFulltext, type FetchedResource, type FulltextDeps } from "../src/core/fulltext";
 import type { UnpaywallClient } from "../src/core/unpaywall";
 import { ChinaRXivAdapter } from "../src/core/adapters/chinarxiv";
+import { EuropePmcAdapter } from "../src/core/adapters/europepmc";
+import type { AdapterHttp } from "../src/core/adapters/http";
 import { LRUBackend } from "../src/core/cache";
 import type { NcbiClient } from "../src/core/pubmed";
 import { errors } from "../src/core/errors";
@@ -42,14 +44,18 @@ const paywalled = status(403);
 /** Europe PMC answers 404 for the full text, and the other hosts (doi.org) refuse. */
 const europePmcWithoutText = async (url: string): Promise<FetchedResource> => status(url.includes("ebi.ac.uk") ? 404 : 403)(url);
 
-/** A stand-in for the registry's Europe PMC adapter: `fetch` answers by id from `records`, or throws. */
+/**
+ * A stand-in for the registry's Europe PMC adapter, answering by id from `records`. Like RestAdapter's, its `fetch` counts a
+ * failed request as no record, and only `find` throws: `failure` is what the request raises.
+ */
 function fakeEuropePmc(records: Article[] = [], failure?: Error) {
-  const fetch = vi.fn(async (ids: string[]) => {
+  const fetch = vi.fn(async (ids: string[]) => (failure ? [] : records.filter((r) => ids.includes(r.id))));
+  const find = vi.fn(async (id: string) => {
     if (failure) throw failure;
-    return records.filter((r) => ids.includes(r.id));
+    return records.find((r) => r.id === id) ?? null;
   });
-  const adapter: FulltextDeps["adapter"] = () => ({ fetch });
-  return { fetch, adapter };
+  const adapter: FulltextDeps["adapter"] = () => ({ fetch, find });
+  return { fetch, find, adapter };
 }
 
 // No test here may reach the network: a stray request would be swallowed as a failed lookup.
@@ -62,6 +68,7 @@ beforeEach(() => {
   });
 });
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   expect(strayRequests).toEqual([]);
 });
@@ -232,7 +239,7 @@ describe("ids that name no article are NOT_FOUND", () => {
         const rejection = await fetchFulltext({ id }, new LRUBackend(), fakeClient(), { fetchUrl: europePmcWithoutText, adapter: europePmc.adapter }).catch((e: unknown) => e);
         expect(rejection).toMatchObject({ code: "NOT_FOUND", recoverable: false });
         expect(rejection).toMatchObject({ userMessage: expect.stringContaining(`Europe PMC has no record of "${id}"`) });
-        expect(europePmc.fetch).toHaveBeenCalledWith([id.toUpperCase()], expect.anything());
+        expect(europePmc.find).toHaveBeenCalledWith(id.toUpperCase(), expect.anything());
       });
     }
 
@@ -270,13 +277,25 @@ describe("ids that name no article are NOT_FOUND", () => {
       }
     });
 
-    it("stays a warning when the record lookup could not answer: Europe PMC is down, or there is no adapter to ask", async () => {
-      for (const adapter of [fakeEuropePmc([], new Error("Europe PMC is down")).adapter, () => undefined] satisfies FulltextDeps["adapter"][]) {
+    it("stays a warning when the record lookup could not answer: the request failed, or the adapter can't tell failure from no record", async () => {
+      const cantTell: FulltextDeps["adapter"] = () => ({ fetch: async () => [] });
+      for (const adapter of [fakeEuropePmc([], new Error("Europe PMC is down")).adapter, cantTell, () => undefined] satisfies FulltextDeps["adapter"][]) {
         const out = await fetchFulltext({ id: "PMC999999999" }, new LRUBackend(), fakeClient(), { fetchUrl: europePmcWithoutText, adapter });
         expect(out.source).toBe("none");
         expect(out.fulltext).toBeUndefined();
         expect(out.warning).toContain("No full text found, and no abstract is available. Europe PMC has no open-access full text for PMC999999999.");
       }
+    });
+
+    it("uses the record the second lookup finds, for the abstract and the standing, when the first failed", async () => {
+      const record: Article = { ...ARTICLE, id: "PMC6181682", doi: undefined, database: "europepmc", publicationTypes: ["Retracted Publication"], abstract: "The record's abstract." };
+      const find = vi.fn(async () => record);
+      const cache = new LRUBackend();
+      const out = await fetchFulltext({ id: "PMC6181682" }, cache, fakeClient(), { fetchUrl: europePmcWithoutText, adapter: () => ({ fetch: async () => [], find }) });
+      expect(out).toMatchObject({ source: "none", fulltext: "The record's abstract." });
+      expect(out.warning).toMatch(/^RETRACTED: .* No full text found; returned the abstract only\. Europe PMC has no open-access full text for PMC6181682\./);
+      // Kept for the next call, as the first lookup's record would have been.
+      expect(cache.getSummary("PMC6181682")).toMatchObject({ abstract: "The record's abstract." });
     });
 
     it("leaves a DOI that was given to the routes that use it", async () => {
@@ -287,6 +306,54 @@ describe("ids that name no article are NOT_FOUND", () => {
       });
       expect(out).toMatchObject({ source: "none", doi: DOI });
     });
+  });
+});
+
+describe("a PMCID against the real Europe PMC adapter, whose fetch counts a failed request as no record", () => {
+  const FOUND = { hitCount: 1, resultList: { result: [{ id: "30283138", source: "MED", pmcid: "PMC6181682", title: "A paper", abstractText: "The record's abstract.", pubType: "Journal Article" }] } };
+  const NONE = { hitCount: 0, resultList: { result: [] } };
+  const over = (json: AdapterHttp["json"]): AdapterHttp => ({ json, text: async () => "" });
+  const run = (id: string, adapter: EuropePmcAdapter, fetchUrl = status(500)) =>
+    fetchFulltext({ id }, new LRUBackend(), fakeClient(), { fetchUrl, adapter: (database) => (database === "europepmc" ? adapter : undefined) });
+
+  it("is NOT_FOUND only when Europe PMC answers that it has no record, and gets its abstract when it has one", async () => {
+    await expect(run("PMC999999999", new EuropePmcAdapter(over(async <T>() => NONE as T)))).rejects.toMatchObject({ code: "NOT_FOUND" });
+    const out = await run("PMC6181682", new EuropePmcAdapter(over(async <T>() => FOUND as T)));
+    expect(out).toMatchObject({ source: "none", fulltext: "The record's abstract." });
+  });
+
+  it("stays the fallback, not NOT_FOUND, whatever fails the lookup: a 503, a rate limit, a timeout, a dropped connection", async () => {
+    for (const failure of [
+      errors.network("Europe PMC returned HTTP 503 (attempt 3)", 503),
+      errors.rateLimit(60, "Europe PMC"),
+      errors.network("Europe PMC didn't answer within 15 s"),
+      errors.network("fetch failed"),
+      errors.outOfTime("Europe PMC"),
+    ]) {
+      const out = await run("PMC6181682", new EuropePmcAdapter(over(async () => Promise.reject(failure))));
+      expect(out.source, failure.message).toBe("none");
+      expect(out.warning).toContain("No full text found, and no abstract is available. Europe PMC has no open-access full text for PMC6181682.");
+    }
+  });
+
+  it("finds the record on the second lookup when the first failed", async () => {
+    const json = vi.fn(async <T>(): Promise<T> => FOUND as T).mockRejectedValueOnce(errors.network("Europe PMC returned HTTP 503", 503));
+    const out = await run("PMC6181682", new EuropePmcAdapter(over(json)));
+    expect(out).toMatchObject({ source: "none", fulltext: "The record's abstract." });
+    expect(json).toHaveBeenCalledTimes(2);
+  });
+
+  it("stays the fallback through the HTTP layer itself: a 429 it won't wait for, and a 503 it retries to the end", async () => {
+    vi.stubGlobal("fetch", async () => new Response("", { status: 429, headers: { "retry-after": "60" } }));
+    const limited = await run("PMC6181682", new EuropePmcAdapter());
+    expect(limited.source).toBe("none");
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", async () => new Response("", { status: 503 }));
+    const pending = run("PMC6181682", new EuropePmcAdapter());
+    await vi.advanceTimersByTimeAsync(30_000);
+    const down = await pending;
+    expect(down.source).toBe("none");
+    expect(down.warning).toContain("No full text found, and no abstract is available.");
   });
 });
 
