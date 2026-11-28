@@ -310,7 +310,8 @@ export interface FulltextOutput {
    * "EXPRESSION OF CONCERN" (flag `expression-of-concern`). It is set whether or not the text was retrieved, and
    * read from the records at each call, so a retraction recorded after a text was cached is reported with it;
    * from a record that doesn't carry the flag, or none, nothing is said. Then, when the full text couldn't be
-   * retrieved: what each location answered, and what to do. Also, though the text was retrieved, when it is a
+   * retrieved: what each location answered, or that it wasn't tried (a record without a DOI skips Unpaywall and the
+   * publisher's site), and what to do. Also, though the text was retrieved, when it is a
    * machine translation (source "chinarxiv"): it says so and points to the original, as the `machine-translated`
    * flag does for a search result. Absent when none applies (an English original of a record without a flag).
    */

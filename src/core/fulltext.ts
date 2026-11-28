@@ -41,8 +41,9 @@
  * request is made anyway and no cache holds a record, one is asked for beside the text's own request, which takes
  * far longer, and the text waits for it at most STANDING_WAIT_MS: Europe PMC's record for a PMCID or preprint id (a
  * search caches a record under its PMID, where a PMCID doesn't find it), and, for a text fetched by a DOI that no record
- * confirms (an id with no record of its own, or a record that has no DOI or can't be read in time), Europe PMC's record of
- * the DOI: the record of the id says nothing of that DOI's text, so it isn't put into the warning of it.
+ * confirms (an id with no record of its own, whatever its shape, a PMID included, or a record that has no DOI or can't be
+ * read in time), Europe PMC's record of the DOI: the record of the id says nothing of that DOI's text, so it isn't put into
+ * the warning of it. On the abstract fallback, which the routes of that DOI led to, the records of both speak.
  * Not for the later parts of a text (offset above 0), which the first call's lookup has served. It is read
  * from the records at every call and never stored with a text: a full text cached for 30 days is served with a
  * retraction recorded after it was cached.
@@ -339,8 +340,9 @@ export async function fetchFulltext(
   let doi: string | undefined;
   /**
    * Whether the DOI given is not known to be the id's own: the id's record has no DOI to confirm it with, it couldn't
-   * be read in time, there is no such record (an id of none of the shapes above, a ChinaRxiv id). A text fetched by
-   * that DOI is that DOI's, and the id's record has nothing to say of it (see `standingOf`).
+   * be read in time, there is no such record (a PMID that PubMed has none of, an id of none of the shapes above, a
+   * ChinaRxiv id). A text fetched by that DOI is that DOI's, and the id's record has nothing to say of it; the DOI's
+   * record speaks for it, and beside the id's on the abstract fallback (see `standingOf`).
    */
   let doiUnconfirmed = Boolean(inputDoi);
   const startedAt = now();
@@ -348,16 +350,24 @@ export async function fetchFulltext(
   const standingWait = <T>(promise: Promise<T>): Promise<T | undefined> => within(Math.max(0, STANDING_WAIT_MS - (now() - startedAt)), promise);
   /**
    * The warning's first words: what the records say about the article's standing (see {@link standingNote}). The text of
-   * a `source` is the article of the id for Europe PMC's (by the id's PMCID) and ChinaRxiv's, and for the abstract
-   * returned in place of a text (no source); the records of the id speak for it. A text of the DOI (Unpaywall, proxy,
-   * direct) is the id's only while the DOI is: otherwise only the records looked up by the DOI speak for it, and an id
-   * with none of its own has only those.
+   * a `source` is the article of the id for Europe PMC's (by the id's PMCID) and ChinaRxiv's: the records of the id
+   * speak for it, and the DOI's never do. A text of the DOI (Unpaywall, proxy, direct) is the id's only while the DOI
+   * is: otherwise only the records looked up by the DOI speak for it. The abstract returned in place of a text (no
+   * source) is the id's, and the routes that found no text were those of the DOI: the records of the id speak for the
+   * abstract, and those of the DOI too while no record of the id confirms it. That holds whatever the id is: a PMID
+   * whose record is missing or has no DOI, a PMCID, an id of no record at all.
    */
   const standingOf = (source: Source | undefined, ...more: (Article | undefined)[]): string | undefined => {
     const doiRoute = source === "unpaywall" || source === "proxy" || source === "direct";
     const own = [article, ...looked, ...cachedRecords(cache, recordId)];
     const ofDoi = [...byDoi, ...cachedRecords(cache, undefined, doi)];
-    const records = recordId === undefined ? ofDoi : doiRoute ? (doiUnconfirmed ? ofDoi : [...own, ...ofDoi]) : own;
+    const records = doiRoute
+      ? doiUnconfirmed
+        ? ofDoi
+        : [...own, ...ofDoi]
+      : source === undefined && doiUnconfirmed
+        ? [...own, ...ofDoi]
+        : own;
     return standingNote([...records, ...more]);
   };
   const standing = (...more: (Article | undefined)[]): string | undefined => standingOf(undefined, ...more);
@@ -700,6 +710,9 @@ export async function fetchFulltext(
     fallbackWarning({
       doi,
       pmcid,
+      // None for a PMID (esummary carries no url, and a cached Europe PMC record of it would make the warning depend on the cache)
+      // or a ChinaRxiv id (its record's url is the page that has just had no text; the translation note names the original).
+      url: isPmid(id) || chinarxivId ? undefined : (article ?? idRecord)?.url,
       unpaywall: unpaywallAnswer,
       unpaywallSharedContact: unpaywall.sharedContact,
       proxyConfigured: Boolean(proxyPrefix),
@@ -1103,6 +1116,8 @@ const looksPaywalled = (miss: Miss): boolean =>
 function fallbackWarning(ctx: {
   doi: string | undefined;
   pmcid: string | undefined;
+  /** The record's url, which a browser may open when there was no DOI to try; undefined when it has none. */
+  url: string | undefined;
   /** What Unpaywall answered; undefined when there was no DOI to ask about. */
   unpaywall: UnpaywallLookup | undefined;
   /** Whether Unpaywall requests carry the project's shared contact address. */
@@ -1137,6 +1152,10 @@ function fallbackWarning(ctx: {
     if (ctx.unpaywallSharedContact && status !== undefined && status >= 400 && status < 500) {
       parts.push("The lookup carried the project's shared contact address: set your own in NCBI_EMAIL or MED_RESEARCH_UNPAYWALL_EMAIL.");
     }
+  } else if (!ctx.doi) {
+    // No DOI, so the routes that go by one never ran: say so, as the other locations are said to have answered.
+    const skipped = ctx.proxyConfigured ? "Unpaywall, the proxy and the publisher's site" : "Unpaywall and the publisher's site";
+    parts.push(`The record has no DOI, so ${skipped} were not tried.${ctx.url ? ` A browser may open ${ctx.url}.` : ""}`);
   } else if (unpaywall) {
     const reasons = [...new Set(of("unpaywall").map(describeMiss))];
     if (reasons.length > 0) {
