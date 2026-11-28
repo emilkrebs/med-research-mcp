@@ -5,6 +5,8 @@ import { LRUBackend, NcbiClient } from "../src/core/index.js";
 import { fetchLiterature } from "../src/core/literature";
 import { EuropePmcAdapter } from "../src/core/adapters/europepmc";
 import { PubMedAdapter } from "../src/core/adapters/pubmed";
+import { ChinaRXivAdapter } from "../src/core/adapters/chinarxiv";
+import { SovietRxivAdapter } from "../src/core/adapters/russiarxiv";
 import { canonicalPmid } from "../src/core/adapters/util";
 import type { AdapterHttp } from "../src/core/adapters/http";
 import type { DatabaseAdapter } from "../src/core/adapters/types";
@@ -75,12 +77,19 @@ describe("fetchLiterature ids", () => {
       expect(out.warnings).toBeUndefined();
     });
 
-    it("counts ids that differ only in case as one, as Europe PMC does", async () => {
-      const { adapter, asked } = recordingAdapter("europepmc", [article("PPR12345")]);
+    it("counts ids that differ only in case as one when the adapter folds case, as Europe PMC's does", async () => {
+      const { adapter, asked } = recordingAdapter("europepmc", [article("PPR12345")], (id) => id.toUpperCase());
       const out = await fetchLiterature({ ids: ["PPR12345", "ppr12345"], database: "europepmc" }, new LRUBackend(), adapter);
       expect(asked).toEqual([["PPR12345"]]);
       expect(out.articles).toHaveLength(1);
       expect(out.missing).toEqual([]);
+    });
+
+    it("keeps ids that differ only in case apart when the adapter doesn't fold case", async () => {
+      const { adapter, asked } = recordingAdapter("chinaxiv", [article("ru-1")]);
+      const out = await fetchLiterature({ ids: ["RU-1", "ru-1", "RU-1"], database: "chinaxiv" }, new LRUBackend(), adapter);
+      expect(asked).toEqual([["RU-1", "ru-1"]]);
+      expect(out.articles.map((a) => a.id)).toEqual(["ru-1"]);
     });
 
     it("counts two spellings of one id as one, and returns the record once", async () => {
@@ -170,6 +179,18 @@ describe("fetchLiterature ids", () => {
         adapter,
       );
       expect(out.missing).toEqual(["PMID:99999999", "99999999", "00099999999"]);
+      // The warning counts ids, not spellings: these are one PMID.
+      expect(out.warnings).toEqual(["1 id(s) could not be fetched from pubmed."]);
+    });
+
+    it("counts each id that could not be fetched once in the warning, whatever its spellings", async () => {
+      const { adapter } = recordingAdapter("pubmed", [article("1")], canonicalPmid);
+      const out = await fetchLiterature(
+        { ids: ["PMID:7", "7", "1", "MED:8", "00008", "", " "], database: "pubmed" },
+        new LRUBackend(),
+        adapter,
+      );
+      expect(out.missing).toEqual(["PMID:7", "7", "MED:8", "00008", ""]);
       expect(out.warnings).toEqual(["3 id(s) could not be fetched from pubmed."]);
     });
 
@@ -197,6 +218,19 @@ describe("PubMed and Europe PMC adapters normalise ids", () => {
       expect(adapter.normalizeId("PMC6181682")).toBe("PMC6181682");
       expect(adapter.normalizeId("CBA:644599")).toBe("CBA:644599");
     }
+  });
+
+  it("Europe PMC's normalizeId writes every other id in capitals, as it returns them", () => {
+    const epmc = new EuropePmcAdapter();
+    expect(epmc.normalizeId("pmc6181682")).toBe("PMC6181682");
+    expect(epmc.normalizeId("ppr270079")).toBe("PPR270079");
+    expect(epmc.normalizeId("cba:644599")).toBe("CBA:644599");
+    expect(epmc.normalizeId("ind609546324")).toBe("IND609546324");
+    expect(epmc.normalizeId("PMID:00009500320")).toBe("9500320");
+  });
+
+  it("PubMed's normalizeId leaves the case of an id that is no PMID alone", () => {
+    expect(new PubMedAdapter(new NcbiClient({ email: "test@example.com" })).normalizeId("pmc6181682")).toBe("pmc6181682");
   });
 });
 
@@ -274,6 +308,18 @@ describe("literature_fetch on Europe PMC", () => {
     expect(queries).toEqual(["EXT_ID:9500320 AND SRC:MED", "EXT_ID:PPR270079 AND SRC:PPR", "PMCID:PMC6181682", "EXT_ID:644599 AND SRC:CBA"]);
   });
 
+  it("looks each record up once when its id is sent in two cases", async () => {
+    const { http, queries } = epmcHttp(records);
+    const out = await fetchLiterature(
+      { ids: ["ppr270079", "PPR270079", "PMC6181682", "pmc6181682", "cba:644599", "CBA:644599"], database: "europepmc" },
+      new LRUBackend(),
+      new EuropePmcAdapter(http),
+    );
+    expect(queries).toEqual(["EXT_ID:PPR270079 AND SRC:PPR", "PMCID:PMC6181682", "EXT_ID:644599 AND SRC:CBA"]);
+    expect(out.articles.map((a) => a.id)).toEqual(["PPR270079", "30243806", "CBA:644599"]);
+    expect(out.missing).toEqual([]);
+  });
+
   it("looks a zero-padded PMID up as its number, and lists a PMID it can't find as sent", async () => {
     const { http, queries } = epmcHttp(records);
     const out = await fetchLiterature({ ids: ["009500320", "MED:123"], database: "europepmc" }, new LRUBackend(), new EuropePmcAdapter(http));
@@ -281,6 +327,58 @@ describe("literature_fetch on Europe PMC", () => {
     expect(out.articles.map((a) => a.id)).toEqual(["9500320"]);
     expect(out.missing).toEqual(["MED:123"]);
   });
+});
+
+describe("literature_fetch on ChinaXiv and RussiaRxiv", () => {
+  const chinaxiv = { id: "chinaxiv-202401.00027", title: "A ChinaXiv record", authors: [], date: "2024-01-03", source: "chinaxiv", source_language: "zh" };
+  const russiarxiv = { id: "ru-196201.58177", title: "A RussiaRxiv record", authors: [], date: "1962-01-01", source: "russiarxiv", source_language: "ru" };
+
+  /** ChinaRxiv answering `/papers/{id}` by exact id, and 404 (an error to the HTTP seam) for any other case, as the live API does. */
+  function caseSensitiveHttp(): { http: AdapterHttp; ids: string[] } {
+    const ids: string[] = [];
+    const records: Record<string, object> = { [chinaxiv.id]: chinaxiv, [russiarxiv.id]: russiarxiv };
+    const http: AdapterHttp = {
+      json: async <T>(url: string): Promise<T> => {
+        const id = decodeURIComponent(url.slice(url.lastIndexOf("/") + 1));
+        ids.push(id);
+        const record = records[id];
+        if (!record) throw new Error("HTTP 404");
+        return record as T;
+      },
+      text: async () => "",
+    };
+    return { http, ids };
+  }
+
+  const cases: [string, (http: AdapterHttp) => DatabaseAdapter, string][] = [
+    ["chinaxiv", (http) => new ChinaRXivAdapter(http), chinaxiv.id],
+    ["russiarxiv", (http) => new SovietRxivAdapter(http), russiarxiv.id],
+  ];
+
+  for (const [database, make, id] of cases) {
+    it(`${database}: asks for each id as sent, so a wrong-case id first can't hide the right-case one`, async () => {
+      const { http, ids } = caseSensitiveHttp();
+      const out = await fetchLiterature({ ids: [id.toUpperCase(), id], database }, new LRUBackend(), make(http));
+      expect(ids).toEqual([id.toUpperCase(), id]);
+      expect(out.articles.map((a) => a.id)).toEqual([id]);
+    });
+
+    it(`${database}: reports a wrong-case id missing when it is the only spelling sent`, async () => {
+      const { http } = caseSensitiveHttp();
+      const out = await fetchLiterature({ ids: [id.toUpperCase()], database }, new LRUBackend(), make(http));
+      expect(out.articles).toEqual([]);
+      expect(out.missing).toEqual([id.toUpperCase()]);
+      expect(out.warnings).toEqual([expect.stringContaining("1 id(s) could not be fetched")]);
+    });
+
+    it(`${database}: fetches an id sent twice, or padded, once`, async () => {
+      const { http, ids } = caseSensitiveHttp();
+      const out = await fetchLiterature({ ids: [id, ` ${id} `, id], database }, new LRUBackend(), make(http));
+      expect(ids).toEqual([id]);
+      expect(out.articles.map((a) => a.id)).toEqual([id]);
+      expect(out.missing).toEqual([]);
+    });
+  }
 });
 
 describe("literature_fetch tool", () => {
