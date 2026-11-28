@@ -61,7 +61,8 @@
  * to markdown with turndown. A page counts as full text only if it holds text
  * beyond its abstract and front and back matter (see {@link readPage}): a
  * paywalled article's landing page shows the abstract and is otherwise short.
- * PDFs are extracted with pdf-parse. The heavy extraction libraries are imported
+ * PDFs are extracted with pdf-parse and cleaned of page markers, margin line numbers and running headers
+ * and footers (see {@link cleanPdfText}). The heavy extraction libraries are imported
  * lazily so importing this module stays cheap, and every extraction dependency is
  * injectable for testing.
  *
@@ -76,6 +77,7 @@ import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors, isMedResearchError } from "./errors.js";
 import { classifyDesign } from "./grader.js";
+import { cleanPdfText } from "./pdf-text.js";
 import { BlockedUrlError, fetchPublic } from "./public-fetch.js";
 import { NcbiClient } from "./pubmed.js";
 import type { Article, CorrectionType, FulltextInput, FulltextOutput, FulltextSource, RecordFlag } from "./types.js";
@@ -559,7 +561,9 @@ export async function fetchFulltext(
     if (!res.ok) return { source, kind: "status", status: res.status, host: hostOf(res.finalUrl) ?? hostOf(url) };
     try {
       if (res.bytes) {
-        const text = (await pdfToText(res.bytes)).trim();
+        // Cleaned here, before the text is cached or kept for the next part, so that totalChars and offset count the
+        // text a caller reads (see cleanPdfText).
+        const text = cleanPdfText(await pdfToText(res.bytes));
         return text.length >= MIN_FULLTEXT_CHARS ? { fulltext: text, format: "pdf" } : { source, kind: "no-text" };
       }
       if (res.text != null) {
@@ -1500,12 +1504,20 @@ export async function defaultJatsToMarkdown(xml: string): Promise<string> {
   const front: string[] = [];
   const title = doc.querySelector("article-meta article-title");
   if (title) front.push(`# ${squash(inline(title))}`);
+  // One heading over all of the article's abstracts: PLOS essays have two, the summary and a one-sentence teaser
+  // (`abstract-type="toc"`), and each used to print its own "## Abstract". A later abstract that has a title
+  // (PLOS Biology's "Author Summary") keeps it, one level below the heading, like a section of a structured abstract.
+  const abstracts: string[] = [];
   for (const abstract of doc.querySelectorAll("article-meta abstract")) {
-    front.push("## Abstract");
-    const before = front.length;
-    for (const c of abstract.children) render(c, 3, front);
-    if (front.length === before && squash(inline(abstract))) front.push(squash(inline(abstract)));
+    const content: string[] = [];
+    for (const c of abstract.children) render(c, 3, content);
+    if (content.length === 0 && squash(inline(abstract))) content.push(squash(inline(abstract)));
+    if (content.length === 0) continue;
+    const heading = child(abstract, "title");
+    if (abstracts.length > 0 && heading && squash(inline(heading))) abstracts.push(`### ${squash(inline(heading))}`);
+    abstracts.push(...content);
   }
+  if (abstracts.length > 0) front.push("## Abstract", ...abstracts);
 
   const body: string[] = [];
   const bodyEl = doc.querySelector("body");
