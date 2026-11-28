@@ -69,6 +69,17 @@
  * Paging: the page size baked into a `next_cursor` overrides the request's `limit` (checked 2026-10-28).
  * A cursor is base64 of the page and its size (`{"page": 2, "per_page": 2}`), not server state,
  * so a remembered one stays valid and a failed request leaves it in place (2026-10-29).
+ *
+ * Journal: a RussiaRxiv record names its journal by a key (`publication`, "doklady_akademii_nauk_sssr"), and that is all a
+ * search result has. `/papers/{id}` adds `publication_title` ("Doklady Akademii Nauk SSSR"), which the spec describes as
+ * the "Canonical journal title". `/publications` lists every key with its title (`key`, `title`, `original_title`,
+ * `publisher`, `country`, `paper_count`; "journals/publications with at least one translated paper"): on 2026-11-28 it
+ * held 5, whose `paper_count`s add up to 25,456, all of RussiaRxiv's records, and the ChinaXiv records have no
+ * `publication`. The titles are not the keys with capitals: "Izvestiya Tomskogo Politekhnicheskogo Instituta" is keyed
+ * `izvestiya_tomskogo_politekhnicheskogo`, "Differentsial'nye Uravneniya" `differentsialnye_uravneniya`. So a search that
+ * returns a record with a key and no title reads `/publications` (see {@link ChinaRxivApiAdapter.publicationTitles}),
+ * and the record's `journal` is the title, as `literature_fetch` returns it. Where the list can't be read or lacks the
+ * key, {@link readableJournal} writes the key as words.
  */
 
 import { LRUCache } from "lru-cache";
@@ -81,10 +92,15 @@ import type { Article, SearchInput } from "../types.js";
 import { envSetting } from "../version.js";
 
 const BASE = "https://chinarxiv.org/api/v1/papers";
+const PUBLICATIONS = "https://chinarxiv.org/api/v1/publications";
 const CURSOR_MEMO_MAX = 500;
 const CURSOR_MEMO_TTL_MS = 60 * 60 * 1000;
 /** Bound on the complete-record memo, like the base class's search memo. */
 const FULL_CAP = 1000;
+/** How long the journal titles are kept: the endpoint says `cache-control: public, max-age=3600`. */
+const TITLES_TTL_MS = 60 * 60 * 1000;
+/** How long after a failed or empty request the titles are not asked for again. */
+const TITLES_RETRY_MS = 60 * 1000;
 
 /** What earlier requests of one query learned: the cursor of each page by index, and the total. */
 interface QueryPaging {
@@ -129,6 +145,8 @@ export function chinaxivHeaders(): Record<string, string> {
 
 type Record_ = Record<string, unknown>;
 
+const NO_TITLES: ReadonlyMap<string, string> = new Map();
+
 export interface PaperResponse {
   data?: Record_[];
   total?: number;
@@ -137,11 +155,38 @@ export interface PaperResponse {
 }
 
 /**
+ * A journal key written as words, for a key the journal list doesn't have: underscores become spaces and each word is
+ * capitalised ("doklady_akademii_nauk_sssr" becomes "Doklady Akademii Nauk Sssr"). It can't know an acronym ("SSSR") or a
+ * name the key shortens, which is why the list's title is used when there is one. A value that isn't a key (it has a
+ * capital, a space or a character outside a-z, 0-9 and underscores) is a name already and stays as it is.
+ */
+export function readableJournal(key: string): string {
+  if (!/^[a-z0-9]+(?:_[a-z0-9]+)*$/.test(key)) return key;
+  return key
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+/** The journal a record names: its own title, else the title the journal list gives its key, else the key as words. */
+function journalOf(r: Record_, titles: ReadonlyMap<string, string>): string | undefined {
+  const title = first(r.publication_title);
+  if (title) return title;
+  const key = first(r.publication);
+  return key ? (titles.get(key) ?? readableJournal(key)) : undefined;
+}
+
+/** Whether a record names its journal by the key alone, so that the title has to be looked up. */
+function lacksJournalTitle(r: Record_): boolean {
+  return Boolean(first(r.publication)) && !first(r.publication_title);
+}
+
+/**
  * One ChinaRxiv record (`PaperSummary` from search, `PaperDetail` from `/papers/{id}`) as an Article,
  * or null for a record without an id or of a source other than chinaxiv and russiarxiv (see the header).
  * `complete` says the record comes from `/papers/{id}`, whose abstract is never cut.
  */
-function toArticle(r: Record_, complete: boolean): Article | null {
+function toArticle(r: Record_, complete: boolean, titles: ReadonlyMap<string, string>): Article | null {
   const id = first(r.id);
   if (!id) return null;
   // Absent, like a legacy row, is ChinaXiv; a source of another corpus (the spec lists "crad") is not ours.
@@ -155,7 +200,7 @@ function toArticle(r: Record_, complete: boolean): Article | null {
     id,
     title: (first(r.title) ?? "").replace(/\.$/, ""),
     authors: cleanAuthors(r.authors),
-    journal: first(r.publication_title) ?? first(r.publication) ?? (corpus === "chinaxiv" ? "ChinaXiv" : ""),
+    journal: journalOf(r, titles) ?? (corpus === "chinaxiv" ? "ChinaXiv" : ""),
     pubDate: first(r.date) ?? "",
     publicationTypes: [],
     database: corpus,
@@ -179,13 +224,19 @@ function toArticle(r: Record_, complete: boolean): Article | null {
   return article;
 }
 
-/** @param options `complete`: the records come from `/papers/{id}`, not from a search, so none has a cut abstract. */
-export function parsePapers(data: PaperResponse, options: { complete?: boolean } = {}): { count: number; articles: Article[] } {
+/**
+ * @param options `complete`: the records come from `/papers/{id}`, not from a search, so none has a cut abstract.
+ * `publicationTitles`: journal key to title (the `/publications` list), for a record that names its journal by the key alone.
+ */
+export function parsePapers(
+  data: PaperResponse,
+  options: { complete?: boolean; publicationTitles?: ReadonlyMap<string, string> } = {},
+): { count: number; articles: Article[] } {
   const records = data?.data ?? [];
   const count = Number(data?.total ?? records.length);
   const articles: Article[] = [];
   for (const r of records) {
-    const a = toArticle(r, options.complete ?? false);
+    const a = toArticle(r, options.complete ?? false, options.publicationTitles ?? NO_TITLES);
     if (a) articles.push(a);
   }
   return { count, articles };
@@ -253,10 +304,46 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
       known.cursors.set(index, cursor);
     }
     const data = await get();
-    const parsed = parsePapers(data);
+    const parsed = parsePapers(data, { publicationTitles: await this.titlesFor(data?.data ?? []) });
     this.remember(parsed.articles);
     if (data?.next_cursor) known.cursors.set(pageIndex + 1, data.next_cursor);
     return result(parsed.count, parsed.articles.map((a) => a.id));
+  }
+
+  /** The journal titles by key, and until when they are kept (a failed request keeps an empty list for a short while). */
+  private titles: { map: ReadonlyMap<string, string>; until: number } | undefined;
+  private titlesLoading: Promise<ReadonlyMap<string, string>> | undefined;
+
+  /**
+   * Journal key to title, from `/publications`: one request, kept for an hour (TITLES_TTL_MS) and shared by searches that
+   * run together. It never throws: a request that fails (a rate limit included) leaves the list empty for a minute, and
+   * the records then get the key written as words (see {@link readableJournal}).
+   */
+  protected publicationTitles(): Promise<ReadonlyMap<string, string>> {
+    if (this.titles && this.titles.until > Date.now()) return Promise.resolve(this.titles.map);
+    this.titlesLoading ??= (async () => {
+      try {
+        const data = await this.http.json<{ publications?: { key?: unknown; title?: unknown }[] }>(PUBLICATIONS);
+        const map = new Map<string, string>();
+        for (const p of data?.publications ?? []) {
+          const key = first(p?.key);
+          const title = first(p?.title);
+          if (key && title) map.set(key, title);
+        }
+        this.titles = { map, until: Date.now() + (map.size > 0 ? TITLES_TTL_MS : TITLES_RETRY_MS) };
+      } catch {
+        this.titles = { map: NO_TITLES, until: Date.now() + TITLES_RETRY_MS };
+      } finally {
+        this.titlesLoading = undefined;
+      }
+      return this.titles.map;
+    })();
+    return this.titlesLoading;
+  }
+
+  /** The journal titles when one of the records names its journal by the key alone; otherwise none, and no request. */
+  private async titlesFor(records: readonly Record_[]): Promise<ReadonlyMap<string, string>> {
+    return records.some(lacksJournalTitle) ? this.publicationTitles() : NO_TITLES;
   }
 
   /**
@@ -318,7 +405,7 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
   protected async fetchOne(id: string): Promise<Article | null> {
     // Exact lookup by id; a `q=` text search for the id can return a different paper.
     const record = await this.http.json<Record_>(`${BASE}/${encodeURIComponent(id)}`);
-    const article = parsePapers({ data: [record] }, { complete: true }).articles[0];
+    const article = parsePapers({ data: [record] }, { complete: true, publicationTitles: await this.titlesFor([record]) }).articles[0];
     return article?.id === id ? article : null;
   }
 }

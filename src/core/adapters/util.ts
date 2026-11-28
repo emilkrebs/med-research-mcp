@@ -423,11 +423,20 @@ function narrows(precise: number, vague: number): boolean {
   return precise > vague && precise < vague + span;
 }
 
-/** Split a comma/semicolon-separated author string ("Smith J, Doe A") into names. */
+/**
+ * Split a comma/semicolon-separated author string ("Smith J, Doe A.") into names: Europe PMC's `authorString`.
+ * It ends with a period that belongs to the list, not to the last name, where PubMed writes "Doe A": of the 2,028
+ * records with an `authorString` in a sample of 2,297 (2026-11-28; MEDLINE, PMC, preprint and CBA records), every one
+ * ended with a period, and no name before the last did. Exactly that one is removed, so that the last author reads
+ * as the others and as PubMed's copy ("Seckman CC", not "Seckman CC."). Only that one: the single CBA record whose
+ * string ends in two ("Yuan Jin-hong..") keeps the second.
+ */
 export function splitAuthors(value: unknown): string[] {
   const s = first(value);
   if (!s) return [];
   return s
+    .trim()
+    .replace(/\.$/, "")
     .split(/[;,]/)
     .map((a) => a.trim())
     .filter(Boolean);

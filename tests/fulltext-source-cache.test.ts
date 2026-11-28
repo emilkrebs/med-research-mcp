@@ -323,7 +323,7 @@ describe("a DOI given with an id that names no record is looked up for the artic
     const { deps } = page();
     const out = await fetchFulltext({ id: "vojta-check", doi: VOJTA_DOI }, cache, client, { ...deps, adapter });
     expect(out).toMatchObject({ id: "vojta-check", source: "unpaywall", doi: VOJTA_DOI });
-    expect(out.warning).toBe(`${RETRACTED_START} Linked notice: europepmc ${VOJTA_NOTICE} (literature_fetch).`);
+    expect(out.warning).toBe(`${RETRACTED_START} Linked notice: pubmed ${VOJTA_NOTICE} (literature_fetch).`);
     expect(fetchByDoi).toHaveBeenCalledWith(VOJTA_DOI);
 
     // The record and the text are in the cache: the next call, under any id, asks for neither and warns the same.
@@ -421,7 +421,7 @@ describe("a DOI given with an id that names no record is looked up for the artic
     const { client } = pubmed([]);
     const { deps } = page();
     const out = await fetchFulltext({ id: "vojta-check", doi: `https://doi.org/${VOJTA_DOI}` }, new LRUBackend(), client, { ...deps, adapter: () => new EuropePmcAdapter(http(core)) });
-    expect(out.warning).toBe(`${RETRACTED_START} Linked notice: europepmc ${VOJTA_NOTICE} (literature_fetch).`);
+    expect(out.warning).toBe(`${RETRACTED_START} Linked notice: pubmed ${VOJTA_NOTICE} (literature_fetch).`);
     expect(queries).toHaveLength(1);
     expect(Object.fromEntries(queries[0]!)).toMatchObject({ query: `DOI:"${VOJTA_DOI}"`, resultType: "core", format: "json" });
 
@@ -697,7 +697,7 @@ describe("the record of an id speaks for the text of a DOI only when the DOI is 
   it("puts the record's warning on the text of the DOI the record confirms, even when Europe PMC has none", async () => {
     const out = await fetchFulltext({ id: "PMC1182327", doi: B_DOI }, new LRUBackend(), pubmed([]).client, deps(europePmcOf(idRecord(B_DOI)).adapter, false));
     expect(out).toMatchObject({ source: "unpaywall", doi: B_DOI });
-    expect(out.warning).toContain(`europepmc ${NOTICE_ID}`);
+    expect(out.warning).toContain(`pubmed ${NOTICE_ID}`);
   });
 
   it("puts the warning of the DOI's own record on the text of a DOI that a record without one can't confirm, and not the id's", async () => {
@@ -708,7 +708,7 @@ describe("the record of an id speaks for the text of a DOI only when the DOI is 
       const { adapter, fetchByDoi } = europePmcOf(found, [doiRecord]);
       const out = await fetchFulltext({ id, doi: B_DOI }, new LRUBackend(), client, deps(adapter, false));
       expect(out, id).toMatchObject({ source: "unpaywall", doi: B_DOI });
-      expect(out.warning, id).toContain(`europepmc ${DOI_NOTICE}`);
+      expect(out.warning, id).toContain(`pubmed ${DOI_NOTICE}`);
       expect(out.warning, id).not.toContain(NOTICE_ID);
       expect(fetchByDoi, id).toHaveBeenCalledWith(B_DOI);
     }
@@ -721,20 +721,20 @@ describe("the record of an id speaks for the text of a DOI only when the DOI is 
     const { adapter } = europePmcOf(idRecord(), [doiRecord]);
     const text = await fetchFulltext({ id: "PMC1182327", doi: B_DOI }, new LRUBackend(), pubmed([]).client, deps(adapter, true));
     expect(text.source).toBe("europepmc");
-    expect(text.warning).toContain(`europepmc ${NOTICE_ID}`);
+    expect(text.warning).toContain(`pubmed ${NOTICE_ID}`);
     expect(text.warning).not.toContain(DOI_NOTICE);
 
     const { fetchUrl, ...pages } = web({ refused: () => true });
     const none = await fetchFulltext({ id: PMID_B, doi: B_DOI }, new LRUBackend(), pubmed([idRecord()]).client, { unpaywall: unpaywallOf([B_DOI]), fetchUrl, proxyPrefix: "", adapter, ...pages });
     expect(none.source).toBe("none");
-    expect(none.warning).toContain(`europepmc ${NOTICE_ID}`);
+    expect(none.warning).toContain(`pubmed ${NOTICE_ID}`);
   });
 
   it("warns by the DOI's record when the id's can't be read", async () => {
     const { adapter } = europePmcOf(idRecord(), [doiRecord]);
     const down = await fetchFulltext({ id: A, doi: B_DOI }, new LRUBackend(), pubmed([], { down: true }).client, deps(adapter, false));
     expect(down).toMatchObject({ source: "unpaywall", doi: B_DOI });
-    expect(down.warning).toContain(`europepmc ${DOI_NOTICE}`);
+    expect(down.warning).toContain(`pubmed ${DOI_NOTICE}`);
     expect(down.warning).not.toContain(A_NOTICE);
   });
 });
@@ -860,7 +860,7 @@ describe("the DOI's own record gets its wait from when it is asked for, whatever
     await vi.advanceTimersByTimeAsync(500);
     const out = await call;
     expect(out).toMatchObject({ source: "unpaywall", doi: VOJTA_DOI });
-    expect(out.warning).toBe(`${RETRACTED_START} Linked notice: europepmc ${VOJTA_NOTICE} (literature_fetch).`);
+    expect(out.warning).toBe(`${RETRACTED_START} Linked notice: pubmed ${VOJTA_NOTICE} (literature_fetch).`);
   });
 
   it("does the same for a PMCID whose record is late, and still leaves the DOI's record out when it is later than its own wait", async () => {

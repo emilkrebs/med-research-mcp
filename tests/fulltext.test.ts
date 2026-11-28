@@ -1266,7 +1266,7 @@ describe("fetchFulltext — the record's standing, said first", () => {
     await adapter.fetch(["12345678"], cache);
     const out = await fetchFulltext({ id: "12345678", doi: DOI }, cache, fakeClient(), oa());
     expect(out.source).toBe("unpaywall");
-    expect(out.warning).toBe(`${RETRACTED_TEXT} Linked notice: europepmc ${NOTICE_ID} (literature_fetch).`);
+    expect(out.warning).toBe(`${RETRACTED_TEXT} Linked notice: pubmed ${NOTICE_ID} (literature_fetch).`);
   });
 
   /** A PDF copy: no landing page to tell from the article, so the abstract isn't needed to read it. */
@@ -1478,7 +1478,7 @@ describe("fetchFulltext — the record's standing, said first", () => {
     cache.setSummary("europepmc:12345678", { ...RETRACTED, database: "europepmc", corrections: [{ type: "RetractionIn", id: NOTICE_ID }, { type: "RetractionIn", id: NOTICE_ID }] });
     const out = await fetchFulltext({ id: "12345678" }, cache, fakeClient(), oa());
     expect(out.warning).toBe(
-      `${RETRACTED_TEXT} Linked notice: europepmc ${NOTICE_ID} (literature_fetch). ` +
+      `${RETRACTED_TEXT} Linked notice: pubmed ${NOTICE_ID} (literature_fetch). ` +
         'EXPRESSION OF CONCERN: one is linked to this record (flag "expression-of-concern"): read the notice before relying on its findings. Linked notice: pubmed 42781840 (literature_fetch).',
     );
   });
@@ -1529,7 +1529,7 @@ describe("fetchFulltext — a PMCID given alone, whose record no search cached u
     corrections: [{ type: "RetractionIn", id: "42205309" }],
   };
   const WARNING_START =
-    'RETRACTED: this record is flagged "retracted" (as in literature_search): do not use its findings as evidence. Linked notice: europepmc 42205309 (literature_fetch).';
+    'RETRACTED: this record is flagged "retracted" (as in literature_search): do not use its findings as evidence. Linked notice: pubmed 42205309 (literature_fetch).';
   const jats = (url: string): FetchedResource => ({ ...htmlResource("<article/>", url), contentType: "application/xml" });
   /** An adapter that answers by PMCID, as Europe PMC's `PMCID:` query does, with the record under its PMID. */
   const byPmcid = (answer: (ids: string[]) => Promise<Article[]> = async (ids) => (ids[0] === PMCID ? [retracted] : [])) => {
