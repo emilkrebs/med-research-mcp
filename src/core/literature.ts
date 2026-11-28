@@ -23,12 +23,16 @@
  * A page-1 search of 2 to 5 plain words that every database answers with nothing is probed: the query
  * is searched again without each word, for the count only, so that the warning can name the word that
  * blocks it (see {@link probeZeroResult}). Models otherwise drop words one tool call at a time.
+ *
+ * An adapter's `warnings` about how it read the query (Europe PMC: each field tag it removed) become entries of the result's
+ * `warnings` as they are, on every page. A search of PubMed and Europe PMC, both answering, compares their totals and warns when
+ * Europe PMC's is far above PubMed's and the query has an unquoted name with a hyphen (see {@link inflatedTotalWarning}).
  */
 
 import { adaptersFor, getAdapter, unknownDatabase, type DatabaseAdapter } from "./adapters/registry.js";
 import { chinaxivHeaders } from "./adapters/chinarxiv.js";
 import type { EmptyReason } from "./adapters/types.js";
-import { doiKey, firstPublished, isoDateBound, isPmidRecord, MAX_PAGED_RECORDS, pageWindow } from "./adapters/util.js";
+import { doiKey, firstPublished, isoDateBound, isPmidRecord, MAX_PAGED_RECORDS, pageWindow, unquotedHyphenNames } from "./adapters/util.js";
 import { LRUBackend, type Cache } from "./cache.js";
 import { errors, isMedResearchError } from "./errors.js";
 import { withDeadline } from "./request.js";
@@ -167,6 +171,45 @@ const SHARED_EMPTY_WARNING: Record<EmptyReason, (names: string[]) => string> = {
     `${nameList(names)} matched nothing: they return only records containing every word of the query and treat ` +
     `AND/OR as words. Try one or two key words.`,
 };
+
+/**
+ * Europe PMC's total as a multiple of PubMed's from which a search with an unquoted name with a hyphen is warned about.
+ * Measured 2026-11-28 (the totals of one search each, Europe PMC's over PubMed's): unquoted, `TB-500` 87,494 over 32 (2,734),
+ * `SS-31` 375,947 over 290 (1,296), `PT-141` 59,287 over 123 (482) and `MOTS-c` 10,803 over 269 (40.2); quoted, 3.1 to 7.2.
+ * The names `COVID-19`, `IL-6`, `BRCA1`, `HbA1c` and `SGLT2` unquoted, 2.1 to 8.7. 20 lies between 8.7 and 40.2. Queries
+ * of ordinary words reach it too, because Europe PMC searches full text (`zinc common cold` 207, `magnesium sleep` 32, `intermittent
+ * fasting weight loss` 21), which is why a query needs such a name as well.
+ */
+const INFLATED_TOTAL_RATIO = 20;
+
+/**
+ * The warning for a search of PubMed and Europe PMC, both answering, where Europe PMC found at least
+ * {@link INFLATED_TOTAL_RATIO} times what PubMed did and the query has an unquoted name with a hyphen (see
+ * {@link unquotedHyphenNames}), which it reads as separate words. It needs no request: the totals are in hand. A PubMed
+ * total of 0 counts as 1, so that Europe PMC's total alone, 20 or more, is what decides then (measured 2026-11-28, with
+ * PubMed finding none: `XQ-4471` 22 records unquoted and 0 quoted, `RK-9082` 119 and 0, `AB-12345` 825 and 9, `QV-58` 3,061
+ * and 7, `ZZ-31` 38,115 and 12, `KX-7` 19,952 and 19).
+ */
+function inflatedTotalWarning(query: string, results: { adapter: DatabaseAdapter; count: number; failed: boolean }[]): string | undefined {
+  const pubmed = results.find((r) => r.adapter.id === "pubmed" && !r.failed);
+  const europePmc = results.find((r) => r.adapter.id === "europepmc" && !r.failed);
+  if (!pubmed || !europePmc || europePmc.count < INFLATED_TOTAL_RATIO * Math.max(pubmed.count, 1)) return undefined;
+  const names = unquotedHyphenNames(query);
+  if (names.length === 0) return undefined;
+  const n = (count: number): string => count.toLocaleString("en-US");
+  const found =
+    pubmed.count === 0
+      ? `Europe PMC found ${n(europePmc.count)} records where PubMed found none`
+      : `Europe PMC found ${n(europePmc.count)} records, ${n(Math.round(europePmc.count / pubmed.count))} times PubMed's ${n(pubmed.count)}`;
+  const quotedNames = nameList(names.map((name) => `"${name}"`));
+  return names.length === 1
+    ? `${found}, and the query has a name with a hyphen that is not quoted (${names[0]}). Europe PMC searches the full text and reads the ` +
+        `hyphen as a space, so it counts every record holding ${nameList(names[0]!.split("-").map((part) => `"${part}"`))}, not only those ` +
+        `that name ${names[0]}. Quote it to search the name as a phrase: ${quotedNames}.`
+    : `${found}, and the query has names with a hyphen that are not quoted (${nameList(names)}). Europe PMC searches the full text and ` +
+        `reads a hyphen as a space, so it counts every record holding the parts of a name, not only those that name it. Quote them ` +
+        `to search the names as phrases: ${quotedNames}.`;
+}
 
 /** The text up to `budget` characters, ended at the last word boundary within it (cut where it stands if there is none). */
 function cutAtWord(text: string, budget: number): string {
@@ -407,10 +450,11 @@ export async function searchLiterature(
   const perAdapter = await Promise.all(
     searched.map(async (adapter) => {
       try {
-        const { count, ids, warning, emptyReason, more: served } = await adapter.search(input);
+        const { count, ids, warning, warnings: queryWarnings, emptyReason, more: served } = await adapter.search(input);
         // A warning with a reason is held back, to be shared with the databases that give the same one.
         const reported = warning && emptyReason ? { reason: emptyReason, warning } : undefined;
         if (warning && !reported) warnings.push(warning);
+        warnings.push(...(queryWarnings ?? []));
         if (served ?? count > offset + size) more = true;
         const articles = await adapter.fetch(ids.slice(0, size), cache, (w) => warnings.push(`${adapter.name}: ${w}`));
         return { adapter, count, articles, reported, failed: false };
@@ -464,6 +508,8 @@ export async function searchLiterature(
   if (cut) warnings.push(cut);
   const noAnimals = noAnimalStudiesWarning(input.studyTypes, input.minDesignTier, merged);
   if (noAnimals) warnings.push(noAnimals);
+  const inflated = inflatedTotalWarning(input.query, perAdapter);
+  if (inflated) warnings.push(inflated);
   // A bare 0 reads as "no evidence exists". A failure explains a zero itself, and so does a design filter
   // (studyTypes, minDesignTier) with the warnings above; a date range does not, and a zero under one was read
   // as the range being ignored.

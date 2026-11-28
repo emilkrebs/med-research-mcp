@@ -160,6 +160,8 @@ describe("createServer", () => {
     expect(query).toMatch(/europepmc reads \[tiab\] \[ti\] \[au\] \[pt\] \[ta\] \[la\] \[dp\] \[pmid\]/);
     expect(query).toMatch(/drops other tags such as \[mh\].*chinaxiv and russiarxiv ignore tags.*On europepmc alone, SRC:PPR keeps preprints/);
     expect(query).toContain('"sleep apnea"[tiab]');
+    // A name with a hyphen is quoted: Europe PMC splits it (issue 20); the result-time warning, docs/tools.md and the skill explain.
+    expect(query).toContain('Quote hyphenated names ("TB-500"): europepmc splits them.');
     expect(query).not.toContain("pubmed reads these as words");
     // A search of a few plain words that finds nothing gets a warning naming the word that blocks it; a preprint's `updated` is its published article, in corrections.
     expect(query).toContain("On 0 results a warning names the word whose removal gives hits; retry without it before concluding that no evidence exists.");

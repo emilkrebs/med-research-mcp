@@ -171,8 +171,11 @@ function tokenize(query: string): QueryToken[] {
 
 /** The term a tag applies to: a quoted phrase (its text between the quotes) or the unquoted words before it. */
 type FoundOperand = { kind: "quoted"; start: number; text: string } | { kind: "words"; start: number; words: string[] };
-/** What a tag applies to, as PubMed reads it. "ambiguous": PubMed's reading depends on more than the query text. */
-type TagOperand = { kind: "none" | "ambiguous" } | FoundOperand;
+/**
+ * What a tag applies to, as PubMed reads it. "ambiguous": PubMed's reading depends on more than the query text, because the
+ * tag follows a parenthesised group ("group") or the term is joined to the text around it ("text").
+ */
+type TagOperand = { kind: "none" } | { kind: "ambiguous"; after: "group" | "text" } | FoundOperand;
 
 /**
  * The operand of the tag at `index`. PubMed applies a tag to the term before it: a quoted phrase or one
@@ -186,18 +189,18 @@ function operandOf(tokens: QueryToken[], index: number): TagOperand {
   while (k >= 0 && tokens[k]!.kind === "space") k--;
   const last = tokens[k];
   if (!last || last.kind === "open" || last.kind === "tag") return { kind: "none" };
-  if (last.kind === "close") return { kind: "ambiguous" };
+  if (last.kind === "close") return { kind: "ambiguous", after: "group" };
   const glued = (at: number): boolean => {
     const before = tokens[at - 1];
     return before !== undefined && (before.kind === "word" || before.kind === "quoted" || before.kind === "close" || before.kind === "tag");
   };
-  if (last.kind === "quoted") return glued(k) ? { kind: "ambiguous" } : { kind: "quoted", start: k, text: last.text.slice(1, -1) };
+  if (last.kind === "quoted") return glued(k) ? { kind: "ambiguous", after: "text" } : { kind: "quoted", start: k, text: last.text.slice(1, -1) };
   const words: string[] = [];
   let start = k;
   while (k >= 0 && tokens[k]!.kind === "word" && !/^(?:AND|OR|NOT)$/.test(tokens[k]!.text)) {
     words.unshift(tokens[k]!.text);
     start = k;
-    if (glued(k)) return { kind: "ambiguous" };
+    if (glued(k)) return { kind: "ambiguous", after: "text" };
     k--;
     while (k >= 0 && tokens[k]!.kind === "space") k--;
   }
@@ -216,21 +219,64 @@ function plainPhrase(text: string): string | undefined {
 }
 
 /**
- * `FIELD:term` for a quoted phrase or a single word; undefined where PubMed's and Europe PMC's reading of it may differ.
+ * Why a tag was removed from a query sent to Europe PMC, for the warning that says so:
+ * - `no-field`: the tag has no Europe PMC field (`[mh]`, `[tw]`, ...);
+ * - `modifier`: the tag has a modifier Europe PMC has no equivalent of (`[tiab:~3]`, `[pt:noexp]`);
+ * - `unquoted-words`: it follows several unquoted words, which PubMed reads as a phrase only if its phrase index holds one;
+ * - `after-group`: it follows a parenthesised group;
+ * - `joined`: it touches the text before or after it, so what it applies to is unclear;
+ * - `no-term`: no term stands before it;
+ * - `phrase-wildcard`: its term is a quoted phrase with a "*", which Europe PMC ignores;
+ * - `wildcard`: its term is a wildcard of fewer than 4 characters before the "*", or one this does not read;
+ * - `punctuation`: its term has punctuation that was not compared (`alzheimer's`), or no letter or digit at all;
+ * - `value`: its term is outside what the tag is translated for (a publication type, language or date PubMed reads otherwise,
+ *   an author name of another form, an ISSN, a PMID that is no number);
+ * - `unparsed`: the query could not be parsed (an unterminated quote, unbalanced parentheses), so no tag was read.
+ */
+export type DropCause =
+  | "no-field"
+  | "modifier"
+  | "unquoted-words"
+  | "after-group"
+  | "joined"
+  | "no-term"
+  | "phrase-wildcard"
+  | "wildcard"
+  | "punctuation"
+  | "value"
+  | "unparsed";
+
+/** A field tag {@link translateForEuropePmc} removed: the tag as written, its name (lower case, modifier included), why, and the term it applied to. */
+export interface DroppedTag {
+  tag: string;
+  name: string;
+  cause: DropCause;
+  /** The term the tag followed, as written (a quoted phrase keeps its quotes), when that was clear. */
+  term?: string;
+}
+
+/** What a tag came to: the Europe PMC text that replaces it and its term, or why it is removed. */
+type Translation = { text: string } | { cause: DropCause };
+
+const keep = (text: string): Translation => ({ text });
+const drop = (cause: DropCause): Translation => ({ cause });
+
+/**
+ * `FIELD:term` for a quoted phrase or a single word; the cause of its removal where PubMed's and Europe PMC's reading of it may differ.
  * With `wildcards`, a word may end in or contain "*" (diabet*[tiab]: 960,599 records in PubMed, 942,328 in Europe PMC with SRC:MED).
  */
-function termIn(field: string, operand: FoundOperand, wildcards: boolean): string | undefined {
+function termIn(field: string, operand: FoundOperand, wildcards: boolean): Translation {
   if (operand.kind === "quoted") {
     const phrase = plainPhrase(operand.text);
-    return phrase && `${field}:"${phrase}"`;
+    return phrase ? keep(`${field}:"${phrase}"`) : drop(operand.text.includes("*") ? "phrase-wildcard" : "punctuation");
   }
-  if (operand.words.length !== 1) return undefined;
+  if (operand.words.length !== 1) return drop("unquoted-words");
   const word = operand.words[0]!;
   // Without quotes Europe PMC finds 232,653 records for TITLE_ABS:il-6, against 193,835 for "il-6" (PubMed: 195,634 for il-6[tiab]).
-  if (COMPOUND_WORD.test(word)) return `${field}:"${word}"`;
-  if (word.includes("*")) return wildcards && WILDCARD_WORD.test(word) ? `${field}:${word}` : undefined;
-  if (!PLAIN_WORD.test(word)) return undefined;
-  return /^(?:and|or|not)$/i.test(word) ? `${field}:"${word}"` : `${field}:${word}`;
+  if (COMPOUND_WORD.test(word)) return keep(`${field}:"${word}"`);
+  if (word.includes("*")) return wildcards && WILDCARD_WORD.test(word) ? keep(`${field}:${word}`) : drop("wildcard");
+  if (!PLAIN_WORD.test(word)) return drop("punctuation");
+  return keep(/^(?:and|or|not)$/i.test(word) ? `${field}:"${word}"` : `${field}:${word}`);
 }
 
 /**
@@ -254,11 +300,14 @@ function publicationDates(text: string): string | undefined {
   return publicationDateClause(from, to);
 }
 
-/** What Europe PMC searches for `name`[operand], or undefined where the two databases may not read it alike. */
-function translateTag(name: string, operand: FoundOperand): string | undefined {
+/** What Europe PMC searches for `name`[operand], or why the tag is removed where the two databases may not read it alike. */
+function translateTag(name: string, operand: FoundOperand): Translation {
   const text = operand.kind === "quoted" ? operand.text : operand.words.join(" ");
   const single = operand.kind === "words" && operand.words.length === 1 ? operand.words[0] : undefined;
-  switch (TAG_NAMES[name]) {
+  const several = operand.kind === "words" && operand.words.length > 1;
+  const known = Object.hasOwn(TAG_NAMES, name) ? TAG_NAMES[name] : undefined;
+  if (!known) return drop(Object.hasOwn(TAG_NAMES, name.split(":")[0]!) ? "modifier" : "no-field");
+  switch (known) {
     case "tiab":
       return termIn("TITLE_ABS", operand, true);
     case "ti":
@@ -266,29 +315,30 @@ function translateTag(name: string, operand: FoundOperand): string | undefined {
     case "ta": {
       // The ISSN PubMed takes here is a field of its own in Europe PMC (JOURNAL:0028-0836 finds nothing).
       const journal = operand.kind === "quoted" ? plainPhrase(operand.text) : single;
-      return journal !== undefined && /^[\p{L}\p{N}][\p{L}\p{N} .&,:'()-]*$/u.test(journal) && !/^\d{4}-\d{3}[\dxX]$/.test(journal) ? `JOURNAL:"${journal}"` : undefined;
+      if (several) return drop("unquoted-words");
+      return journal !== undefined && /^[\p{L}\p{N}][\p{L}\p{N} .&,:'()-]*$/u.test(journal) && !/^\d{4}-\d{3}[\dxX]$/.test(journal) ? keep(`JOURNAL:"${journal}"`) : drop("value");
     }
     case "au": {
       // "Kreider R" also finds "Kreider RB" in both; PubMed's quotes switch that off and Europe PMC's don't.
-      if (operand.kind !== "words" || operand.words.length > 2) return undefined;
+      if (operand.kind !== "words" || operand.words.length > 2) return drop("value");
       const [surname, initials] = operand.words;
-      if (!/^\p{L}[\p{L}'-]*$/u.test(surname!) || (initials !== undefined && !/^\p{L}{1,2}$/u.test(initials))) return undefined;
-      return `AUTH:"${operand.words.join(" ")}"`;
+      if (!/^\p{L}[\p{L}'-]*$/u.test(surname!) || (initials !== undefined && !/^\p{L}{1,2}$/u.test(initials))) return drop("value");
+      return keep(`AUTH:"${operand.words.join(" ")}"`);
     }
     case "pt": {
       const type = PUBLICATION_TYPES.get(text.trim().replace(/\s+/g, " ").toLowerCase());
-      return type && `PUB_TYPE:"${type}"`;
+      return type ? keep(`PUB_TYPE:"${type}"`) : drop("value");
     }
     case "la": {
-      const code = operand.kind === "words" && operand.words.length > 1 ? undefined : LANGUAGES.get(text.trim().toLowerCase());
-      return code && `LANG:${code}`;
+      const code = several ? undefined : LANGUAGES.get(text.trim().toLowerCase());
+      return code ? keep(`LANG:${code}`) : drop("value");
     }
-    case "dp":
-      return single === undefined ? undefined : publicationDates(single);
+    case "dp": {
+      const dates = single === undefined ? undefined : publicationDates(single);
+      return dates ? keep(dates) : drop("value");
+    }
     case "pmid":
-      return single !== undefined && /^\d{1,10}$/.test(single) ? `(EXT_ID:${single} AND SRC:MED)` : undefined;
-    default:
-      return undefined;
+      return single !== undefined && /^\d{1,10}$/.test(single) ? keep(`(EXT_ID:${single} AND SRC:MED)`) : drop("value");
   }
 }
 
@@ -297,6 +347,8 @@ function translateTag(name: string, operand: FoundOperand): string | undefined {
  * `tirzepatide apnea` finds 1,560 records and `TITLE_ABS:tirzepatide AND TITLE_ABS:apnea` 142 (2026-11-16);
  * a PubMed tag is therefore turned into the Europe PMC field that holds the same thing, and any
  * tag without one is removed as {@link withoutPubMedTags} does. Europe PMC's own field syntax passes through.
+ * A removed tag widens the search to the full text without a word in the response saying so, so every one is
+ * reported, with its cause, as a {@link DroppedTag}; {@link droppedTagWarnings} words them for the search result.
  *
  * Checked 2026-11-16 by comparing PubMed's esearch (counts, record ids and `querytranslation`) with Europe PMC
  * restricted to SRC:MED. Field names are those of Europe PMC's fields web service and Appendix 1 of its Reference Guide
@@ -336,19 +388,26 @@ function translateTag(name: string, operand: FoundOperand): string | undefined {
  * ([tiab:~3], [pt:noexp]) and a tag on a term this can't read with certainty. A query that can't be parsed (an unterminated
  * quote, unbalanced parentheses) is returned without its tags.
  */
-export function toEuropePmcQuery(query: string): string {
+export function translateForEuropePmc(query: string): { query: string; dropped: DroppedTag[] } {
   try {
     const tokens = tokenize(query);
     const replaced = new Map<number, { to: number; text: string }>();
+    const dropped: DroppedTag[] = [];
     tokens.forEach((token, i) => {
       if (token.kind !== "tag") return;
       const operand = operandOf(tokens, i);
-      if (operand.kind !== "quoted" && operand.kind !== "words") return;
+      const lose = (cause: DropCause, term?: string): void => {
+        dropped.push({ tag: token.text, name: token.name, cause, ...(term ? { term } : {}) });
+      };
+      if (operand.kind === "none") return lose("no-term");
+      if (operand.kind === "ambiguous") return lose(operand.after === "group" ? "after-group" : "joined");
+      const term = operand.kind === "quoted" ? `"${operand.text}"` : operand.words.join(" ");
       // A word, quote or parenthesis glued to the tag ("a[tiab]b") would join the field's value or the term after it.
       const next = tokens[i + 1]?.kind;
-      if (next === "word" || next === "quoted" || next === "open") return;
-      const text = translateTag(token.name, operand);
-      if (text !== undefined) replaced.set(operand.start, { to: i, text });
+      if (next === "word" || next === "quoted" || next === "open") return lose("joined", term);
+      const translation = translateTag(token.name, operand);
+      if ("text" in translation) replaced.set(operand.start, { to: i, text: translation.text });
+      else lose(translation.cause, term);
     });
     let out = "";
     for (let i = 0; i < tokens.length; i++) {
@@ -360,10 +419,134 @@ export function toEuropePmcQuery(query: string): string {
         out += tokens[i]!.text;
       }
     }
-    return out.replace(/\s{2,}/g, " ").trim() || query.trim();
+    const translated = out.replace(/\s{2,}/g, " ").trim();
+    // Nothing left to search: the query goes as it was, its tags in it, so none of them was removed.
+    return translated ? { query: translated, dropped } : { query: query.trim(), dropped: [] };
   } catch {
-    return withoutPubMedTags(query);
+    const dropped = [...query.matchAll(new RegExp(PUBMED_TAG, "g"))].map(
+      (m): DroppedTag => ({ tag: m[0], name: m[1]!.trim().replace(/\s+/g, " ").toLowerCase(), cause: "unparsed" }),
+    );
+    return { query: withoutPubMedTags(query), dropped };
   }
+}
+
+/** {@link translateForEuropePmc}'s query alone. */
+export function toEuropePmcQuery(query: string): string {
+  return translateForEuropePmc(query).query;
+}
+
+/**
+ * The names with a hyphen that Europe PMC would read as separate words: unquoted words of the query, as it is sent
+ * there, that have a letter, a hyphen and a digit or a part of fewer than 4 characters (`TB-500`, `SS-31`, `MOTS-c`,
+ * `IL-6`; not `slow-wave`, `SGLT2` or `KPV`). A name inside quotes, one a tag limits to a field (`il-6[tiab]` is sent as
+ * `TITLE_ABS:"il-6"`) and Europe PMC's own `FIELD:value` syntax are not. Each name once, in order; none for a query that
+ * can't be parsed.
+ *
+ * Europe PMC reads the hyphen as a space (checked 2026-11-28: `TB-500` finds 87,494 records, `TB AND 500` 87,496, `"TB-500"`
+ * 121; `SS-31` 375,947 and `SS 31` 375,957) and searches the full text, so such a name finds every record that holds its
+ * parts. A name with no hyphen reads the same quoted or not: `SGLT2`, `BRCA1`, `HbA1c`, `KPV`, `TB` and `ALS` found
+ * 51,726, 96,010, 211,822, 574, 386,110 and 179,390 records either way (same day).
+ */
+export function unquotedHyphenNames(query: string): string[] {
+  let tokens: QueryToken[];
+  try {
+    tokens = tokenize(translateForEuropePmc(query).query);
+  } catch {
+    return [];
+  }
+  const names = new Map<string, string>();
+  for (const token of tokens) {
+    if (token.kind !== "word") continue;
+    const word = token.text.replace(/[.,;]+$/, "");
+    if (!COMPOUND_WORD.test(word) || !/\p{L}/u.test(word) || !word.split("-").some((part) => /\d/.test(part) || part.length < 4)) continue;
+    if (!names.has(word.toLowerCase())) names.set(word.toLowerCase(), word);
+  }
+  return [...names.values()];
+}
+
+/** Tags for MeSH headings: Europe PMC has no field for them (see {@link toEuropePmcQuery}). */
+const MESH_TAGS: ReadonlySet<string> = new Set(["mh", "mesh", "mesh terms", "majr", "mesh major topic"]);
+
+/** The most tags a search names in its warnings, so that a query with many removed tags can't fill the result. */
+const MAX_TAG_WARNINGS = 5;
+
+/** "a b" or `"a b"` as the quoted phrase it is, for a warning. */
+const asPhrase = (term: string): string => (term.startsWith('"') ? term : `"${term}"`);
+
+/** "A", "A and B", "A, B and C". */
+const andList = (items: string[]): string => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`);
+
+/** The phrase `term` is, when it can be tagged as one (a term with `*`, `?`, `\` or nothing to search can't). */
+const taggablePhrase = (term: string): string | undefined => plainPhrase(term.replace(/^"|"$/g, ""));
+
+/** `aspirin[ti] AND ibuprofen[ti]`, for the words before a tag that are each a word the tag translates; undefined for more than 4 or any other. */
+function taggedEach(words: string[], tag: string): string | undefined {
+  return words.length >= 2 && words.length <= 4 && words.every((w) => PLAIN_WORD.test(w) || COMPOUND_WORD.test(w))
+    ? words.map((w) => `${w}${tag}`).join(" AND ")
+    : undefined;
+}
+
+/**
+ * The warning for one removed tag, worded for its cause: what Europe PMC does with the tag (nothing), what that
+ * does to the search (the words it followed match anywhere in the full text), and how to write it so that it is read.
+ */
+function droppedTagWarning({ tag, name, cause, term }: DroppedTag): string {
+  const base = name.split(":")[0]!;
+  const kind = Object.hasOwn(TAG_NAMES, base) ? TAG_NAMES[base] : undefined;
+  const effect = term ? `, so ${asPhrase(term)} matched anywhere in the full text` : "";
+  const head = `${tag} was ignored on europepmc: `;
+  switch (cause) {
+    case "no-field":
+      return `${head}Europe PMC has no ${MESH_TAGS.has(base) ? "MeSH field" : "field for it"}${effect}.`;
+    case "modifier":
+      return `${head}Europe PMC has no equivalent of its ":${name.slice(name.indexOf(":") + 1)}" modifier${effect}.`;
+    case "unquoted-words": {
+      const phrase = term && taggablePhrase(term);
+      const words = term?.split(" ") ?? [];
+      const each = kind === "ta" ? undefined : taggedEach(words, tag);
+      const writes = [
+        phrase && `write ${asPhrase(phrase)}${tag} for the phrase`,
+        kind === "ta" ? undefined : each ? `${each} for each word` : "tag each word",
+      ].filter(Boolean);
+      return `${head}it follows several unquoted words${effect}.${writes.length > 0 ? ` ${writes.join(", or ").replace(/^./, (c) => c.toUpperCase())}.` : ""}`;
+    }
+    case "after-group":
+      return `${head}it follows a parenthesised group. Tag each term inside the group instead: (tirzepatide${tag} OR semaglutide${tag}).`;
+    case "joined":
+      return `${head}it touches the text before or after it, so what it applies to is unclear. Put a space or an operator between terms.`;
+    case "no-term":
+      return `${head}no term stands before it for it to apply to.`;
+    case "phrase-wildcard":
+      return `${head}Europe PMC ignores a * inside a quoted phrase${effect}. Write the phrase without the *.`;
+    case "wildcard":
+      return `${head}it takes a wildcard only with at least 4 letters or digits before the first *${effect}.`;
+    case "punctuation": {
+      const phrase = term && !term.startsWith('"') && !term.includes(":") ? taggablePhrase(term) : undefined;
+      return `${head}it does not translate a term with punctuation such as ' or : or with nothing to search for${effect}.${phrase ? ` Quote it to tag it: ${asPhrase(phrase)}${tag}.` : ""}`;
+    }
+    case "value": {
+      const reasons: Record<string, string> = {
+        au: "it is read only after a surname with up to two initials, not quoted (Kreider R[au])",
+        ta: "it is read only for a quoted journal name or one word, and not for an ISSN",
+        pt: `it is read only for the publication types ${andList([...PUBLICATION_TYPES.values()])}`,
+        la: `it is read only for ${andList([...LANGUAGES.keys()].filter((k) => k.length > 3).map((k) => k[0]!.toUpperCase() + k.slice(1)))}`,
+        dp: "it is read only for a year, a month or a range of them (2024, 2024/03, 2019:2021); use the dateRange parameter for a day",
+        pmid: "it is read only for a PMID, a number of up to 10 digits",
+      };
+      return `${head}${(kind && reasons[kind]) ?? "it is not read for this term"}${effect}.`;
+    }
+    case "unparsed":
+      return `${head}the query has an unterminated quote or unbalanced parentheses, so no tag could be read. Close every quote and parenthesis.`;
+  }
+}
+
+/**
+ * One warning for each tag {@link translateForEuropePmc} removed, worded for its cause (see {@link DropCause}), the same
+ * warning once however often it comes, and at most {@link MAX_TAG_WARNINGS} of them followed by a count of the rest.
+ */
+export function droppedTagWarnings(dropped: DroppedTag[]): string[] {
+  const all = [...new Set(dropped.map(droppedTagWarning))];
+  return all.length <= MAX_TAG_WARNINGS ? all : [...all.slice(0, MAX_TAG_WARNINGS), `${all.length - MAX_TAG_WARNINGS} more tags were ignored on europepmc.`];
 }
 
 /**

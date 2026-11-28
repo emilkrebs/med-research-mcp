@@ -79,7 +79,8 @@
 import { LRUCache } from "lru-cache";
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { canonicalPmid, cleanDoi, first, isoDateBound, pageWindow, publicationDateClause, splitAuthors, strArray, toEuropePmcQuery, toIso1 } from "./util.js";
+import type { AdapterSearchResult } from "./types.js";
+import { canonicalPmid, cleanDoi, droppedTagWarnings, first, isoDateBound, pageWindow, publicationDateClause, splitAuthors, strArray, toIso1, translateForEuropePmc } from "./util.js";
 import { designPublicationTypes, excludedPublicationTypes } from "../grader.js";
 import { STUDY_TYPES } from "../types.js";
 import { htmlToText } from "../text.js";
@@ -298,9 +299,7 @@ export class EuropePmcAdapter extends RestAdapter {
     super(http);
   }
 
-  private buildQuery(input: SearchInput, types: string[] | null, excluded: string[]): string {
-    // A PubMed field tag would be searched as a word: translated into the field that holds the same, or removed.
-    const query = toEuropePmcQuery(input.query);
+  private buildQuery(query: string, input: SearchInput, types: string[] | null, excluded: string[]): string {
     const clauses: string[] = [];
     if (types) clauses.push(`(${types.map(includeType).join(" OR ")})`);
     const from = isoDateBound(input.dateRange?.from, "from");
@@ -314,19 +313,27 @@ export class EuropePmcAdapter extends RestAdapter {
 
   private readonly paging = new LRUCache<string, QueryPaging>({ max: CURSOR_MEMO_MAX, ttl: CURSOR_MEMO_TTL_MS });
 
-  async search(input: SearchInput): Promise<{ count: number; ids: string[] }> {
+  /**
+   * A PubMed field tag would be searched as a word, so it is translated into the field that holds the same, or removed
+   * (toEuropePmcQuery). A removed tag widens the search to the full text, and `warnings` says so for each one, on every page
+   * (also past the last, which asks Europe PMC nothing).
+   */
+  async search(input: SearchInput): Promise<AdapterSearchResult> {
     const types = designPublicationTypes(input.studyTypes, input.minDesignTier);
     if (types?.length === 0) return { count: 0, ids: [] };
+    const { query, dropped } = translateForEuropePmc(input.query);
+    const tagWarnings = droppedTagWarnings(dropped);
+    const result = (count: number, ids: string[]): AdapterSearchResult => ({ count, ids, ...(tagWarnings.length > 0 ? { warnings: tagWarnings } : {}) });
     const { offset, size } = pageWindow(input);
     const excluded = excludedOnEuropePmc(input.studyTypes, input.minDesignTier);
-    const base = new URLSearchParams({ query: this.buildQuery(input, types, excluded), format: "json" });
+    const base = new URLSearchParams({ query: this.buildQuery(query, input, types, excluded), format: "json" });
     if (input.sort === "date") base.set("sort", "FIRST_PDATE_D desc");
     const key = base.toString();
     let paging = this.paging.get(key);
     if (!paging) this.paging.set(key, (paging = { cursors: new Map() }));
     const known = paging;
 
-    if (offset > 0 && known.count !== undefined && offset >= known.count) return { count: known.count, ids: [] };
+    if (offset > 0 && known.count !== undefined && offset >= known.count) return result(known.count, []);
     let { position, cursor } = nearestCursor(known.cursors, offset);
     const get = async (resultType: string, pageSize: number): Promise<EpmcResponse> => {
       const params = new URLSearchParams(base);
@@ -343,7 +350,7 @@ export class EuropePmcAdapter extends RestAdapter {
       const got = data?.resultList?.result?.length ?? 0;
       const next = data?.nextCursorMark;
       if (got < step || !next || next === cursor || offset >= (known.count ?? Infinity)) {
-        return { count: known.count ?? 0, ids: [] };
+        return result(known.count ?? 0, []);
       }
       position += got;
       cursor = next;
@@ -354,7 +361,7 @@ export class EuropePmcAdapter extends RestAdapter {
     this.remember(articles);
     const next = data?.nextCursorMark;
     if (next && next !== cursor) known.cursors.set(offset + (data?.resultList?.result?.length ?? 0), next);
-    return { count, ids: articles.map((a) => a.id) };
+    return result(count, articles.map((a) => a.id));
   }
 
   /**
