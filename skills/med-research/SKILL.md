@@ -19,11 +19,12 @@ Three tools, a triage-first workflow. **Always start with `literature_search`** 
 
 2–5 keywords, never a sentence: every word must match, so each extra word narrows the result. On 0 results the warning names the word that blocks a query of plain words (no quotes, tags or operators), or says no single word does (use fewer, more general words); with tags, drop one clause at a time. `PubMed ignored "word"` means no record contains it: check the spelling. `PubMed has no phrase "…"` means PubMed found no such phrase and searched its words separately, anywhere in a record. Tags and booleans add precision on PubMed and Europe PMC; `chinaxiv`/`russiarxiv` ignore them.
 
-- `[tiab]` — title/abstract (most precise): `zinc[tiab] AND ("common cold"[tiab] OR rhinovirus[tiab])`. Quote a phrase before its tag or tag each word: Europe PMC drops the tag of `common cold[tiab]`.
+- `[tiab]` — title/abstract (most precise): `zinc[tiab] AND ("common cold"[tiab] OR rhinovirus[tiab])`. Quote a phrase before its tag or tag each word: Europe PMC drops the tag of `common cold[tiab]`, with a warning that says what to write.
 - `[mesh]` — controlled MeSH, PubMed only: `"Zinc"[mesh] AND "Common Cold"[mesh]`
 - `[au]` — author: `Hemilä H[au]`
 - `[pt]` — publication type, for strong designs: `AND (meta-analysis[pt] OR "randomized controlled trial"[pt])`
-- Europe PMC reads `[tiab] [ti] [au] [pt] [ta] [la] [dp] [pmid]` and drops other tags, so their words match full text.
+- Europe PMC reads `[tiab] [ti] [au] [pt] [ta] [la] [dp] [pmid]` and drops other tags, so their words match full text; every dropped tag gets a warning.
+- Quote a name with a hyphen: `"TB-500"`, `"SS-31"`, `"IL-6"`. Europe PMC searches full text and reads an unquoted hyphen as a space, so `TB-500` matches every record that holds "TB" and "500": 87,494 records against 121 for `"TB-500"` (2026-11-28), so its total says nothing about the compound. A warning says when Europe PMC's total is 20 or more times PubMed's and such a name is unquoted; quote it and search again.
 - `chinaxiv`/`russiarxiv` return only records containing **every** word, and read `OR` as a word: give them one or two key words.
 
 Params (the tool descriptions have the rest):

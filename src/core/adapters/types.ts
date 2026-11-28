@@ -28,6 +28,12 @@ export interface AdapterSearchResult {
   emptyReason?: EmptyReason;
   /** False when no later page can be served although `count` goes on; absent, `count` decides. */
   more?: boolean;
+  /**
+   * What the database did with the query that changes what the records mean, one entry per matter (Europe PMC: a field
+   * tag it could not keep). Each becomes its own entry of the result's `warnings`, whether or not anything was found, and
+   * on every page.
+   */
+  warnings?: string[];
 }
 
 export interface DatabaseAdapter {

@@ -149,6 +149,11 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   //   MeSH field and does not explode a heading). A tag after several unquoted words is removed too: PubMed searches them as a
   //   phrase only if its phrase index holds it (`sleep apnea[tiab]` is the phrase, `creatine cognition[tiab]` is creatine
   //   mapped to MeSH AND "cognition"[Title/Abstract]), hence the advice to quote a phrase. The ChinaRxiv adapter sends words only.
+  //   A tag it removes gets a warning of its own in the result (translateForEuropePmc, droppedTagWarnings).
+  // - Europe PMC reads a hyphen as a space (checked 2026-11-28): TB-500 finds 87,494 records, `TB AND 500` 87,496 and "TB-500" 121;
+  //   SS-31 375,947 and `SS 31` 375,957. A name with no hyphen finds the same quoted or not (SGLT2 51,726, BRCA1 96,010, KPV 574).
+  //   Hence the advice to quote a name with a hyphen; a search of pubmed and europepmc warns when europepmc's total is 20 or more
+  //   times PubMed's and the query has such a name unquoted (inflatedTotalWarning, literature.ts).
   // - Size: for four generic queries, ten PubMed results came to 25,115-28,106 characters of JSON (PubMed's own answers run
   //   through searchLiterature), 12,760-13,330 with abstractMaxChars 600 and 6,577-7,154 with 0. The abstract text alone
   //   was 18,404-21,545 characters, about 2,000 per record.
@@ -159,13 +164,14 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .trim()
       .min(1, "The query is empty.")
       .describe(
-        "Search query: 2-5 keywords, not a sentence. Every space-separated word is required (ANDed), so each extra word " +
-          "narrows the results. On 0 results a warning names the word whose removal gives hits; retry without it before " +
-          "concluding that no evidence exists. OR (upper case) joins alternatives on pubmed and europepmc; chinaxiv and " +
-          "russiarxiv read it as one more required word. " +
+        "Search query: 2-5 keywords, not a sentence. Every word is required (ANDed), so extra words narrow it. " +
+          "On 0 results a warning names the word whose removal gives hits; retry without it before " +
+          "concluding that no evidence exists. Upper-case OR joins alternatives on pubmed and europepmc; chinaxiv and " +
+          "russiarxiv read it as a word. " +
           "PubMed field tags apply on pubmed. europepmc reads [tiab] [ti] [au] [pt] [ta] [la] [dp] [pmid] (quote a phrase " +
           'before its tag: "sleep apnea"[tiab]) and drops other tags such as [mh], keeping the words they tag; chinaxiv ' +
           "and russiarxiv ignore tags. On europepmc alone, SRC:PPR keeps preprints. " +
+          'Quote hyphenated names ("TB-500"): europepmc splits them. ' +
           "The query is sent to third-party databases: never include names, dates of birth, record numbers or other details that " +
           "identify a person; describe the condition or intervention instead.",
       ),
@@ -269,8 +275,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         "studyType comes only from NLM PublicationType tags (PubMed, Europe PMC; assigned by NLM's automated indexing, " +
         "with human review of some records). Records with none naming a design are 'unknown', designTier null. " +
         "designTier (0-5) ranks the design for 'does this intervention help?' by the OCEBM 2011 levels; it is not an " +
-        "appraisal. A meta-analysis or systematic review ranks with the studies it pooled, which the tags don't say, so " +
-        "its designTier is null unless it is tagged Network Meta-Analysis (5). For a null tier, read the abstract for " +
+        "appraisal. A meta-analysis or systematic review ranks with the studies it pooled, which tags don't say, so " +
+        "its designTier is null unless tagged Network Meta-Analysis (5). For a null tier, read the abstract for " +
         "the design or for what a review pooled. flags marks retracted, notice, " +
         "protocol and editorial records (designTier 0), and warns of an expression of concern, an erratum (corrected), " +
         "a newer version (updated; for a preprint, its published article, id in corrections), animals-not-humans indexing, " +
@@ -279,7 +285,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         "id is the database's own id; pmid is set only for a PMID: cite any other (PPR…, CBA:…, chinaxiv-…, ru-…) " +
         "by id with the database, or by doi/url. Results are merged, de-duplicated by DOI or PMID and sorted, a page at a time: " +
         "when nextPage is set, more follow; a record held by two databases counts twice in total. " +
-        "Use literature_fetch for full metadata of given ids, literature_fulltext for the article body.",
+        "Use literature_fetch for full metadata of given ids, literature_fulltext for the body.",
       // Strict, so a misnamed key (e.g. `databases`) errors instead of being stripped and silently searching PubMed.
       inputSchema: z.object(literatureSearchShape).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
