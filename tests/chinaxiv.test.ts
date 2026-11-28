@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { ChinaRXivAdapter, chinaxivHeaders, parsePapers } from "../src/core/adapters/chinarxiv";
+import { ChinaRXivAdapter, chinaxivHeaders, cleanChinarxivText, parsePapers } from "../src/core/adapters/chinarxiv";
 import { SovietRxivAdapter } from "../src/core/adapters/russiarxiv";
 import { defaultHttp, type AdapterHttp } from "../src/core/adapters/http";
 import { cleanAuthors } from "../src/core/adapters/util";
@@ -449,7 +449,8 @@ describe("fetchText (the translated full text)", () => {
 
   it("reads /papers/{id}/text and returns the Markdown body", async () => {
     const { http, urls } = fakeHttp(TEXT);
-    expect(await new ChinaRXivAdapter(http).fetchText("chinaxiv-202401.00027")).toBe("<!-- source-page: 001 -->\n\n# T\n\nBody.");
+    // The page marker is taken out (see cleanChinarxivText below).
+    expect(await new ChinaRXivAdapter(http).fetchText("chinaxiv-202401.00027")).toBe("# T\n\nBody.");
     expect(urls).toEqual(["https://chinarxiv.org/api/v1/papers/chinaxiv-202401.00027/text"]);
     const russian = fakeHttp({ ...TEXT, id: "ru-196201.58177" });
     await new SovietRxivAdapter(russian.http).fetchText("ru-196201.58177");
@@ -714,5 +715,89 @@ describe("rate limits", () => {
     expect(error).toMatchObject({ code: "RATE_LIMIT", retryAfter: 30 });
     expect((error as { userMessage: string }).userMessage).toContain("ChinaRxiv");
     expect((error as { userMessage: string }).userMessage).not.toContain("NCBI_API_KEY");
+  });
+});
+
+describe("cleanChinarxivText (what the API's Markdown carries that says nothing)", () => {
+  /** As the API returns it: a marker line at the start of each source page, blank lines around it. */
+  const PAGES = "<!-- source-page: 001 -->\n\n\nFirst page, ends mid-sentence and\n\n<!-- source-page: 002 -->\n\n\ncontinues here.\n\n<!-- source-page: 003 -->\n\n\nLast page.\n";
+
+  it("takes out the source-page lines, and leaves one blank line where blank lines were around them", () => {
+    expect(cleanChinarxivText(PAGES)).toBe("First page, ends mid-sentence and\n\ncontinues here.\n\nLast page.");
+    expect(cleanChinarxivText("Text\n<!-- source-page: 012 -->\nMore")).toBe("Text\nMore");
+  });
+
+  it("takes out only that comment, and only on a line of its own", () => {
+    const text = "A note <!-- source-page: 001 --> in a line.\n\n<!-- a comment of the author's -->\n\n<!-- source-page: x -->\n\n`<!-- source-page: 001 -->`";
+    expect(cleanChinarxivText(text)).toBe(text);
+    const fenced = "```html\n<!-- source-page: 001 -->\n\n\n|  |  |\n```";
+    expect(cleanChinarxivText(fenced)).toBe(fenced);
+  });
+
+  it("takes out rows of empty cells, and nothing in a row that has text", () => {
+    const table = ["| Group | n |", "|---|---:|", "|  |  |", "| A | 12 |", "| | |", "|  | 0 |", "| — | — |", "| - | - |", "|   |   |"].join("\n");
+    expect(cleanChinarxivText(table)).toBe(["| Group | n |", "|---|---:|", "| A | 12 |", "|  | 0 |", "| — | — |", "| - | - |"].join("\n"));
+  });
+
+  it("keeps a table valid: a header and its delimiter stay while the table has text", () => {
+    const header = "| Study | N | Effect |\n|---|---:|---|\n";
+    expect(cleanChinarxivText(`${header}| A | 40 | 0.2 |\n| B | 52 | 0.4 |`)).toBe(`${header}| A | 40 | 0.2 |\n| B | 52 | 0.4 |`);
+    // A header that has text is the table's header, though nothing is under it.
+    expect(cleanChinarxivText(`${header}|  |  |  |`)).toBe(header.trimEnd());
+    // The delimiter goes only with a header that has no text, since a delimiter alone is not a table.
+    expect(cleanChinarxivText("| | | |\n|---|---|---|\n| A | 40 | 0.2 |\n| B | 52 | 0.4 |")).toBe("| A | 40 | 0.2 |\n| B | 52 | 0.4 |");
+    // A table of nothing goes whole, with the blank lines it leaves.
+    expect(cleanChinarxivText("Before.\n\n|  |  |\n|---|---|\n|  |  |\n\nAfter.")).toBe("Before.\n\nAfter.");
+  });
+
+  it("leaves a delimiter row that has no header above it, and table rows that have no header", () => {
+    expect(cleanChinarxivText("|---|---|\n| A | 1 |\n|  |  |")).toBe("|---|---|\n| A | 1 |");
+    expect(cleanChinarxivText("| A | 1 |\n| B | 2 |")).toBe("| A | 1 |\n| B | 2 |");
+  });
+
+  it("cleans what the API returned for ChinaXiv and RussiaRxiv records, through the adapters", async () => {
+    // Lines of chinaxiv-202609.00291 (the rows of a table that goes on over source pages, under an empty header) and
+    // of ru-196201.58177 (a table with a header, cut to fewer columns), as the API returned them on 2026-11-28.
+    const chinaxiv = [
+      "<!-- source-page: 025 -->",
+      "",
+      "",
+      "|  |  |  |  |  |  |  |  |  |  |  |  |  |",
+      "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+      "|  | Exp.1 | 60 | 46.67 | C | EM | DT | VG | PB | EM | L | ES | 0.29 |",
+      "| Prot et al., 2014 | Exp.2 | 3034 | 73.00 | C | SM | NA | VG | PE | SM | NA | MS | 0.10 |",
+      "",
+      "<!-- source-page: 026 -->",
+      "",
+      "",
+      "| He Jiangfeng, 2023 | Exp.1 | 56 | 100 | C | EM | MT | NG | PB | EM | L | MS | 0.63 |",
+    ].join("\n");
+    const russiarxiv = [
+      "<!-- source-page: 003 -->",
+      "",
+      "",
+      "**Table 1**",
+      "",
+      "| Compound | Empirical formula | M.p., °C | B.p., °C (mm) | $d_4^{20}$ |",
+      "|---|---|---:|---|---:|",
+      "| I | C$_{18}$H$_{32}$O$_2$F$_2$ | — | 146—149 (0,20) | 0,9059 |",
+      "| XIII | C$_{19}$H$_{30}$O$_2$F$_2$ | — | 147—150 (0,12) | 0,9566* |",
+    ].join("\n");
+    const cn = await new ChinaRXivAdapter(fakeHttp({ id: "chinaxiv-202609.00291", body_md: chinaxiv }).http).fetchText("chinaxiv-202609.00291");
+    expect(cn).toBe(
+      [
+        "|  | Exp.1 | 60 | 46.67 | C | EM | DT | VG | PB | EM | L | ES | 0.29 |",
+        "| Prot et al., 2014 | Exp.2 | 3034 | 73.00 | C | SM | NA | VG | PE | SM | NA | MS | 0.10 |",
+        "",
+        "| He Jiangfeng, 2023 | Exp.1 | 56 | 100 | C | EM | MT | NG | PB | EM | L | MS | 0.63 |",
+      ].join("\n"),
+    );
+    const ru = await new SovietRxivAdapter(fakeHttp({ id: "ru-196201.58177", body_md: russiarxiv }).http).fetchText("ru-196201.58177");
+    expect(ru).toBe(russiarxiv.split("\n").slice(3).join("\n"));
+  });
+
+  it("leaves a text without any of it as it was", () => {
+    const text = "# Title\n\nParagraph one.\n\n\nParagraph two after two blank lines.\n\n| a | b |\n|---|---|\n| 1 | 2 |";
+    expect(cleanChinarxivText(text)).toBe(text);
   });
 });

@@ -33,7 +33,8 @@
  * (see chinaxivHeaders below).
  *
  * Full text: `GET /papers/{id}/text` returns `{ id, title, body_md, word_count }`, the
- * translated body as Markdown (with `<!-- source-page: 001 -->` markers), for ChinaXiv and
+ * translated body as Markdown (with `<!-- source-page: 001 -->` markers, and tables that
+ * have rows of empty cells, which {@link cleanChinarxivText} leaves out), for ChinaXiv and
  * RussiaRxiv ids alike (`chinaxiv-YYYYMM.NNNNN`, `ru-YYYYMM.NNNNN`; an unprefixed id is a
  * 404). A record without full text gets 200 and an empty `body_md`; an unknown id gets 404.
  * `/stats` counts text for 26,428 of 26,652 ChinaXiv records and all 25,456 RussiaRxiv
@@ -191,6 +192,78 @@ export function parsePapers(data: PaperResponse, options: { complete?: boolean }
   return { count, articles };
 }
 
+/** The line the API puts where a page of the source begins: `<!-- source-page: 001 -->`. */
+const SOURCE_PAGE_MARK = /^\s*<!-- source-page: \d+ -->\s*$/;
+/** A line of a Markdown table: it starts with a pipe, after at most three spaces. */
+const TABLE_ROW = /^ {0,3}\|/;
+/** A table row without text: only pipes and whitespace between them (`|  |  |`). */
+const EMPTY_ROW = /^[\s|]*$/;
+/** The row under a table's header: cells of dashes, with or without alignment colons (`|---|:--:|`). */
+const DELIMITER_ROW = /^ {0,3}\|(?:\s*:?-+:?\s*(?:\||$))+\s*$/;
+/** A fence that opens or closes a code block; nothing inside one is touched. */
+const FENCE = /^ {0,3}(?:```|~~~)/;
+
+/**
+ * The body ChinaRxiv returns without what costs characters and says nothing: the `<!-- source-page: NNN -->`
+ * line the API puts at the start of each source page, and table rows that hold no text. Nothing else changes.
+ *
+ * A table's header row, delimiter row and body rows stay together, so that a table which has a header still has
+ * the delimiter that makes it a table: an empty body row goes alone; a header row with no text goes with the
+ * delimiter under it when body rows with text remain (a delimiter without a header isn't a table either, and
+ * chinaxiv-202609.00291 has one on each of the source pages 25 to 29 over which a table goes on); a table of nothing but empty rows goes whole.
+ * Where a removed line left blank lines side by side, one remains. Code blocks are left as they are.
+ *
+ * Measured on 2026-11-28 on 22 texts (21 ChinaXiv, 1 RussiaRxiv), as the API returned them and as fetchText returns
+ * them: 1,100,938 characters to 1,094,212. 20 of them had `source-page` lines (222 in all, 25 characters each,
+ * and blank lines); only chinaxiv-202609.00291 had empty table rows: 6 empty headers, each over body rows with text.
+ */
+export function cleanChinarxivText(markdown: string): string {
+  const lines = markdown.split("\n");
+  const kept: string[] = [];
+  // A line was removed since the last line that stayed: the blank lines that follow must not pile up.
+  let removed = false;
+  const keep = (line: string): void => {
+    if (line.trim() === "" && removed && (kept.length === 0 || kept[kept.length - 1]!.trim() === "")) return;
+    if (line.trim() !== "") removed = false;
+    kept.push(line);
+  };
+
+  let fenced = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (FENCE.test(line)) {
+      fenced = !fenced;
+      keep(line);
+      continue;
+    }
+    if (fenced) {
+      keep(line);
+      continue;
+    }
+    if (SOURCE_PAGE_MARK.test(line)) {
+      removed = true;
+      continue;
+    }
+    if (!TABLE_ROW.test(line)) {
+      keep(line);
+      continue;
+    }
+    // A table: the rows from here to the first line that isn't one.
+    let end = i;
+    while (end + 1 < lines.length && TABLE_ROW.test(lines[end + 1]!)) end += 1;
+    const rows = lines.slice(i, end + 1);
+    i = end;
+    const hasHeader = rows.length >= 2 && !DELIMITER_ROW.test(rows[0]!) && DELIMITER_ROW.test(rows[1]!);
+    const body = rows.slice(hasHeader ? 2 : 0);
+    const text = body.filter((row) => !EMPTY_ROW.test(row));
+    const headerHasText = hasHeader && !EMPTY_ROW.test(rows[0]!);
+    const out = hasHeader && headerHasText ? [rows[0]!, rows[1]!, ...text] : text;
+    if (out.length !== rows.length) removed = true;
+    for (const row of out) keep(row);
+  }
+  return kept.join("\n").trim();
+}
+
 /** One corpus of the ChinaRxiv API. Subclasses pick the corpus; everything else is shared. */
 export abstract class ChinaRxivApiAdapter extends RestAdapter {
   protected abstract readonly corpus: ChinaRxivCorpus;
@@ -311,7 +384,7 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
       throw isMedResearchError(err) && err.httpStatus === 404 ? errors.notFound(id, "ChinaRxiv") : err;
     }
     if (paper?.id !== undefined && paper.id !== id) return null;
-    const body = typeof paper?.body_md === "string" ? paper.body_md.trim() : "";
+    const body = typeof paper?.body_md === "string" ? cleanChinarxivText(paper.body_md) : "";
     return body || null;
   }
 

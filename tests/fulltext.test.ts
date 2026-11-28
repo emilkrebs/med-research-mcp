@@ -1193,7 +1193,8 @@ describe("fetchFulltext — ChinaXiv and RussiaRxiv by their ChinaRxiv id", () =
     };
     const adapter = new ChinaRXivAdapter(http);
     const out = await fetchFulltext({ id: CN_ID }, new LRUBackend(), fakeClient(), { adapter: (database) => (database === "chinaxiv" ? adapter : undefined) });
-    expect(out).toMatchObject({ source: "chinarxiv", fulltext: BODY });
+    // Through the real adapter, which takes the page marker out of the body.
+    expect(out).toMatchObject({ source: "chinarxiv", fulltext: BODY.replace("<!-- source-page: 001 -->\n\n", "") });
     expect(out.warning).toContain(ORIGINAL);
     expect(urls.sort()).toEqual([
       `https://chinarxiv.org/api/v1/papers/${CN_ID}`,

@@ -386,7 +386,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     {
       title: "Fetch full text for a scientific article (multi-database)",
       description:
-        "Fetches an article's full text as markdown (plain text when format is pdf) via Europe PMC (a PMCID or PPR " +
+        "Fetches an article's full text as markdown (plain text without layout noise when format is pdf) via Europe PMC (a PMCID or PPR " +
         "preprint), Unpaywall (open access), institutional proxy (if configured) and direct DOI access; chinaxiv and " +
         "russiarxiv records come from ChinaRxiv as a machine translation (check originalUrl before relying on a number). " +
         "The warning opens with RETRACTED, NOTICE or EXPRESSION OF CONCERN when the record has that flag (see " +
