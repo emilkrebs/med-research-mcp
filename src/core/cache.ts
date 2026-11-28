@@ -135,7 +135,7 @@ export class NullCache implements Cache {
  * preprint or earlier version, see `CORRECTION_TYPES` in types.ts).
  * 3 (0.8.0): a summary holds the record's id under `id` (`Article.id`); summaries of earlier versions hold it
  * under `pmid` and would come back without one. The key column of the tables is `id` (`pmid` up to version 2).
- * 4: a full text is kept under the source it was fetched from, and with the DOI it belongs to (see
+ * 4 (0.8.2): a full text is kept under the source it was fetched from, and with the DOI it belongs to (see
  * `fulltextCacheKey` in fulltext.ts); earlier versions kept it under the id the caller asked with, which could
  * hold the text of another article, and the table has a `doi` column.
  */
