@@ -881,6 +881,25 @@ describe("the DOI's own record gets its wait from when it is asked for, whatever
   });
 });
 
+describe("an id that Europe PMC has no record of is NOT_FOUND only when the call holds no record of it", () => {
+  const deps = (found: Article | null): FulltextDeps => {
+    // Europe PMC answers 404 for the text, and its record lookups find nothing (`find` says it has none).
+    const fetchUrl = async (url: string): Promise<FetchedResource> => ({ ok: false, status: url.includes("ebi.ac.uk") ? 404 : 403, contentType: "text/html", finalUrl: url });
+    return { unpaywall: unpaywallOf([]), fetchUrl, proxyPrefix: "", adapter: () => ({ fetch: async () => [], find: async () => found }) };
+  };
+
+  it("serves the abstract of the record the resolution holds, and its warning, though the lookups find none", async () => {
+    const cache = new LRUBackend();
+    cache.setSummary("PMC1182327", { ...recordB, doi: undefined, abstract: "The held record's abstract.", publicationTypes: ["Journal Article", "Retracted Publication"], database: "europepmc" });
+    const out = await fetchFulltext({ id: "PMC1182327" }, cache, pubmed([]).client, deps(null));
+    expect(out).toMatchObject({ source: "none", fulltext: "The held record's abstract." });
+    expect(out.warning!.startsWith(RETRACTED_START)).toBe(true);
+    // With no record held, the same answers are NOT_FOUND, and a DOI given is left to the routes.
+    await expect(fetchFulltext({ id: "PMC1182327" }, new LRUBackend(), pubmed([]).client, deps(null))).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect((await fetchFulltext({ id: "PMC1182327", doi: B_DOI }, new LRUBackend(), pubmed([]).client, deps(null))).source).toBe("none");
+  });
+});
+
 describe("a Europe PMC record read for a PMID is not kept as PubMed's", () => {
   it("leaves the bare PMID's summary, which search and fetch serve as PubMed's, to PubMed's records", async () => {
     const { client } = pubmed([]);

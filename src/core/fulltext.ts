@@ -682,9 +682,10 @@ export async function fetchFulltext(
   // does and has no open-access text. Only the record tells them apart, and a real one gets its abstract. A lookup that
   // failed is no answer about the id, and a DOI given is left to the routes above. The lookup is made again where the one
   // beside the text came back empty, which may have failed (see findRecord): a record it finds serves the abstract and the
-  // standing, though not the DOI routes, which have run.
+  // standing, though not the DOI routes, which have run. A record the resolution above already holds (read from the cache,
+  // or by the lookup that checks a DOI) is an answer too: the id names an article, and there is nothing to ask again.
   let retried: Article | undefined;
-  if (europePmcId && !doi && !(await record())) {
+  if (europePmcId && !doi && !article && !(await record())) {
     const again = await findRecord(europePmcId, cache, adapterFor);
     if (again === null) throw errors.notFound(id, "Europe PMC");
     retried = again;
