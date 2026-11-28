@@ -464,7 +464,7 @@ describe("fetchText (the translated full text)", () => {
     expect(await new ChinaRXivAdapter(fakeHttp({ ...TEXT, id: "chinaxiv-202601.00001" }).http).fetchText("chinaxiv-202401.00027")).toBeNull();
   });
 
-  it("lets a failed request through, as an error, and sends the adapter's contact header", async () => {
+  it("sends the adapter's contact header, and reads the API's 404 for an unknown id as NOT_FOUND", async () => {
     vi.stubEnv("MED_RESEARCH_CHINAXIV_EMAIL", "chinaxiv@example.com");
     const sent: Record<string, string>[] = [];
     vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
@@ -474,10 +474,25 @@ describe("fetchText (the translated full text)", () => {
     try {
       const adapter = new ChinaRXivAdapter();
       expect(await adapter.fetchText("chinaxiv-202401.00027")).toContain("Body.");
-      await expect(adapter.fetchText("chinaxiv-209999.99999")).rejects.toMatchObject({ code: "NETWORK_ERROR" });
+      await expect(adapter.fetchText("chinaxiv-209999.99999")).rejects.toMatchObject({
+        code: "NOT_FOUND",
+        recoverable: false,
+        userMessage: expect.stringContaining('ChinaRxiv has no record of "chinaxiv-209999.99999"'),
+      });
       expect(sent.map((h) => h["X-API-Email"])).toEqual(["chinaxiv@example.com", "chinaxiv@example.com"]);
     } finally {
       vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("lets any other failed request through as the error it is: a refused one is NETWORK_ERROR, a rate limit RATE_LIMIT", async () => {
+    try {
+      vi.stubGlobal("fetch", async () => new Response("", { status: 403 }));
+      await expect(new ChinaRXivAdapter().fetchText("chinaxiv-202401.00027")).rejects.toMatchObject({ code: "NETWORK_ERROR", httpStatus: 403 });
+      vi.stubGlobal("fetch", async () => new Response("", { status: 429, headers: { "retry-after": "60" } }));
+      await expect(new ChinaRXivAdapter().fetchText("chinaxiv-202401.00027")).rejects.toMatchObject({ code: "RATE_LIMIT" });
+    } finally {
       vi.unstubAllGlobals();
     }
   });

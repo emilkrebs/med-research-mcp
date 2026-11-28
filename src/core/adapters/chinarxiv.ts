@@ -76,6 +76,7 @@ import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
 import { cleanAuthors, cleanDoi, first, isoDateBound, pageWindow, withoutPubMedTags } from "./util.js";
 import type { Cache } from "../cache.js";
+import { errors, isMedResearchError } from "../errors.js";
 import type { Article, SearchInput } from "../types.js";
 import { envSetting } from "../version.js";
 
@@ -297,12 +298,18 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
   /**
    * The translated body of a record as Markdown, from `/papers/{id}/text`: the answer for a record
    * with full text is a JSON object with `body_md`. `null` when the API has none (it answers 200 with an
-   * empty `body_md` for a record that lacks full text, and 404 for an unknown id, which the HTTP seam
-   * throws as an error like any other failed request). Reads one record by an id the caller checked,
-   * on this adapter's own host and headers.
+   * empty `body_md` for a record that lacks full text). It answers 404 for an unknown id, which is NOT_FOUND
+   * here; any other failed request (the HTTP seam throws it as NETWORK_ERROR, 5xx and dropped connections
+   * after its retries, or RATE_LIMIT) passes through, since it says nothing of the id. Reads one record by
+   * an id the caller checked, on this adapter's own host and headers.
    */
   async fetchText(id: string): Promise<string | null> {
-    const paper = await this.http.json<{ id?: unknown; body_md?: unknown }>(`${BASE}/${encodeURIComponent(id)}/text`);
+    let paper: { id?: unknown; body_md?: unknown };
+    try {
+      paper = await this.http.json<{ id?: unknown; body_md?: unknown }>(`${BASE}/${encodeURIComponent(id)}/text`);
+    } catch (err) {
+      throw isMedResearchError(err) && err.httpStatus === 404 ? errors.notFound(id, "ChinaRxiv") : err;
+    }
     if (paper?.id !== undefined && paper.id !== id) return null;
     const body = typeof paper?.body_md === "string" ? paper.body_md.trim() : "";
     return body || null;

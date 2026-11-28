@@ -53,6 +53,17 @@ export abstract class RestAdapter implements DatabaseAdapter {
     return this.memo.get(id) ?? cache.getSummary(this.cacheKey(id)) ?? undefined;
   }
 
+  /**
+   * The record of one id, from the memo, the cache or a request for that id alone: null when the database answers that
+   * it has none. Unlike {@link fetch}, which counts a failed request as no record, a failure throws, so that a caller can
+   * tell an id the database has no record of from an outage.
+   */
+  async find(id: string, cache: Cache): Promise<Article | null> {
+    const article = this.cached(id, cache) ?? (await this.fetchOne(id));
+    if (article) cache.setSummary(this.cacheKey(id), article);
+    return article ?? null;
+  }
+
   async fetch(ids: string[], cache: Cache): Promise<Article[]> {
     const out: Article[] = [];
     for (const id of ids) {
