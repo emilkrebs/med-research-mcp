@@ -678,7 +678,7 @@ describe("searchLiterature fan-out", () => {
         expect(out.warnings).toEqual([expect.stringContaining("No record matched every term of the query")]);
       });
 
-      it("counts a query too broad for PubMed to serve as a probe that matched, by the count its error gives", async () => {
+      it("counts a query too broad for a PubMed client with a broadThreshold as a probe that matched, by the count its error gives", async () => {
         const pubmed = probing("pubmed", "PubMed / NCBI", (q) => (q === "cancer chemotherapy" ? "too-broad" : 0));
         const out = await run({ query: "cancer chemotherapy quokka" }, pubmed);
         expect(out.warnings).toEqual(['Without "quokka" the query matches 373,618 records in PubMed.']);

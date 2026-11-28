@@ -15,8 +15,8 @@
  * the metadata, which narrow their queries to the publication types it can keep,
  * and skips the others, which it would empty.
  *
- * Input a caller can correct (an unknown database, an empty query, a bad page, a date that
- * doesn't exist) raises INVALID_INPUT rather than returning an empty result.
+ * Input a caller can correct (an unknown database, an empty query or one with no search term, a bad page, a date
+ * that doesn't exist) raises INVALID_INPUT rather than returning an empty result.
  *
  * A page-1 search of 2 to 5 plain words that every database answers with nothing is probed: the query
  * is searched again without each word, for the count only, so that the warning can name the word that
@@ -42,9 +42,31 @@ import type {
   SearchOutput,
 } from "./types.js";
 
-/** Throws INVALID_INPUT for an empty query, an unreachable page, a bad abstract limit, or a date range PubMed would silently ignore. */
+/**
+ * Whether the query holds a term to search for: a letter or digit left once the bracketed field tags (`[tiab]`) and the
+ * operators AND, OR and NOT standing alone (upper case, between spaces or parentheses; `"AND"` in quotes is a word) are
+ * set aside. `tirzepatide NOT mice` and `"sleep apnea"[tiab]` have one, `NOT`, `AND OR` and `[tiab]` have none.
+ */
+function hasSearchTerm(query: string): boolean {
+  const terms = query.replace(/\[[^\]]*\]/g, " ").replace(/(?<![^\s()])(?:AND|OR|NOT)(?![^\s()])/g, " ");
+  return /[\p{L}\p{N}]/u.test(terms);
+}
+
+/**
+ * Throws INVALID_INPUT for an empty query, one with no search term, an unreachable page, a bad abstract limit, or a date
+ * range PubMed would silently ignore.
+ */
 function validateSearch(input: SearchInput): void {
   if (!input.query?.trim()) throw errors.invalidInput("The query is empty.");
+  // esearch fails on `()` and on a lone `"` with "temporarily unavailable", which no retry clears. With a design filter it
+  // matched a query of no term against every record of the filter's publication types: `()` 1,065,791 for Clinical Trial,
+  // `NOT` and `[tiab]` 1,287,132 at minDesignTier 2 (2026-11-27, 2026-11-28). `*`, `-` and `[` found nothing. None is a search.
+  if (!hasSearchTerm(input.query)) {
+    throw errors.invalidInput(
+      `The query has no search term, so there is nothing to search for: punctuation, the operators AND, OR and NOT, and ` +
+        `field tags such as [tiab] are not terms. Send words or a quoted phrase, e.g. sleep apnea or "sleep apnea"[tiab] AND tirzepatide.`,
+    );
+  }
   const { abstractMaxChars } = input;
   if (abstractMaxChars !== undefined && (!Number.isInteger(abstractMaxChars) || abstractMaxChars < 0)) {
     throw errors.invalidInput("abstractMaxChars must be a whole number, 0 or more.");
@@ -211,8 +233,8 @@ interface ProbeOutcome {
  * {@link PROBE_TIME_MS}. One with a request allowance (see {@link requestAllowance}) gets its probes one at a time,
  * and no more when it refuses one with a rate limit; the others all at once, as a broad query can take Europe PMC
  * 7 s (2026-11-16), and probes in turn would not fit the time (PubMed's client queues its requests itself). A probe
- * that fails leaves its count undefined and is never an error (a query too broad to be served is the exception: its
- * count, which the error carries, is the probe's). A database whose allowance can't take {@link PROBE_SHARE}
+ * that fails leaves its count undefined and is never an error (a query too broad for a PubMed client with a `broadThreshold`
+ * is the exception: its count, which the error carries, is the probe's). A database whose allowance can't take {@link PROBE_SHARE}
  * of its minute for all its probes more is left out of the result, so that probes never use more than that share.
  */
 async function probeZeroResult(input: SearchInput, adapters: DatabaseAdapter[], words: string[]): Promise<ProbeOutcome[]> {
@@ -236,7 +258,7 @@ async function probeZeroResult(input: SearchInput, adapters: DatabaseAdapter[], 
       return (await adapter.search(probeInput(words.filter((w) => w !== word).join(" ")))).count;
     } catch (err) {
       if (!isMedResearchError(err)) return undefined;
-      // PubMed refuses to answer over 100,000 hits but says how many there are: the word that was left out blocks the rest.
+      // A PubMed client set to refuse a query over a `broadThreshold` says how many hits there are: the word left out blocks the rest.
       if (err.code === "QUERY_TOO_BROAD") return Number(/\d+/.exec(err.message)?.[0]) || undefined;
       return err.code === "RATE_LIMIT" || err.code === "TIMEOUT" ? "refused" : undefined;
     }
@@ -307,7 +329,7 @@ function describeProbes(words: string[], outcomes: ProbeOutcome[], input: Search
 /**
  * Search one or more databases and return classified, merged, de-duplicated results,
  * sorted by design tier, or with `sort: "date"` by first publication date, newest first.
- * Throws INVALID_INPUT for an unknown database, an empty query, a bad page or an invalid date,
+ * Throws INVALID_INPUT for an unknown database, an empty query (or one with no search term), a bad page or an invalid date,
  * and the first database's error when every database searched failed.
  *
  * @param cache reused across calls; scoped per-database inside each adapter.
@@ -373,7 +395,8 @@ export async function searchLiterature(
     }),
   );
   // When nothing was searched successfully, an empty result would read as "no studies exist".
-  // Raise the error instead, with its code (RATE_LIMIT, QUERY_TOO_BROAD, …) and retry hint.
+  // Raise the error instead, with its code (RATE_LIMIT, NETWORK_ERROR, … and QUERY_TOO_BROAD, from a PubMed client with a
+  // `broadThreshold`) and retry hint.
   if (failures.length === searched.length) throw failures[0];
 
   const total = perAdapter.reduce((sum, { count }) => sum + count, 0);

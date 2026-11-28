@@ -166,6 +166,14 @@ const CONTROLLED_TRIAL = tag("Controlled Clinical Trial");
  * under RCT in MeSH 2024–2025 but under Clinical Trial in 2026, defined as a study
  * "in real-world health system practice". 4,184 of its 5,133 records also carry
  * the RCT tag and classify as RCTs; the other 910 get the conservative tier.
+ *
+ * Human Challenge Trials (MeSH 2025, a child of Clinical Trial; no entry term but its name) is carried by no record yet:
+ * `"Human Challenge Trials"[pt]` found 0 in PubMed, as did the singular, [Publication Type] and [mh], and
+ * PUB_TYPE:"Human Challenge Trials" found 0 in Europe PMC (2026-11-27), while 113 PubMed records hold the phrase in some
+ * field. It stays in the list a design filter sends as a clause, since a record that carries it classifies as a clinical
+ * trial and the filter must keep it. The clause costs nothing: PubMed drops a phrase it has no record for from an OR (11
+ * records for `tirzepatide apnea` with the filter, with and without it), and pubmed.ts leaves its phrase-not-found
+ * warning out, as the caller never typed the phrase.
  */
 const OTHER_TRIAL = tag(
   "Clinical Trial",

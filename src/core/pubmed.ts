@@ -31,10 +31,13 @@ const OPEN_DATE_FROM = "1000";
 const OPEN_DATE_TO = "3000";
 /** PMIDs a relevance search takes per esearch request, so that its pages are cut from one list (see DEFAULT_SEARCH_TTL_MS). */
 const RELEVANCE_BLOCK = 500;
-/** Above this esearch count, refuse and ask the caller to narrow. */
-const DEFAULT_BROAD_THRESHOLD = 100_000;
-/** Above this, still run but attach a warning. */
-const SOFT_BROAD_THRESHOLD = 10_000;
+/**
+ * Above this esearch count, a search is served with a warning that names the count and how to narrow it (see
+ * {@link broadWarning}). It never refuses: a one-word query such as `diabetes` (1,156,395 records, 2026-11-27) is
+ * what a caller tries first, and esearch serves its first page like any other. Refusing is the caller's choice, with
+ * {@link NcbiConfig.broadThreshold}.
+ */
+const BROAD_WARNING_THRESHOLD = 10_000;
 /**
  * Spacing between requests, as a multiple of 1/limit. NCBI counts requests as they
  * arrive, and arrival times jitter: spaced exactly 1/3 s apart, 2 of 15 serialized
@@ -88,7 +91,10 @@ export interface NcbiConfig {
    * should send its own, with its own `email`.
    */
   tool?: string;
-  /** esearch count above which QUERY_TOO_BROAD is thrown. */
+  /**
+   * esearch count above which QUERY_TOO_BROAD is thrown. Unset by default: a broad query is served, with a
+   * warning, so this only refuses for a caller that sets it (a service that wants no search over its own limit).
+   */
   broadThreshold?: number;
   /** Per-request timeout in ms. Default 15000. */
   timeoutMs?: number;
@@ -307,12 +313,46 @@ function unknownWarning(unknown: UnknownTerms | undefined, count: number): strin
   return sentences.length > 0 ? sentences.join(" ") : undefined;
 }
 
+/**
+ * `unknown` without the phrases the server added to the query itself (the publication types of a design filter,
+ * `"Human Challenge Trials"[pt]` among them), which the caller never typed and can't act on. A search sends
+ * them in an OR, where esearch drops one it has no phrase for and says so in `quotedphrasesnotfound`: the
+ * count was the same with and without `"Human Challenge Trials"[pt]` in the clause (11 for `tirzepatide apnea`
+ * with minDesignTier 2, 2026-11-27). Undefined when nothing else is left.
+ */
+function withoutPhrases(unknown: UnknownTerms | undefined, phrases: readonly string[]): UnknownTerms | undefined {
+  if (!unknown || phrases.length === 0) return unknown;
+  const own = new Set(phrases.map((p) => p.toLowerCase()));
+  const callers = (terms: string[]): string[] => terms.filter((t) => !own.has(t.toLowerCase()));
+  const rest: UnknownTerms = { ignored: callers(unknown.ignored), blocking: callers(unknown.blocking), asWords: callers(unknown.asWords) };
+  return rest.ignored.length + rest.blocking.length + rest.asWords.length > 0 ? rest : undefined;
+}
+
+/** What a search matching `count` records says about it: the count, what PubMed serves of it, and how to narrow. */
+function broadWarning(count: number): string {
+  return (
+    `PubMed matched ${count.toLocaleString("en-US")} records, so the query is broad: it serves only the first ` +
+    `${ESEARCH_LIMIT.toLocaleString("en-US")} of them, and the rest can't be reached. Narrow it with [tiab] or [mesh] field tags, ` +
+    `more specific terms or AND clauses, a dateRange or a studyTypes filter.`
+  );
+}
+
+/**
+ * esearch's errors about the term it was sent, not about NCBI (checked live 2026-11-27): "Empty Term in the request" for a
+ * term with nothing to search (`()`, `((`, `)(`), and "begin 1, end 0, length 1", which reads as a string-index error, for a
+ * lone `"`. Both arrive wrapped in "Search Backend failed: … Status: 500 … Search is temporarily unavailable. Please try
+ * again later. Details: …", which says nothing of the cause: an outage can read the same. So only the cause that follows is
+ * told apart, and any other error stays the outage it reads as. The second is matched by its wording alone: no other term
+ * gave it.
+ */
+const TERM_ERROR = /\bempty term\b|\bbegin \d+, end \d+, length \d+\b/i;
+
 export class NcbiClient {
   private readonly email: string | undefined;
   private readonly apiKey: string | undefined;
   /** The `tool` name sent to NCBI; fetchFulltext gives it to its default UnpaywallClient. */
   readonly tool: string;
-  private readonly broadThreshold: number;
+  private readonly broadThreshold: number | undefined;
   private readonly timeoutMs: number;
   private readonly limiter: RateLimiter;
   private readonly parser: XMLParser;
@@ -332,7 +372,7 @@ export class NcbiClient {
     // Only the default tool falls back to the developer contact: NCBI registers tool and email as a pair.
     this.email = contactEmail(config.email, ["NCBI_EMAIL"], this.tool);
     this.apiKey = config.apiKey ?? envSetting("NCBI_API_KEY");
-    this.broadThreshold = config.broadThreshold ?? DEFAULT_BROAD_THRESHOLD;
+    this.broadThreshold = config.broadThreshold;
     this.timeoutMs = config.timeoutMs ?? 15_000;
     this.limiter = new RateLimiter(this.apiKey ? 10 : 3);
     this.parser = new XMLParser({
@@ -373,9 +413,12 @@ export class NcbiClient {
    * With `sort: "date"`, the PMIDs are those first published last, newest first (see
    * {@link newest}). An identical search within `searchTtlMs` returns the same PMIDs, and
    * its later pages are cut from the same list. A search matching more than PubMed's first 9,999
-   * records gets a warning from the page that reaches the 9,999th on, and no PMIDs past it. A word
+   * records gets a warning from the page that reaches the 9,999th on, and no PMIDs past it. One matching
+   * more than {@link BROAD_WARNING_THRESHOLD} gets, on the pages before that, a warning that names its
+   * count (see {@link broadWarning}); it is never refused, unless the client has a `broadThreshold`. A word
    * that no record contains gets one on every page (see {@link UnknownTerms}), as esearch leaves such a
-   * word out of a plain query without saying so in the records it returns.
+   * word out of a plain query without saying so in the records it returns; a phrase of the design filter that
+   * esearch has no phrase for is not reported, as the caller didn't type it (see {@link withoutPhrases}).
    */
   async esearch(input: SearchInput): Promise<{ count: number; pmids: string[]; more: boolean; warning?: string }> {
     const { offset, size } = pageWindow(input);
@@ -400,9 +443,13 @@ export class NcbiClient {
     }
     const end = Math.min(offset + size, ESEARCH_LIMIT);
     const list = await this.searchList(key, end, (known) => (byDate ? this.newest(params, end, offset, known) : this.relevant(params, end, known)));
+    // The page that reaches the 9,999th says the same, and how to narrow, in its own warning.
+    const capped = offset + size >= ESEARCH_LIMIT && list.count > ESEARCH_LIMIT;
+    // A phrase of the filter's clause counts as the caller's when the query holds it too.
+    const own = (types ?? []).filter((t) => !input.query.toLowerCase().includes(t.toLowerCase()));
     const warnings = [
-      ...(offset + size >= ESEARCH_LIMIT && list.count > ESEARCH_LIMIT ? [CAP_WARNING] : []),
-      ...[unknownWarning(list.unknown, list.count)].filter((w) => w !== undefined),
+      ...(capped ? [CAP_WARNING] : list.count > BROAD_WARNING_THRESHOLD ? [broadWarning(list.count)] : []),
+      ...[unknownWarning(withoutPhrases(list.unknown, own), list.count)].filter((w) => w !== undefined),
     ];
     return {
       count: list.count,
@@ -542,11 +589,19 @@ export class NcbiClient {
     }
     const errorMessage = data.esearchresult?.ERROR ?? data.ERROR;
     if (errorMessage) {
+      if (TERM_ERROR.test(errorMessage)) {
+        // The same query fails every time, and PubMed's "temporarily unavailable" is not the cause: say what to change.
+        throw errors.invalidInput(
+          `PubMed couldn't read the query (it said "${errorMessage.split("Details:").at(-1)?.trim() || errorMessage}"). This is not an outage, ` +
+            `and retrying won't help. Send words or a quoted phrase, e.g. "sleep apnea" AND tirzepatide, and check that every ` +
+            `quote and parenthesis encloses one.`,
+        );
+      }
       throw errors.parseFailure(`esearch error: ${errorMessage}`);
     }
 
     const count = Number(data.esearchresult?.count ?? 0);
-    if (count > this.broadThreshold) {
+    if (this.broadThreshold !== undefined && count > this.broadThreshold) {
       throw errors.queryTooBroad(count);
     }
     const { errorlist, warninglist, querytranslation } = data.esearchresult ?? {};
@@ -772,11 +827,6 @@ export async function searchPubMed(
     if (count === 0) warnings.push("No articles matched this query. Try broader terms or fewer field tags.");
     else if (!warning) warnings.push("No results returned.");
     return { articles: [], total: count, query: input.query, page, maxResults, ...nextPage, warnings };
-  }
-  if (count > SOFT_BROAD_THRESHOLD) {
-    warnings.push(
-      `Query matched ${count.toLocaleString()} articles; showing ${pmids.length} of them. Add field tags like [tiab] or [mesh] for more precise results.`,
-    );
   }
 
   // Summaries (metadata) — cache-first; expired entries come back as misses.

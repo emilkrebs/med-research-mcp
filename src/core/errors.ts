@@ -68,6 +68,7 @@ export const errors = {
     });
   },
 
+  /** A PubMed client that was given a `broadThreshold` refused a search over it; the default client serves broad queries, with a warning. */
   queryTooBroad(count: number): ResearchApiException {
     return new ResearchApiException({
       code: "QUERY_TOO_BROAD",
@@ -161,7 +162,7 @@ export const errors = {
     });
   },
 
-  /** A parameter the caller can correct: an unknown database, an empty query, a date that doesn't exist. */
+  /** A parameter the caller can correct: an unknown database, an empty or unsearchable query, a date that doesn't exist. */
   invalidInput(detail: string): ResearchApiException {
     return new ResearchApiException({
       code: "INVALID_INPUT",
