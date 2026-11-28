@@ -185,6 +185,45 @@ describe("the PubMed query of a design filter", () => {
   });
 });
 
+describe("phrases of the NOT list on a PubMed query", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  // "Human Challenge Trials" is a design tag PubMed has no phrase for (0 records, 2026-11-27): a search for unknown names it in its NOT list.
+  const HCT = '"Human Challenge Trials"[pt:noexp]';
+  const warningOf = async (input: Parameters<NcbiClient["esearch"]>[0], quoted: string[]): Promise<string | undefined> => {
+    const answer = {
+      count: "11",
+      idlist: ["1", "2", "3"],
+      querytranslation: '("creatine"[All Fields]) NOT ("Case Reports"[Publication Type:noexp])',
+      warninglist: { phrasesignored: [], quotedphrasesnotfound: quoted, outputmessages: [] },
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ esearchresult: answer }), { status: 200 })));
+    return (await new NcbiClient({ email: "test@example.com", apiKey: "test-key" }).esearch(input)).warning;
+  };
+
+  it("says nothing of an excluded type PubMed has no phrase for, for unknown and for the trial filters", async () => {
+    expect(excludedPublicationTypes(["unknown"])).toContain("Human Challenge Trials");
+    expect(await warningOf({ query: "creatine", studyTypes: ["unknown"] }, [HCT])).toBeUndefined();
+    // Whichever way esearch writes the phrase, and beside the inclusion clause of a trial filter.
+    expect(await warningOf({ query: "creatine", studyTypes: ["unknown"] }, ['"human challenge trials"[pt:noexp]'])).toBeUndefined();
+    expect(await warningOf({ query: "creatine", studyTypes: ["clinical-trial"] }, ['"Human Challenge Trials"[pt]', '"Observational Study, Veterinary"[pt:noexp]'])).toBeUndefined();
+    expect(await warningOf({ query: "creatine", studyTypes: ["non-randomized-trial"] }, ['"Observational Study, Veterinary"[pt:noexp]'])).toBeUndefined();
+    expect(await warningOf({ query: "creatine", studyTypes: ["unknown", "review"] }, [HCT])).toBeUndefined();
+  });
+
+  it("still names a phrase the caller typed, beside the filter's", async () => {
+    expect(await warningOf({ query: 'creatine "qzx wrt"', studyTypes: ["unknown"] }, ['"qzx wrt"', HCT])).toBe(
+      'PubMed has no phrase "qzx wrt", so it searched the words separately: a record need not hold them together.',
+    );
+    // The caller typed a design type's phrase themselves: it counts as theirs, in the NOT list or not.
+    expect(await warningOf({ query: '"Human Challenge Trials"', studyTypes: ["unknown"] }, ['"Human Challenge Trials"', HCT])).toBe(
+      'PubMed has no phrase "Human Challenge Trials", so it searched the words separately: a record need not hold them together.',
+    );
+    // No design filter, so no phrase of the server's: the same answer is the caller's.
+    expect(await warningOf({ query: "creatine" }, [HCT])).toMatch(/^PubMed has no phrase "Human Challenge Trials"/);
+  });
+});
+
 describe("the Europe PMC query of a design filter", () => {
   async function query(input: Parameters<EuropePmcAdapter["search"]>[0]): Promise<string | null> {
     const urls: string[] = [];

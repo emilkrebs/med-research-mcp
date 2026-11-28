@@ -314,11 +314,12 @@ function unknownWarning(unknown: UnknownTerms | undefined, count: number): strin
 }
 
 /**
- * `unknown` without the phrases the server added to the query itself (the publication types of a design filter,
- * `"Human Challenge Trials"[pt]` among them), which the caller never typed and can't act on. A search sends
- * them in an OR, where esearch drops one it has no phrase for and says so in `quotedphrasesnotfound`: the
- * count was the same with and without `"Human Challenge Trials"[pt]` in the clause (11 for `tirzepatide apnea`
- * with minDesignTier 2, 2026-11-27). Undefined when nothing else is left.
+ * `unknown` without the phrases the server added to the query itself (the publication types of a design filter, those it
+ * asks for and those it leaves out, `"Human Challenge Trials"[pt]` among them), which the caller never typed and can't
+ * act on. A search sends them in an OR, where esearch drops one it has no phrase for and says so in `quotedphrasesnotfound`:
+ * the count was the same with and without `"Human Challenge Trials"[pt]` in the clause (11 for `tirzepatide apnea`
+ * with minDesignTier 2, 2026-11-27), and `(creatine cognition) NOT ("Human Challenge Trials"[pt:noexp] OR "Case Reports"[pt:noexp])`
+ * found the 1,420 records that `NOT "Case Reports"[pt:noexp]` alone does (2026-11-27). Undefined when nothing else is left.
  */
 function withoutPhrases(unknown: UnknownTerms | undefined, phrases: readonly string[]): UnknownTerms | undefined {
   if (!unknown || phrases.length === 0) return unknown;
@@ -419,7 +420,8 @@ export class NcbiClient {
    * count (see {@link broadWarning}); it is never refused, unless the client has a `broadThreshold`. A word
    * that no record contains gets one on every page (see {@link UnknownTerms}), as esearch leaves such a
    * word out of a plain query without saying so in the records it returns; a phrase of the design filter that
-   * esearch has no phrase for is not reported, as the caller didn't type it (see {@link withoutPhrases}).
+   * esearch has no phrase for, one it asks for or one it leaves out, is not reported, as the caller didn't type it (see
+   * {@link withoutPhrases}).
    */
   async esearch(input: SearchInput): Promise<{ count: number; pmids: string[]; more: boolean; warning?: string }> {
     const { offset, size } = pageWindow(input);
@@ -454,8 +456,8 @@ export class NcbiClient {
     const list = await this.searchList(key, end, (known) => (byDate ? this.newest(params, end, offset, known) : this.relevant(params, end, known)));
     // The page that reaches the 9,999th says the same, and how to narrow, in its own warning.
     const capped = offset + size >= ESEARCH_LIMIT && list.count > ESEARCH_LIMIT;
-    // A phrase of the filter's clause counts as the caller's when the query holds it too.
-    const own = (types ?? []).filter((t) => !input.query.toLowerCase().includes(t.toLowerCase()));
+    // A phrase of the filter's clauses, the types it asks for and the ones it leaves out, counts as the caller's when the query holds it too.
+    const own = [...(types ?? []), ...excluded].filter((t) => !input.query.toLowerCase().includes(t.toLowerCase()));
     const warnings = [
       ...(capped ? [CAP_WARNING] : list.count > BROAD_WARNING_THRESHOLD ? [broadWarning(list.count)] : []),
       ...[unknownWarning(withoutPhrases(list.unknown, own), list.count)].filter((w) => w !== undefined),
