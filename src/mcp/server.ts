@@ -390,8 +390,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         "preprint), Unpaywall (open access), institutional proxy (if configured) and direct DOI access; chinaxiv and " +
         "russiarxiv records come from ChinaRxiv as a machine translation (check originalUrl before relying on a number). " +
         "The warning opens with RETRACTED, NOTICE or EXPRESSION OF CONCERN when the record has that flag (see " +
-        "literature_search); a retracted paper is no evidence. Without the text it says what each location answered, " +
-        "and the abstract is returned, cut to maxChars if longer (then truncated is true, with no nextOffset; " +
+        "literature_search); a retracted paper is no evidence. Without the text it says what each location answered " +
+        "or skipped, and the abstract is returned, cut to maxChars (then truncated is true, no nextOffset; " +
         "literature_fetch has it whole). A long text comes in parts: see truncated, totalChars, offset. Use when the " +
         "abstract isn't enough (dosage, sample sizes, methods).",
       // Strict, like literature_search: a misnamed key errors instead of being stripped.
