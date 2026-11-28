@@ -3,7 +3,7 @@
  *
  * `searchLiterature` fans a query out to one or more {@link DatabaseAdapter}s,
  * classifies every result's design from its metadata, merges the lists,
- * de-duplicates by DOI (keeping the better-classified copy, with any retraction
+ * de-duplicates by DOI or PMID (keeping the better-classified copy, with any retraction
  * or link to a newer version found on another copy), filters, and sorts by design tier, or with `sort: "date"`
  * newest first. `fetchLiterature` fetches specific ids from one database and classifies them the same way.
  *
@@ -12,8 +12,10 @@
  * Databases without NLM publication types (ChinaXiv, RussiaRxiv) always come
  * back `unknown`: the calling model reads the design from the abstract. A design
  * filter (studyTypes, minDesignTier) is passed down to the databases that have
- * the metadata, which narrow their queries to the publication types it can keep,
- * and skips the others, which it would empty.
+ * the metadata, which narrow their queries to the publication types it can keep (for `unknown`
+ * and the trial designs below the RCT, also away from the types that give another design),
+ * and skips the others, which it would empty. What the classifier still drops from a page is
+ * counted by `total` and `nextPage`, and a warning says how many it kept.
  *
  * Input a caller can correct (an unknown database, an empty query or one with no search term, a bad page, a date
  * that doesn't exist) raises INVALID_INPUT rather than returning an empty result.
@@ -26,11 +28,11 @@
 import { adaptersFor, getAdapter, unknownDatabase, type DatabaseAdapter } from "./adapters/registry.js";
 import { chinaxivHeaders } from "./adapters/chinarxiv.js";
 import type { EmptyReason } from "./adapters/types.js";
-import { doiKey, firstPublished, isoDateBound, MAX_PAGED_RECORDS, pageWindow } from "./adapters/util.js";
+import { doiKey, firstPublished, isoDateBound, isPmidRecord, MAX_PAGED_RECORDS, pageWindow } from "./adapters/util.js";
 import { LRUBackend, type Cache } from "./cache.js";
 import { errors, isMedResearchError } from "./errors.js";
 import { withDeadline } from "./request.js";
-import { classifyArticle, designPublicationTypes, filterWarnings, mergeDuplicate, noAnimalStudiesWarning, rankKey } from "./grader.js";
+import { classifyArticle, designPublicationTypes, filteredPageWarning, filterWarnings, mergeDuplicate, noAnimalStudiesWarning, rankKey } from "./grader.js";
 import type {
   Article,
   DateRange,
@@ -95,21 +97,47 @@ function validateSearch(input: SearchInput): void {
 }
 
 /**
- * Keep one article per DOI (see {@link mergeDuplicate}: the flags and links of the other copies are kept
- * with it). A preprint and its journal article have different DOIs and stay two records, linked by their
- * `corrections`. DOI-less articles are merged only
- * when the same database returned the same id twice (the chinaxiv adapter with language
- * "ru" and the russiarxiv adapter search the same corpus).
+ * The keys under which a record is merged with its other copies: its DOI and, when its id is a PMID, that PMID
+ * (PubMed and Europe PMC's MEDLINE records of one paper share it, DOI or not, and one copy may lack the DOI the other
+ * has). Any other id counts only for the same database, and only without a DOI, so a DOI-less record that a database
+ * returned twice (the chinaxiv adapter with language "ru" and the russiarxiv adapter search the same corpus) is one.
  */
-function dedupeByDoi(articles: GradedArticle[]): GradedArticle[] {
-  // Map iteration keeps first-seen order: a merged copy takes the place of the first one.
-  const byKey = new Map<string, GradedArticle>();
-  for (const article of articles) {
-    const key = doiKey(article.doi) ?? `id:${article.database ?? "pubmed"}:${article.id}`;
-    const existing = byKey.get(key);
-    byKey.set(key, existing ? mergeDuplicate(existing, article) : article);
-  }
-  return [...byKey.values()];
+function mergeKeys(article: GradedArticle): string[] {
+  const doi = doiKey(article.doi);
+  const pmid = isPmidRecord(article);
+  const keys: string[] = [];
+  if (doi) keys.push(`doi:${doi}`);
+  if (pmid) keys.push(`pmid:${article.id}`);
+  if (!doi && !pmid) keys.push(`id:${article.database ?? "pubmed"}:${article.id}`);
+  return keys;
+}
+
+/**
+ * Keep one article per paper: copies that share a DOI or a PMID are one, also through a third copy that has both (see
+ * {@link mergeKeys}, and {@link mergeDuplicate}: the flags and links of the other copies are kept with the one that
+ * is). The merged copy takes the place of the first. A preprint and its journal article have different DOIs and PMIDs
+ * and stay two records, linked by their `corrections`. Records of different databases whose ids are not PMIDs are
+ * never merged without a DOI.
+ */
+function dedupeRecords(articles: GradedArticle[]): GradedArticle[] {
+  // Union-find over positions, the lower one the root, so that a group sits where its first copy was.
+  const root = articles.map((_, i) => i);
+  const find = (i: number): number => (root[i] === i ? i : (root[i] = find(root[i]!)));
+  const owner = new Map<string, number>();
+  articles.forEach((article, i) => {
+    for (const key of mergeKeys(article)) {
+      const seen = owner.get(key);
+      if (seen === undefined) owner.set(key, i);
+      else root[Math.max(find(seen), find(i))] = Math.min(find(seen), find(i));
+    }
+  });
+  // Map iteration keeps first-seen order: a group's first copy is its root, so the group takes its place.
+  const byRoot = new Map<number, GradedArticle>();
+  articles.forEach((article, i) => {
+    const existing = byRoot.get(find(i));
+    byRoot.set(find(i), existing ? mergeDuplicate(existing, article) : article);
+  });
+  return [...byRoot.values()];
 }
 
 /** The filters a caller gave, for the result to echo; undefined when there are none (an empty dateRange or studyTypes is none). */
@@ -429,9 +457,11 @@ export async function searchLiterature(
   // drop must first pass its flag on to the copy that is kept.
   const minTier = input.minDesignTier ?? 0;
   const typeFilter = input.studyTypes?.length ? new Set(input.studyTypes) : null;
-  const merged = dedupeByDoi(graded).filter(
-    (a) => (a.designTier ?? 0) >= minTier && (!typeFilter || typeFilter.has(a.studyType)),
-  );
+  const deduped = dedupeRecords(graded);
+  const merged = deduped.filter((a) => (a.designTier ?? 0) >= minTier && (!typeFilter || typeFilter.has(a.studyType)));
+  // The databases count what this filter drops (total, nextPage): say so, as the page can come back short.
+  const cut = filteredPageWarning(merged.length, deduped.length, more && hasNextPage);
+  if (cut) warnings.push(cut);
   const noAnimals = noAnimalStudiesWarning(input.studyTypes, input.minDesignTier, merged);
   if (noAnimals) warnings.push(noAnimals);
   // A bare 0 reads as "no evidence exists". A failure explains a zero itself, and so does a design filter

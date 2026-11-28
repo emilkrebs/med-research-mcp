@@ -15,7 +15,7 @@ import { firstPublished, pageWindow } from "./adapters/util.js";
 import { requestWithRetries } from "./request.js";
 import { xmlToText } from "./text.js";
 import { contactEmail, envSetting, PROJECT_TOOL, USER_AGENT } from "./version.js";
-import { classifyArticle, designPublicationTypes, filterWarnings, noAnimalStudiesWarning } from "./grader.js";
+import { classifyArticle, designPublicationTypes, excludedPublicationTypes, filteredPageWarning, filterWarnings, noAnimalStudiesWarning } from "./grader.js";
 import { CORRECTION_TYPES } from "./types.js";
 import type { Correction, CorrectionType, FetchInput, FetchOutput, GradedArticle, Article, SearchInput, SearchOutput, StudyType } from "./types.js";
 
@@ -314,11 +314,12 @@ function unknownWarning(unknown: UnknownTerms | undefined, count: number): strin
 }
 
 /**
- * `unknown` without the phrases the server added to the query itself (the publication types of a design filter,
- * `"Human Challenge Trials"[pt]` among them), which the caller never typed and can't act on. A search sends
- * them in an OR, where esearch drops one it has no phrase for and says so in `quotedphrasesnotfound`: the
- * count was the same with and without `"Human Challenge Trials"[pt]` in the clause (11 for `tirzepatide apnea`
- * with minDesignTier 2, 2026-11-27). Undefined when nothing else is left.
+ * `unknown` without the phrases the server added to the query itself (the publication types of a design filter, those it
+ * asks for and those it leaves out, `"Human Challenge Trials"[pt]` among them), which the caller never typed and can't
+ * act on. A search sends them in an OR, where esearch drops one it has no phrase for and says so in `quotedphrasesnotfound`:
+ * the count was the same with and without `"Human Challenge Trials"[pt]` in the clause (11 for `tirzepatide apnea`
+ * with minDesignTier 2, 2026-11-27), and `(creatine cognition) NOT ("Human Challenge Trials"[pt:noexp] OR "Case Reports"[pt:noexp])`
+ * found the 1,420 records that `NOT "Case Reports"[pt:noexp]` alone does (2026-11-27). Undefined when nothing else is left.
  */
 function withoutPhrases(unknown: UnknownTerms | undefined, phrases: readonly string[]): UnknownTerms | undefined {
   if (!unknown || phrases.length === 0) return unknown;
@@ -409,7 +410,8 @@ export class NcbiClient {
   /**
    * Returns the PMIDs of the page asked for (`page`, `maxResults`), the total count, and whether
    * a later page can hold records. A studyTypes or minDesignTier filter narrows the query to the
-   * publication types it can keep (see designPublicationTypes), so the count is of candidates for it.
+   * publication types it can keep and away from those that give another design (see designPublicationTypes and
+   * excludedPublicationTypes), so the count is of candidates for it.
    * With `sort: "date"`, the PMIDs are those first published last, newest first (see
    * {@link newest}). An identical search within `searchTtlMs` returns the same PMIDs, and
    * its later pages are cut from the same list. A search matching more than PubMed's first 9,999
@@ -418,13 +420,22 @@ export class NcbiClient {
    * count (see {@link broadWarning}); it is never refused, unless the client has a `broadThreshold`. A word
    * that no record contains gets one on every page (see {@link UnknownTerms}), as esearch leaves such a
    * word out of a plain query without saying so in the records it returns; a phrase of the design filter that
-   * esearch has no phrase for is not reported, as the caller didn't type it (see {@link withoutPhrases}).
+   * esearch has no phrase for, one it asks for or one it leaves out, is not reported, as the caller didn't type it (see
+   * {@link withoutPhrases}).
    */
   async esearch(input: SearchInput): Promise<{ count: number; pmids: string[]; more: boolean; warning?: string }> {
     const { offset, size } = pageWindow(input);
     const types = designPublicationTypes(input.studyTypes, input.minDesignTier);
     if (types?.length === 0) return { count: 0, pmids: [], more: false };
-    const term = types ? `(${input.query}) AND (${types.map((t) => `"${t}"[pt]`).join(" OR ")})` : input.query;
+    // [pt] includes the narrower types ("Clinical Trial"[pt] finds every RCT), so a type is excluded as a [pt:noexp] tag, which finds
+    // just the records that carry it, as the classifier reads them. A tag that no record has is dropped from the NOT without harm.
+    const excluded = excludedPublicationTypes(input.studyTypes, input.minDesignTier);
+    const term =
+      types || excluded.length > 0
+        ? `(${input.query})` +
+          (types ? ` AND (${types.map((t) => `"${t}"[pt]`).join(" OR ")})` : "") +
+          (excluded.length > 0 ? ` NOT (${excluded.map((t) => `"${t}"[pt:noexp]`).join(" OR ")})` : "")
+        : input.query;
     const params = new URLSearchParams({ db: "pubmed", term, retmode: "json" });
     if (input.dateRange?.from || input.dateRange?.to) {
       params.set("datetype", "pdat");
@@ -445,8 +456,8 @@ export class NcbiClient {
     const list = await this.searchList(key, end, (known) => (byDate ? this.newest(params, end, offset, known) : this.relevant(params, end, known)));
     // The page that reaches the 9,999th says the same, and how to narrow, in its own warning.
     const capped = offset + size >= ESEARCH_LIMIT && list.count > ESEARCH_LIMIT;
-    // A phrase of the filter's clause counts as the caller's when the query holds it too.
-    const own = (types ?? []).filter((t) => !input.query.toLowerCase().includes(t.toLowerCase()));
+    // A phrase of the filter's clauses, the types it asks for and the ones it leaves out, counts as the caller's when the query holds it too.
+    const own = [...(types ?? []), ...excluded].filter((t) => !input.query.toLowerCase().includes(t.toLowerCase()));
     const warnings = [
       ...(capped ? [CAP_WARNING] : list.count > BROAD_WARNING_THRESHOLD ? [broadWarning(list.count)] : []),
       ...[unknownWarning(withoutPhrases(list.unknown, own), list.count)].filter((w) => w !== undefined),
@@ -878,16 +889,20 @@ export async function searchPubMed(
   const typeFilter = input.studyTypes?.length ? new Set<StudyType>(input.studyTypes) : null;
 
   const articles: GradedArticle[] = [];
+  let fetched = 0;
   for (const pmid of pmids) {
     const summary = summaries.get(pmid);
     if (!summary) continue;
     const abstract = abstracts.get(pmid);
     const article: Article = abstract ? { ...summary, abstract } : summary;
     const graded = classifyArticle(article);
+    fetched++;
     if ((graded.designTier ?? 0) < minTier) continue;
     if (typeFilter && !typeFilter.has(graded.studyType)) continue;
     articles.push(graded);
   }
+  const cut = filteredPageWarning(articles.length, fetched, more);
+  if (cut) warnings.push(cut);
   const noAnimals = noAnimalStudiesWarning(input.studyTypes, input.minDesignTier, articles);
   if (noAnimals) warnings.push(noAnimals);
 

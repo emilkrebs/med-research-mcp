@@ -11,7 +11,8 @@
  * MEDLINE records carry the same NLM PublicationType tags, MeSH headings and
  * retraction/correction links as PubMed, so they classify the same way;
  * preprints are tagged "Preprint". A studyTypes or minDesignTier filter narrows
- * the query with PUB_TYPE, as the PubMed client does with [pt].
+ * the query with PUB_TYPE, as the PubMed client does with [pt], and for `unknown` and the
+ * trial designs below the RCT also with NOT PUB_TYPE (see excludedPublicationTypes).
  *
  * Links (`commentCorrectionList` of `core` results; the types we map are in CORRECTION_TYPES below):
  * a preprint with a published version has "Preprint of" with the article's id (source MED), and the
@@ -74,15 +75,77 @@ import { LRUCache } from "lru-cache";
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
 import { canonicalPmid, cleanDoi, first, isoDateBound, pageWindow, publicationDateClause, splitAuthors, strArray, toEuropePmcQuery, toIso1 } from "./util.js";
-import { designPublicationTypes } from "../grader.js";
+import { designPublicationTypes, excludedPublicationTypes } from "../grader.js";
+import { STUDY_TYPES } from "../types.js";
 import { htmlToText } from "../text.js";
-import type { Article, Correction, CorrectionType, SearchInput } from "../types.js";
+import type { Article, Correction, CorrectionType, SearchInput, StudyType } from "../types.js";
 
 const BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest/search";
 const CURSOR_MEMO_MAX = 500;
 const CURSOR_MEMO_TTL_MS = 60 * 60 * 1000;
 /** The most ids an `idlist` request returns. */
 const WALK_PAGE_SIZE = 1000;
+
+/**
+ * Europe PMC matches `PUB_TYPE:"x"` as a run of words (any case, punctuation splitting words) in any type string of a
+ * record. A record carries more than NLM's types: PMC records and MEDLINE records not yet indexed have the publisher's
+ * JATS article type too ("systematic-review", "review-article", "product-review", ...), which the classifier, comparing
+ * whole NLM strings, gives no design. An exclusion of a design tag whose words one of them holds would drop such records
+ * although the filter keeps them: `unknown` loses a Cochrane review typed only `["systematic-review", "Journal Article"]`
+ * (PMID 42803656), and `clinical-trial` a record typed `["Clinical Trial", "systematic-review", "Journal Article"]`
+ * (PMID 32895128), which classifies as a clinical trial (2026-11-28: `PUB_TYPE:"systematic-review" AND NOT
+ * PUB_TYPE:"Systematic Review"` and `PUB_TYPE:"review-article" AND NOT PUB_TYPE:"Review"` find none). These are the
+ * strings of that kind: the JATS article types (https://jats.nlm.nih.gov/publishing/tag-library/1.3/attribute/article-type.html,
+ * checked 2026-11-28) and the other type strings sampled from Europe PMC that hold the words of a design tag but are none,
+ * among them NLM's Clinical Trial Protocol, Book Review and Scientific Integrity Review. The sample is not the whole index,
+ * so a string of this kind that no record of it showed could still match: the post-filter drops the records such an
+ * exclusion lets through, and says so, while one it wrongly drops is lost.
+ */
+const OTHER_TYPES: readonly string[] = [
+  // NLM publication types that are no design (not in the classifier's design tags)
+  "Clinical Trial Protocol",
+  "Book Review",
+  "Scientific Integrity Review",
+  // JATS article types and other publisher strings
+  "book-review",
+  "product-review",
+  "review-article",
+  "systematic-review",
+];
+
+/** The words of a type string or tag name: lower case, split at anything that is not a letter or a digit. */
+const typeWords = (type: string): string[] => type.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+
+/** Whether Europe PMC's phrase search for the name `name` finds the type string `type`: its words are a run of the string's. */
+function phraseFinds(name: string, type: string): boolean {
+  const hay = typeWords(type);
+  const needle = typeWords(name);
+  return hay.some((_, i) => needle.every((word, j) => hay[i + j] === word));
+}
+
+/** The publication types Europe PMC is asked to leave out for a filter: {@link excludedPublicationTypes}, less those it can't phrase. */
+export function excludedOnEuropePmc(studyTypes?: readonly StudyType[], minDesignTier?: number): string[] {
+  const everyDesign = designPublicationTypes(STUDY_TYPES.filter((t) => t !== "unknown")) ?? [];
+  let names = excludedPublicationTypes(studyTypes, minDesignTier).filter((name) => !OTHER_TYPES.some((type) => phraseFinds(name, type)));
+  // A phrase also finds the longer design names that hold it ("Meta-Analysis" finds "Network Meta-Analysis"): when one of
+  // those is not excluded, the phrase can't be either, as it would take the records of a design the filter keeps.
+  for (let before = -1; before !== names.length; ) {
+    before = names.length;
+    names = names.filter((name) => everyDesign.every((other) => other === name || !phraseFinds(name, other) || names.includes(other)));
+  }
+  return names;
+}
+
+/**
+ * The tag a filter asks for. "Clinical Trial" is asked for less the protocols, which are most of what it finds on a topic
+ * with few trials: 7 of the 10 records of `tirzepatide apnea` for clinical-trial were protocols (2026-11-27). That loses no
+ * record the filter keeps: no protocol carries the tag itself (PubMed: none of the 24,577 `"Clinical Trial Protocol"[pt:noexp]`
+ * records has `"Clinical Trial"[pt:noexp]`, and all 24,574 protocols of Europe PMC are MEDLINE records), and the other trial
+ * types are asked for by clauses of their own.
+ */
+function includeType(type: string): string {
+  return type === "Clinical Trial" ? `(PUB_TYPE:"Clinical Trial" AND NOT PUB_TYPE:"Clinical Trial Protocol")` : `PUB_TYPE:"${type}"`;
+}
 
 /** What earlier requests of one query learned: the `cursorMark` at each position, and the hit count. */
 interface QueryPaging {
@@ -230,15 +293,16 @@ export class EuropePmcAdapter extends RestAdapter {
     super(http);
   }
 
-  private buildQuery(input: SearchInput, types: string[] | null): string {
+  private buildQuery(input: SearchInput, types: string[] | null, excluded: string[]): string {
     // A PubMed field tag would be searched as a word: translated into the field that holds the same, or removed.
     const query = toEuropePmcQuery(input.query);
     const clauses: string[] = [];
-    if (types) clauses.push(`(${types.map((t) => `PUB_TYPE:"${t}"`).join(" OR ")})`);
+    if (types) clauses.push(`(${types.map(includeType).join(" OR ")})`);
     const from = isoDateBound(input.dateRange?.from, "from");
     const to = isoDateBound(input.dateRange?.to, "to");
     // The date clause comes in parentheses from its helper (it is an OR of three fields), so it is not wrapped again.
     if (from || to) clauses.push(publicationDateClause(from ?? "1900-01-01", to ?? "3000-01-01"));
+    if (excluded.length > 0) clauses.push(`NOT (${excluded.map((t) => `PUB_TYPE:"${t}"`).join(" OR ")})`);
     // Each clause and the query are in parentheses, so that a clause filters the whole query and not just the last operand of an OR in it.
     return clauses.length > 0 ? [`(${query})`, ...clauses].join(" AND ") : query;
   }
@@ -249,7 +313,8 @@ export class EuropePmcAdapter extends RestAdapter {
     const types = designPublicationTypes(input.studyTypes, input.minDesignTier);
     if (types?.length === 0) return { count: 0, ids: [] };
     const { offset, size } = pageWindow(input);
-    const base = new URLSearchParams({ query: this.buildQuery(input, types), format: "json" });
+    const excluded = excludedOnEuropePmc(input.studyTypes, input.minDesignTier);
+    const base = new URLSearchParams({ query: this.buildQuery(input, types, excluded), format: "json" });
     if (input.sort === "date") base.set("sort", "FIRST_PDATE_D desc");
     const key = base.toString();
     let paging = this.paging.get(key);
