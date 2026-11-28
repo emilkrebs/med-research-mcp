@@ -86,9 +86,9 @@ import { envSetting, USER_AGENT } from "./version.js";
 const DEFAULT_MAX_CHARS = 50_000;
 const DEFAULT_TIMEOUT_MS = 20_000;
 /**
- * How long, counted from the start of a call, the text of a PMCID or preprint waits for Europe PMC's record of it, and the
- * text of a DOI that no record confirms for Europe PMC's record of the DOI, which are asked for beside the text's own
- * request, for the article's standing (see {@link fetchFulltext}). On 2026-11-16 the record of PMC12905075 by PMCID
+ * How long, counted from the start of a call, the text of a PMCID or preprint waits for Europe PMC's record of it, and,
+ * counted from when it is asked for, the text of a DOI that no record confirms for Europe PMC's record of the DOI, which
+ * are asked for beside the text's own request, for the article's standing (see {@link fetchFulltext}). On 2026-11-16 the record of PMC12905075 by PMCID
  * answered in 50-301 ms (5 requests) and the text, `fullTextXML`, in 3.8-6.1 s (4 requests); the esummary of its PMID
  * 41695609 answered in 211-706 ms (8 requests: 5 alone, 3 inside a call), while 5 calls given the PMID and its DOI took
  * 1.1-21.0 s, one of which found no text. The record is there long before the text, and only a lookup that outlasts this is
@@ -222,16 +222,18 @@ export function fulltextCacheKey(source: CachedSource, ref: string): string {
   return `source:${source}:${source === "unpaywall" ? ref.toLowerCase() : ref.toUpperCase()}`;
 }
 
-/** The `source` of an entry that names the key of a text (see {@link pointerKey}), not a text. */
-const POINTER_SOURCE = "pointer";
-
 /**
  * Where an entry is kept that names the key a PMID's text is cached under, so that a text still cached can be served
  * while the PMID's record can't be read (a summary lasts 7 days, a text 30, and PubMed can be down). The call writes it
  * only for a source the PMID's own record gave, never for a DOI that was given and couldn't be confirmed, so it can
- * name only the PMID's own text; its `fulltext` is that key, and it expires with the entries of its store.
+ * name only the PMID's own text. It is kept in the abstracts, as a string (that key), and not among the full texts: it
+ * must outlast the summary, which the summaries don't, and it must not take a place from the texts, of which an
+ * in-memory cache holds few, one per PMID read. Abstracts are only ever read under a PMID, so no id can name it.
  */
 const pointerKey = (pmid: string): string => `pointer:${pmid}`;
+
+/** What is said with a text served without its record, found through the entry for its PMID (see {@link pointerKey}). */
+const UNCHECKED_NOTE = "PubMed couldn't be reached, so the paper's retraction and correction status wasn't checked.";
 
 /** A proxy, direct or ChinaRxiv text being read in parts. */
 interface Reading extends Extracted {
@@ -392,11 +394,12 @@ export async function fetchFulltext(
 
   // The same for a DOI that is not known to be the id's own (see `doiUnconfirmed`): the record of the DOI, from Europe
   // PMC, is what a text of the DOI is flagged by. Started once, when such a text is about to be read or fetched, and
-  // waited for there, at most STANDING_WAIT_MS from the start of the call.
+  // waited for there at most STANDING_WAIT_MS from when it starts, not from the start of the call: the wait for the id's
+  // record, which this follows when that was late, would otherwise have used up the time this lookup needs.
   let doiStanding: Promise<unknown> | undefined;
   const doiStandingLookup = (): Promise<unknown> | undefined => {
     if (!doiUnconfirmed || !doi || offset > 0) return undefined;
-    return (doiStanding ??= cachedRecords(cache, undefined, doi).length === 0 ? standingWait(recordOfDoi(doi)) : undefined);
+    return (doiStanding ??= cachedRecords(cache, undefined, doi).length === 0 ? within(STANDING_WAIT_MS, recordOfDoi(doi)) : undefined);
   };
 
   // The part asked for. A proxy, direct or ChinaRxiv text that goes on is kept for the next part, and any other text
@@ -434,10 +437,11 @@ export async function fetchFulltext(
   // The text of a PMID that an earlier call served, found through the entry kept for the PMID (see `pointerKey`): what
   // a call falls back to when the record can't be read, so that a text still cached is served while PubMed is down.
   const pointedText = (): FulltextOutput | undefined => {
-    const pointer = cache.getFulltext(pointerKey(id));
-    const target = pointer?.source === POINTER_SOURCE && pointer.fulltext.startsWith("source:") ? cache.getFulltext(pointer.fulltext) : null;
-    if (!pointer || !target || !pointer.fulltext.startsWith(`source:${target.source}:`) || !OPEN_ACCESS_SOURCES.has(target.source)) return undefined;
-    return serve(target, target.source as Source, target.doi);
+    const pointer = cache.getAbstract(pointerKey(id));
+    const target = pointer?.startsWith("source:") ? cache.getFulltext(pointer) : null;
+    if (!pointer || !target || !pointer.startsWith(`source:${target.source}:`) || !OPEN_ACCESS_SOURCES.has(target.source)) return undefined;
+    // The record is what the warning is read from, and there is none: say that the standing wasn't checked.
+    return serve({ ...target, warning: UNCHECKED_NOTE }, target.source as Source, target.doi);
   };
 
   // 1. Resolve what the id stands for. The record of an id gives its DOI and PMCID, so it is read first, from the cache
@@ -511,9 +515,7 @@ export async function fetchFulltext(
    */
   const point = (key: string, source: CachedSource): void => {
     if (!isPmid(id) || (source === "unpaywall" && doiUnconfirmed)) return;
-    if (cache.getFulltext(pointerKey(id))?.fulltext !== key) {
-      cache.setFulltext(pointerKey(id), { source: POINTER_SOURCE, fulltext: key, format: "markdown", fetchedAt: now() });
-    }
+    if (cache.getAbstract(pointerKey(id)) !== key) cache.setAbstract(pointerKey(id), key);
   };
 
   /** The text kept for the source this call would fetch from, served; undefined when there is none. */
@@ -991,7 +993,8 @@ async function resolveAbstract(
   record: () => Promise<Article | undefined>,
   learn: (record: Article) => void,
 ): Promise<string | undefined> {
-  const cached = cache.getAbstract(id);
+  // Abstracts are kept under PMIDs only (see pointerKey, which shares their store): any other id is no key to read.
+  const cached = isPmid(id) ? cache.getAbstract(id) : null;
   if (cached) return cached;
   if (article?.abstract) return article.abstract;
   // PubMed's efetch knows only PMIDs. Any other id is a record of another database, asked there.

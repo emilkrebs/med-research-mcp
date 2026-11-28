@@ -762,11 +762,40 @@ describe("a PMID's text that is still cached is served while PubMed can't be rea
     const requests = fetchUrl.mock.calls.length;
     const again = await fetchFulltext({ id: pmid, maxChars: 500 }, cache, down, deps);
     expect(again).toMatchObject({ source, doi: first.doi, fulltext: first.fulltext, totalChars: first.totalChars });
+    // Its record wasn't read, so it says that the paper's standing wasn't checked, on every part.
+    const unchecked = "PubMed couldn't be reached, so the paper's retraction and correction status wasn't checked.";
+    expect(again.warning).toContain(unchecked);
+    expect(first.warning ?? "").not.toContain("wasn't checked");
     const later = await fetchFulltext({ id: pmid, offset: first.nextOffset!, maxChars: 500 }, cache, down, deps);
     expect(later.source).toBe(source);
+    expect(later.warning).toContain(unchecked);
     expect(fetchUrl).toHaveBeenCalledTimes(requests);
     // A PMID with no text kept still fails as it does, since without its record there is nothing to go on.
     await expect(fetchFulltext({ id: "99999999" }, cache, down, deps)).rejects.toThrow("NCBI is down");
+  });
+
+  it("keeps the entries for PMIDs out of the places for texts, of which a cache in memory has few", async () => {
+    const records = [1, 2, 3].map((n): Article => ({ ...recordB, id: `1000000${n}`, doi: `10.1000/paper${n}`, pmcid: undefined, title: `Paper ${n}` }));
+    const { client } = pubmed(records);
+    const { fetchUrl, ...pages } = web();
+    const deps: FulltextDeps = { unpaywall: unpaywallOf(records.map((r) => r.doi!)), fetchUrl, adapter: europePmc().adapter, ...pages };
+    // Room for three texts: one entry per PMID read, kept with them, would leave room for one or two.
+    const cache = new LRUBackend(3);
+    for (const r of records) expect((await fetchFulltext({ id: r.id }, cache, client, deps)).source).toBe("unpaywall");
+    for (const r of records) expect(cache.getFulltext(fulltextCacheKey("unpaywall", r.doi!)), r.id).not.toBeNull();
+  });
+
+  it("is no abstract that an id can read: the entry for a PMID is found by that PMID alone", async () => {
+    const cache = new LRUBackend();
+    const { client } = pubmed([retractedA]);
+    const { fetchUrl, ...pages } = web();
+    const deps: FulltextDeps = { unpaywall: unpaywallOf([A_DOI]), fetchUrl, adapter: europePmc().adapter, ...pages };
+    await fetchFulltext({ id: A }, cache, client, deps);
+    // An id that is not a PMID, with a DOI that has no text anywhere, comes back with no abstract, whatever the entry says.
+    const refused = web({ refused: () => true });
+    const out = await fetchFulltext({ id: `pointer:${A}`, doi: VOJTA_DOI }, cache, client, { unpaywall: unpaywallOf([]), proxyPrefix: "", fetchUrl: refused.fetchUrl, adapter: europePmc().adapter, ...refused });
+    expect(out.source).toBe("none");
+    expect(out.fulltext).toBeUndefined();
   });
 
   it("leaves no way to the text of a DOI that couldn't be confirmed for the PMID it was given with", async () => {
@@ -806,6 +835,49 @@ describe("a DOI no record answers for is not searched for on every call", () => 
     expect((await fetchFulltext({ id: "x", doi: VOJTA_DOI }, cache, client, { ...page(), adapter })).warning).toBeUndefined();
     expect((await fetchFulltext({ id: "x", doi: VOJTA_DOI }, cache, client, { ...page(), adapter })).warning).toContain(RETRACTED_START);
     expect(fetchByDoi).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("the DOI's own record gets its wait from when it is asked for, whatever the id's record took", () => {
+  const later = <T>(ms: number, value: T): Promise<T> => new Promise((resolve) => setTimeout(() => resolve(value), ms));
+  /** A PDF copy of the Vojta DOI: no landing page, so the text is there at once. */
+  const pdf = (): FulltextDeps => ({
+    unpaywall: unpaywallOf([VOJTA_DOI]),
+    fetchUrl: async (url: string) => ({ ok: !url.includes("/fullTextXML"), status: url.includes("/fullTextXML") ? 404 : 200, contentType: "application/pdf", finalUrl: url, bytes: new Uint8Array([1]) }),
+    pdfToText: async () => "Text. " + "content ".repeat(200),
+  });
+
+  it("warns by the DOI's record, which takes 0.5 s, after the id's record, which took the whole wait and more", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    // The PMID's esummary takes 4 s, so the wait for it ends at 3 s and the DOI given goes on unchecked; Europe PMC then
+    // answers the DOI's own record in 0.5 s, within a wait of its own, and the text is flagged.
+    const { client, esummary } = pubmed([retractedA]);
+    esummary.mockImplementation(() => later(4000, new Map([[A, retractedA]])));
+    const fetchByDoi = vi.fn(() => later(500, vojtaRecord));
+    const adapter: FulltextDeps["adapter"] = () => ({ fetch: async () => [], fetchByDoi });
+    const call = fetchFulltext({ id: A, doi: VOJTA_DOI }, new LRUBackend(), client, { ...pdf(), adapter });
+    await vi.advanceTimersByTimeAsync(STANDING_WAIT_MS);
+    await vi.advanceTimersByTimeAsync(500);
+    const out = await call;
+    expect(out).toMatchObject({ source: "unpaywall", doi: VOJTA_DOI });
+    expect(out.warning).toBe(`${RETRACTED_START} Linked notice: europepmc ${VOJTA_NOTICE} (literature_fetch).`);
+  });
+
+  it("does the same for a PMCID whose record is late, and still leaves the DOI's record out when it is later than its own wait", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { client } = pubmed([]);
+    for (const [lookupMs, flagged] of [[500, true], [STANDING_WAIT_MS + 1000, false]] as const) {
+      const fetchByDoi = vi.fn(() => later(lookupMs, vojtaRecord));
+      const adapter: FulltextDeps["adapter"] = () => ({ fetch: () => later(4000, [recordB]), fetchByDoi });
+      const call = fetchFulltext({ id: "PMC1182327", doi: VOJTA_DOI }, new LRUBackend(), client, { ...pdf(), adapter });
+      await vi.advanceTimersByTimeAsync(STANDING_WAIT_MS);
+      await vi.advanceTimersByTimeAsync(Math.min(lookupMs, STANDING_WAIT_MS));
+      const out = await call;
+      expect(out.source, String(lookupMs)).toBe("unpaywall");
+      expect(out.warning?.startsWith(RETRACTED_START) ?? false, String(lookupMs)).toBe(flagged);
+      // Not the id's record, which is of another paper.
+      expect(out.warning ?? "", String(lookupMs)).not.toContain("PMC1182327");
+    }
   });
 });
 
