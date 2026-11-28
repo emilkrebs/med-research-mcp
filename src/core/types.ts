@@ -248,7 +248,7 @@ export interface LiteratureFetchInput {
 export interface FetchOutput {
   /** Classified like search results (studyType, designTier, flags), with MeSH headings kept. */
   articles: GradedArticle[];
-  /** IDs that could not be found or fetched. */
+  /** IDs that could not be found or fetched, as the caller sent them (trimmed), so they can be matched up. */
   missing: string[];
   warnings?: string[];
 }

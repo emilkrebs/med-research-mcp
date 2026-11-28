@@ -471,6 +471,13 @@ export async function searchLiterature(
  * results (studyType, designTier, flags) and with the MeSH headings that search leaves out.
  * Throws INVALID_INPUT for an unknown database.
  *
+ * Ids are trimmed, and each is fetched once however often and however it is spelled ("PMID:9500320",
+ * "00009500320" and " 9500320 " are one PubMed id, see {@link DatabaseAdapter.normalizeId}), so a record comes
+ * back once, in the order of its first id. Ids are fetched as the adapter writes them, case included: ChinaRxiv
+ * answers `CHINAXIV-202401.00027` with a 404, so only an adapter whose database ignores case folds it. `missing`
+ * lists the ids as the caller sent them (trimmed), each spelling once, so that the caller can match them up, and
+ * its warning counts the ids behind them; an empty id asks for nothing and is missing.
+ *
  * @param adapter explicit adapter; defaults to the one named by `input.database`.
  */
 export async function fetchLiterature(
@@ -482,14 +489,31 @@ export async function fetchLiterature(
   if (!resolved) throw unknownDatabase([input.database]);
 
   const warnings: string[] = [];
-  const articles = resolved.fetchFull
-    ? await resolved.fetchFull(input.ids, cache)
-    : await resolved.fetch(input.ids, cache, (w) => warnings.push(w));
-  // Case-insensitive: adapters return canonical ids ("PPR123456") for any input case. A PMCID
+  const sent = [...new Set(input.ids.map((id) => id.trim()))];
+  const canonical = (id: string): string => resolved.normalizeId?.(id) ?? id;
+  // Exact, not case-folded: "ru-196201.58177" and "RU-196201.58177" are two lookups at ChinaRxiv, and only the first finds the record.
+  const wanted = new Set<string>();
+  for (const id of sent) wanted.add(canonical(id));
+  wanted.delete("");
+  const ids = [...wanted];
+  const fetched =
+    ids.length === 0
+      ? []
+      : resolved.fetchFull
+        ? await resolved.fetchFull(ids, cache)
+        : await resolved.fetch(ids, cache, (w) => warnings.push(w));
+  // A PMCID and the PMID of its record are two ids, and Europe PMC returns that record for each.
+  const articles = [...new Map(fetched.map((a) => [a.id, a])).values()];
+  // Case-insensitive: adapters return canonical ids ("PPR123456") for any input case, so a record found for
+  // one spelling of an id also covers a spelling of other case sent beside it. A PMCID
   // fetched from Europe PMC comes back under its PMID, so it counts as found through `pmcid`.
-  const found = new Set(articles.flatMap((a) => [a.id, a.pmcid ?? ""]).map((id) => id.toUpperCase()));
-  const missing = input.ids.filter((id) => !found.has(id.toUpperCase()));
-  if (missing.length > 0) warnings.push(`${missing.length} id(s) could not be fetched from ${resolved.name}.`);
+  const found = new Set(
+    articles.flatMap((a) => [a.id, a.pmcid]).filter((id): id is string => !!id).map((id) => id.toUpperCase()),
+  );
+  const missing = sent.filter((id) => !found.has(canonical(id).toUpperCase()));
+  // Spellings of one id are one id that could not be fetched.
+  const unfetched = new Set(missing.map(canonical)).size;
+  if (unfetched > 0) warnings.push(`${unfetched} id(s) could not be fetched from ${resolved.name}.`);
 
   return { articles: articles.map((a) => classifyArticle(a)), missing, ...(warnings.length > 0 ? { warnings } : {}) };
 }

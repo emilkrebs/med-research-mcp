@@ -547,3 +547,15 @@ export function isPmidRecord(article: { id: string; database?: string }): boolea
   const database = article.database ?? "pubmed";
   return (database === "pubmed" || database === "europepmc") && /^\d+$/.test(article.id);
 }
+
+/**
+ * A PMID as PubMed and Europe PMC key their records: bare digits, without a "PMID:" prefix or Europe PMC's name for
+ * its PubMed source ("MED:9500320"; case-insensitive, spaces around the colon allowed) and without leading zeros
+ * ("00012345"): esummary returns the record under its bare number, so a lookup by the padded one comes up empty,
+ * and Europe PMC's `EXT_ID:00012345 AND SRC:MED` finds nothing (checked 2026-11-27). Any other id is returned as it
+ * came, so a PMCID, a `PPR…` or `CBA:…` id, or a prefixed word that is no number, is never rewritten into an id it isn't.
+ */
+export function canonicalPmid(id: string): string {
+  const digits = /^(?:(?:PMID|MED)\s*:\s*)?(\d+)$/i.exec(id)?.[1];
+  return digits === undefined ? id : digits.replace(/^0+(?=\d)/, "");
+}

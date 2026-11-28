@@ -73,7 +73,7 @@
 import { LRUCache } from "lru-cache";
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { cleanDoi, first, isoDateBound, pageWindow, publicationDateClause, splitAuthors, strArray, toEuropePmcQuery, toIso1 } from "./util.js";
+import { canonicalPmid, cleanDoi, first, isoDateBound, pageWindow, publicationDateClause, splitAuthors, strArray, toEuropePmcQuery, toIso1 } from "./util.js";
 import { designPublicationTypes } from "../grader.js";
 import { htmlToText } from "../text.js";
 import type { Article, Correction, CorrectionType, SearchInput } from "../types.js";
@@ -285,6 +285,17 @@ export class EuropePmcAdapter extends RestAdapter {
     const next = data?.nextCursorMark;
     if (next && next !== cursor) known.cursors.set(offset + (data?.resultList?.result?.length ?? 0), next);
     return { count, ids: articles.map((a) => a.id) };
+  }
+
+  /**
+   * A PMID as the bare number its MEDLINE records are keyed on, any other id in capitals: Europe PMC looks ids up
+   * ignoring case ("pmc6181682", "ppr270079", "cba:644599", "ind609546324" each find their record; 2026-11-28)
+   * and writes its own in capitals (none of the up to 100 ids sampled per source from PAT, AGR, CTX, ETH, CBA, PMC
+   * and PPR had a lower-case letter). So two spellings of an id are one, and a PMCID or `SRC:id` has the form returned.
+   */
+  normalizeId(id: string): string {
+    const pmid = canonicalPmid(id);
+    return /^\d+$/.test(pmid) ? pmid : pmid.toUpperCase();
   }
 
   protected async fetchOne(id: string): Promise<Article | null> {
