@@ -17,8 +17,9 @@
  * and skips the others, which it would empty. What the classifier still drops from a page is
  * counted by `total` and `nextPage`, and a warning says how many it kept.
  *
- * Input a caller can correct (an unknown database, an empty query or one with no search term, a bad page, a date
- * that doesn't exist) raises INVALID_INPUT rather than returning an empty result.
+ * Input a caller can correct (an unknown database or an empty list of them, an empty query or one with no search term,
+ * a bad page, a date that doesn't exist, a language that is no ISO 639-1 code) raises INVALID_INPUT rather than returning
+ * an empty result. A language that is one, but that a database searched doesn't filter by, is a warning.
  *
  * A page-1 search of 2 to 5 plain words that every database answers with nothing is probed: the query
  * is searched again without each word, for the count only, so that the warning can name the word that
@@ -28,7 +29,7 @@
 import { adaptersFor, getAdapter, unknownDatabase, type DatabaseAdapter } from "./adapters/registry.js";
 import { chinaxivHeaders } from "./adapters/chinarxiv.js";
 import type { EmptyReason } from "./adapters/types.js";
-import { doiKey, firstPublished, isoDateBound, isPmidRecord, MAX_PAGED_RECORDS, pageWindow } from "./adapters/util.js";
+import { doiKey, firstPublished, isIso639_1, isoDateBound, isPmidRecord, MAX_PAGED_RECORDS, normalizeLanguage, pageWindow } from "./adapters/util.js";
 import { LRUBackend, type Cache } from "./cache.js";
 import { errors, isMedResearchError } from "./errors.js";
 import { withDeadline } from "./request.js";
@@ -55,8 +56,8 @@ function hasSearchTerm(query: string): boolean {
 }
 
 /**
- * Throws INVALID_INPUT for an empty query, one with no search term, an unreachable page, a bad abstract limit, or a date
- * range PubMed would silently ignore.
+ * Throws INVALID_INPUT for an empty query, one with no search term, an unreachable page, a bad abstract limit, a language
+ * that is no ISO 639-1 code, or a date range PubMed would silently ignore.
  */
 function validateSearch(input: SearchInput): void {
   if (!input.query?.trim()) throw errors.invalidInput("The query is empty.");
@@ -72,6 +73,15 @@ function validateSearch(input: SearchInput): void {
   const { abstractMaxChars } = input;
   if (abstractMaxChars !== undefined && (!Number.isInteger(abstractMaxChars) || abstractMaxChars < 0)) {
     throw errors.invalidInput("abstractMaxChars must be a whole number, 0 or more.");
+  }
+  const language = normalizeLanguage(input.language);
+  if (language !== undefined && !isIso639_1(language)) {
+    // PubMed's own codes have three letters; they go into the query, as a [la] tag.
+    const tag = /^[a-z]{3}$/.test(language) ? " PubMed's three-letter codes go in the query as a tag, such as eng[la]." : "";
+    throw errors.invalidInput(
+      `language ${JSON.stringify(input.language)} is not an ISO 639-1 code. Send a two-letter code such as "en", "de" or "ru", ` +
+        `or leave language out.${tag}`,
+    );
   }
   if (input.page !== undefined) {
     if (!Number.isInteger(input.page) || input.page < 1) throw errors.invalidInput("page must be a whole number, 1 or more.");
@@ -315,6 +325,22 @@ function shortName(name: string): string {
 }
 
 /**
+ * The warning for a `language` that databases of the search don't act on (see {@link DatabaseAdapter.languages}): it names
+ * them, says which codes those that read any do apply, and where one filters through the query instead.
+ */
+function languageWarning(language: string, unapplied: DatabaseAdapter[]): string {
+  const names = (list: DatabaseAdapter[]): string => nameList(list.map((a) => shortName(a.name)));
+  const partial = unapplied.filter((a) => a.languages?.length);
+  const none = unapplied.filter((a) => !a.languages?.length);
+  const applies = [...new Set(partial.flatMap((a) => a.languages!))].map((code) => JSON.stringify(code));
+  return (
+    `language ${JSON.stringify(language)} was not applied to ${names(unapplied)}.` +
+    (partial.length > 0 ? ` ${names(partial)} ${partial.length > 1 ? "apply" : "applies"} only ${nameList(applies)}.` : "") +
+    (none.length > 0 ? ` To filter ${names(none)} by language, add a language tag to the query, such as ger[la].` : "")
+  );
+}
+
+/**
  * The one warning a zero-result search gets from its probes, or undefined when they found nothing to say:
  * per word whose removal gives hits, the count and the databases; or, when removing any single word still gives none in
  * every database probed, that two or more words are too specific together. That claim needs an answer for every probe
@@ -357,8 +383,9 @@ function describeProbes(words: string[], outcomes: ProbeOutcome[], input: Search
 /**
  * Search one or more databases and return classified, merged, de-duplicated results,
  * sorted by design tier, or with `sort: "date"` by first publication date, newest first.
- * Throws INVALID_INPUT for an unknown database, an empty query (or one with no search term), a bad page or an invalid date,
- * and the first database's error when every database searched failed.
+ * Throws INVALID_INPUT for an unknown database or an empty list of them, an empty query (or one with no search term), a bad
+ * page, an invalid date or a language that is no ISO 639-1 code, and the first database's error when every database searched
+ * failed.
  *
  * @param cache reused across calls; scoped per-database inside each adapter.
  * @param adapters explicit adapter list; defaults to those named in `input.database`.
@@ -370,7 +397,15 @@ export async function searchLiterature(
 ): Promise<SearchOutput> {
   validateSearch(input);
   const selected = adapters ?? adaptersFor(input.database);
-  if (selected.length === 0) throw errors.invalidInput("No database to search.");
+  if (selected.length === 0) {
+    throw errors.invalidInput(
+      "No database to search: adapters is an empty list. Pass at least one adapter, or leave it out to search the databases input.database names.",
+    );
+  }
+  // Adapters and probes read the language as validated: trimmed, in lower case, and none when blank.
+  const language = normalizeLanguage(input.language);
+  const { language: _given, ...withoutLanguage } = input;
+  const asked: SearchInput = language ? { ...withoutLanguage, language } : withoutLanguage;
   const warnings = filterWarnings(input.studyTypes, input.minDesignTier);
   const page = input.page ?? 1;
   const { offset, size } = pageWindow(input);
@@ -398,6 +433,8 @@ export async function searchLiterature(
     );
   }
   if (searched.length === 0) return empty;
+  const unapplied = language ? searched.filter((a) => !a.languages?.includes(language)) : [];
+  if (language && unapplied.length > 0) warnings.push(languageWarning(language, unapplied));
 
   const hasNextPage = offset + size < MAX_PAGED_RECORDS;
 
@@ -407,7 +444,7 @@ export async function searchLiterature(
   const perAdapter = await Promise.all(
     searched.map(async (adapter) => {
       try {
-        const { count, ids, warning, emptyReason, more: served } = await adapter.search(input);
+        const { count, ids, warning, emptyReason, more: served } = await adapter.search(asked);
         // A warning with a reason is held back, to be shared with the databases that give the same one.
         const reported = warning && emptyReason ? { reason: emptyReason, warning } : undefined;
         if (warning && !reported) warnings.push(warning);
@@ -432,7 +469,7 @@ export async function searchLiterature(
   // say stands in for the warnings that say less (the databases' own empty reasons below, and the generic one further down).
   const zero = total === 0 && failures.length === 0;
   const words = zero && page === 1 ? probeWords(input.query) : undefined;
-  const probeWarning = words ? describeProbes(words, await probeZeroResult(input, searched, words), input) : undefined;
+  const probeWarning = words ? describeProbes(words, await probeZeroResult(asked, searched, words), input) : undefined;
 
   // Databases that found nothing for the same reason say so once, naming them all, in the order requested.
   const byReason = new Map<EmptyReason, { name: string; warning: string }[]>();

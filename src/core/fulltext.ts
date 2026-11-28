@@ -72,6 +72,7 @@
 
 import { LRUCache } from "lru-cache";
 import type { DatabaseAdapter } from "./adapters/types.js";
+import { canonicalPmid } from "./adapters/util.js";
 import type { Cache } from "./cache.js";
 import { LRUBackend } from "./cache.js";
 import { errors, isMedResearchError } from "./errors.js";
@@ -292,7 +293,10 @@ export async function fetchFulltext(
   client: NcbiClient = new NcbiClient(),
   deps: FulltextDeps = {},
 ): Promise<FulltextOutput> {
-  const id = String(input.id ?? "").trim();
+  // A PMID is its digits: "PMID:9500320" and Europe PMC's "MED:9500320" (also "00009500320") are read as 9500320, as
+  // literature_fetch reads them, and the result's id is the PMID. MED:… was looked up as an id of another Europe PMC
+  // source and came back NOT_FOUND.
+  const id = canonicalPmid(String(input.id ?? "").trim());
   const inputDoi = normalizeDoi(input.doi);
   // A numeric PMID, an id Europe PMC's full-text API takes, a ChinaRxiv id, another id Europe PMC may hold
   // a record of, or a supplied DOI is enough to proceed. Any other id can arrive with a DOI, and DOI-based
@@ -1295,19 +1299,33 @@ function isArticleBody(page: PageText, knownAbstract: string | undefined): boole
   return page.body + spill - unlabeled >= MIN_BODY_CHARS;
 }
 
+/** A link to doi.org, with or without its scheme, and with the host's usual prefixes: `https://doi.org/`, `dx.doi.org/`. */
+const DOI_LINK = /^(?:https?:\/\/)?(?:dx\.|www\.)?doi\.org\//i;
+
 /**
- * Strip a DOI URL/`doi:` prefix and validate the shape; return undefined if it isn't a DOI. Any other URL (a
- * record's `url` or `originalUrl`, which a model once passed as `doi`) is no DOI and is not altered into one:
- * it yields undefined, and {@link fetchFulltext} names it when the id can't be resolved without it. A period, comma or
+ * Strip a DOI link or `doi:` prefix and validate the shape; return undefined if it isn't a DOI. A link to doi.org counts
+ * with or without its scheme (`doi.org/10.…`, `dx.doi.org/…`, `www.doi.org/…`), and its path is percent-decoded, so that
+ * `https://doi.org/10.1371%2Fjournal.pmed.0020124` is the DOI 10.1371/journal.pmed.0020124. A bare DOI is not decoded: a
+ * `%` in it is its own, and `10.1371%2Fjournal…` has no slash to be one. Any other URL (a record's `url` or
+ * `originalUrl`, which a model once passed as `doi`) is no DOI and is not altered into one: it yields undefined, and
+ * {@link fetchFulltext} names it when the id can't be resolved without it. A period, comma or
  * semicolon at the end is dropped: a DOI copied out of a sentence ("…journal.pmed.0020124.") carries the sentence's
  * punctuation, which makes it another DOI to doi.org ("10.1371/journal.pmed.0020124." is a 404 there, and finds no
  * record in Europe PMC's DOI search; checked 2026-11-27), so the call would end with the abstract.
  */
 function normalizeDoi(doi: string | undefined): string | undefined {
   if (!doi) return undefined;
-  const d = doi
-    .trim()
-    .replace(/^https?:\/\/(?:dx\.|www\.)?doi\.org\//i, "")
+  let d = doi.trim();
+  if (DOI_LINK.test(d)) {
+    d = d.replace(DOI_LINK, "");
+    try {
+      d = decodeURIComponent(d);
+    } catch {
+      // A malformed escape ("%E0%A4%A") makes no DOI.
+      return undefined;
+    }
+  }
+  d = d
     .replace(/^doi:\s*/i, "")
     .trim()
     .replace(/[.,;]+$/, "");

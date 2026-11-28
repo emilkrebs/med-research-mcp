@@ -42,6 +42,12 @@ export interface DatabaseAdapter {
    */
   designMetadata?: boolean;
   /**
+   * The ISO 639-1 codes of a search's `language` that this database acts on, because its records are split by language
+   * (ChinaXiv's "ru" selects the Russian collection; every RussiaRxiv record is Russian). Any other code is not applied
+   * here, and the search says so in a warning. Absent: the database ignores `language`.
+   */
+  languages?: readonly string[];
+  /**
    * Execute a search and return the ids of the page asked for (`page`, `maxResults`) + total count,
    * and a warning when the database's own query rules likely explain an empty result. `more` is
    * false when no later page can be served although `count` goes on; absent, `count` decides.

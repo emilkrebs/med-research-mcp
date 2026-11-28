@@ -155,7 +155,7 @@ export const errors = {
     const shown = JSON.stringify(value.length > 200 ? `${value.slice(0, 200)}…` : value);
     return errors.invalidInput(
       `doi ${shown} is not a DOI. A DOI starts with 10. and a number, then a slash ("10.1234/abc"), alone or as a ` +
-        `https://doi.org/10.1234/abc link. A record's url or originalUrl is not a doi: pass the doi field of the ` +
+        `doi.org/10.1234/abc link (https:// optional). A record's url or originalUrl is not a doi: pass the doi field of the ` +
         `literature_search result. This id can't be resolved without one.`,
     );
   },

@@ -41,16 +41,25 @@ export function getAdapter(id: string): DatabaseAdapter | undefined {
 
 /**
  * The adapters a search's `database` names: one id, a list, or "all", ignoring
- * case; pubmed when omitted or empty. Throws INVALID_INPUT for an unknown id, so a
- * typo can't pass for a search that found nothing.
+ * case; pubmed when omitted. Throws INVALID_INPUT for an unknown id, so a typo can't pass for a search that found nothing,
+ * and for an empty list, which names nothing: it used to be searched as pubmed, which hid that the caller's list was empty.
  */
 export function adaptersFor(database: string | string[] | undefined): DatabaseAdapter[] {
-  const ids = (database == null ? [] : Array.isArray(database) ? database : [database]).map(normalize);
-  if (ids.length === 0) return [ADAPTERS.pubmed!];
+  if (database == null) return [ADAPTERS.pubmed!];
+  const ids = (Array.isArray(database) ? database : [database]).map(normalize);
+  if (ids.length === 0) throw emptyDatabaseList();
   const unknown = ids.filter((id) => id !== "all" && !ADAPTERS[id]);
   if (unknown.length > 0) throw unknownDatabase(unknown);
   if (ids.includes("all")) return Object.values(ADAPTERS);
   return [...new Set(ids)].map((id) => ADAPTERS[id]!);
+}
+
+/** INVALID_INPUT for a `database` list with no entry, saying what to send. */
+export function emptyDatabaseList(): ResearchApiException {
+  return errors.invalidInput(
+    `database is an empty list, so there is nothing to search. Send one id or a list of them (${Object.keys(ADAPTERS).join(", ")}), ` +
+      `or "all"; leave database out to search pubmed.`,
+  );
 }
 
 /** INVALID_INPUT naming the unknown ids and the known ones. */

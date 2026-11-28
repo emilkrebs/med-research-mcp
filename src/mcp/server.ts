@@ -68,6 +68,10 @@ export function buildCache(): Cache {
 
 const DATABASES = ["pubmed", "europepmc", "chinaxiv", "russiarxiv"] as const;
 const DATABASE_OR_ALL = z.enum([...DATABASES, "all"]);
+/** What a client that sent `database: []` is told: an empty list names nothing, and it was once searched as pubmed. */
+const EMPTY_DATABASE_LIST =
+  `database is an empty list, so there is nothing to search. Send one id or a list of them (${DATABASES.join(", ")}), ` +
+  `or "all"; leave database out to search pubmed.`;
 
 /** A date as PubMed reads it; the other adapters expand a year or month to its first or last day. */
 const isoDate = z.string().regex(/^\d{4}(?:[-/]\d{1,2}(?:[-/]\d{1,2})?)?$/, "Use YYYY-MM-DD, YYYY-MM or YYYY.");
@@ -170,12 +174,12 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
           "identify a person; describe the condition or intervention instead.",
       ),
     database: z
-      .union([DATABASE_OR_ALL, z.array(DATABASE_OR_ALL)], {
+      .union([DATABASE_OR_ALL, z.array(DATABASE_OR_ALL).min(1, EMPTY_DATABASE_LIST)], {
         error: `Unknown database. Use ${DATABASES.join(", ")} or "all" (lower case), or a list of them.`,
       })
       .optional()
       .describe(
-        'Database(s) to search: a single id, an array of ids, or "all". Default "pubmed". ' +
+        'Database(s) to search: a single id, an array of ids (not empty), or "all". Default "pubmed" when left out. ' +
           "Options: pubmed, europepmc (PubMed's records plus preprints and other sources; it searches full text, so " +
           "papers that only mention the words match too), chinaxiv (Chinese preprints) and russiarxiv " +
           "(Soviet-era papers, mostly mathematics, physics and chemistry; almost no medicine), both via ChinaRxiv, a " +
@@ -197,8 +201,10 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .optional()
       .describe(
         "Cut abstracts to at most this many characters, at a word boundary, ending in … and abstractTruncated true; 0 " +
-          "leaves them out. Default: whole abstracts. A page of 10 full abstracts is roughly 20,000-30,000 characters " +
-          "(600 halves it), so set one when searching several databases. literature_fetch returns the whole abstract.",
+          "leaves them out. If the first word and the … don't fit in the limit, that word is cut where it stands (5 turns " +
+          '"Supplementing" into "Supp…"), and 1 leaves the abstract out, as 0 does. Default: whole abstracts. A page of ' +
+          "10 full abstracts is roughly 20,000-30,000 characters (600 halves it), so set one when searching several " +
+          "databases. literature_fetch returns the whole abstract.",
       ),
     page: z
       .number()
@@ -255,8 +261,10 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       .string()
       .optional()
       .describe(
-        'Content language hint (ISO 639-1). pubmed and europepmc ignore it; on chinaxiv, "ru" searches the Russian ' +
-          'collection (same as database "russiarxiv").',
+        'Content language, a two-letter ISO 639-1 code such as "en" or "ru"; any other value is refused. Only "ru" is ' +
+          'applied: chinaxiv then searches the Russian collection (as database "russiarxiv" does). For any other code a ' +
+          "warning names the databases it was not applied to; on pubmed and europepmc filter with a language tag in the " +
+          "query instead, such as ger[la].",
       ),
   };
 
@@ -355,16 +363,17 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     id: z
       .string()
       .describe(
-        "A literature_search result's id: a PMID, a PMCID (PMC…, a record's pmcid), an id of Europe PMC " +
-          "(PPR…, CBA:… with its prefix, IND…) or a chinaxiv or russiarxiv id (chinaxiv-…, ru-…). Each works alone; doi is for " +
-          "any other id.",
+        "A literature_search result's id: a PMID (also written PMID:… or MED:…, Europe PMC's prefix for PubMed records), " +
+          "a PMCID (PMC…, a record's pmcid), an id of Europe PMC (PPR…, CBA:… with its prefix, IND…) or a chinaxiv or " +
+          "russiarxiv id (chinaxiv-…, ru-…). Each works alone; doi is for any other id.",
       ),
     doi: z
       .string()
       .optional()
       .describe(
-        "The record's doi (10.… or a https://doi.org/ link), from a search result's doi field; a url or originalUrl is " +
-          "not one. Needed only for an id outside those above. With a PMID it must be that PMID's doi: a different one is " +
+        "The record's doi: 10.…, doi:10.…, or a doi.org link (https:// optional; %2F for the slash is read), from a " +
+          "search result's doi field; a url or originalUrl is not one. Needed only for an id outside those above. " +
+          "With a PMID it must be that PMID's doi: a different one is " +
           "refused. A Europe PMC id without it uses the doi of Europe PMC's record.",
       ),
     offset: z
