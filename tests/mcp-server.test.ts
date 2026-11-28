@@ -153,6 +153,8 @@ describe("createServer", () => {
     expect(prop("literature_search", "database")).toContain("it searches full text");
     expect(prop("literature_search", "database")).toContain("mostly mathematics, physics and chemistry; almost no medicine");
     expect(prop("literature_search", "database")).not.toContain("Soviet-era papers)");
+    // Both are searched in ChinaRxiv's English text, so a query in Chinese or Russian finds nothing (2026-11-28).
+    expect(prop("literature_search", "database")).toContain("chinaxiv and russiarxiv are searched in that English text, so query them in English");
     // The query description says which PubMed tags europepmc reads, that it drops the others, that ChinaXiv and RussiaRxiv ignore them,
     // and that Europe PMC's own SRC:PPR is for europepmc alone. Every byte of it is paid on every model call: it was 865 bytes before the tags were translated.
     const query = prop("literature_search", "query");

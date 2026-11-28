@@ -66,6 +66,11 @@
  * "depression" 229, but "vitamin depression" none (2026-10-20). An empty result
  * for a query of several words says so.
  *
+ * The words are matched against that English text, so a query in the original language finds nothing: on ChinaXiv
+ * `糖尿病`, `糖尿病 二甲双胍`, `中国` (Han), `ダイエット` (Katakana) and `당뇨병` (Hangul) each matched 0 records while `diabetes`
+ * matched 292, and on RussiaRxiv `диабет` and `вода` matched 0 while `water` matched 1,381 (2026-11-28). `searchLiterature`
+ * says so for a query with such letters (`englishOnly`, see types.ts); the query is never translated.
+ *
  * Paging: the page size baked into a `next_cursor` overrides the request's `limit` (checked 2026-10-28).
  * A cursor is base64 of the page and its size (`{"page": 2, "per_page": 2}`), not server state,
  * so a remembered one stays valid and a failed request leaves it in place (2026-10-29).
@@ -196,6 +201,8 @@ export abstract class ChinaRxivApiAdapter extends RestAdapter {
   protected abstract readonly corpus: ChinaRxivCorpus;
   /** Records carry no publication types: every one is `unknown`. */
   readonly designMetadata = false;
+  /** The API matches a query against ChinaRxiv's English text (see the header): a Chinese or Russian one finds nothing. */
+  readonly englishOnly = true;
 
   constructor(http: AdapterHttp = defaultHttp({ headers: chinaxivHeaders(), source: "ChinaRxiv" })) {
     super(http);

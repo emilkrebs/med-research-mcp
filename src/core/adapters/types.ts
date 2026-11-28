@@ -42,6 +42,12 @@ export interface DatabaseAdapter {
    */
   designMetadata?: boolean;
   /**
+   * True when the database matches a query against English text only (a machine translation), so a query in Chinese,
+   * Japanese, Korean or a Cyrillic script finds nothing there: `searchLiterature` warns about such a query and does
+   * not probe it word by word, which would blame the number of words. Absent, the database reads any language.
+   */
+  englishOnly?: boolean;
+  /**
    * Execute a search and return the ids of the page asked for (`page`, `maxResults`) + total count,
    * and a warning when the database's own query rules likely explain an empty result. `more` is
    * false when no later page can be served although `count` goes on; absent, `count` decides.

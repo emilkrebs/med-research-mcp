@@ -22,7 +22,9 @@
  *
  * A page-1 search of 2 to 5 plain words that every database answers with nothing is probed: the query
  * is searched again without each word, for the count only, so that the warning can name the word that
- * blocks it (see {@link probeZeroResult}). Models otherwise drop words one tool call at a time.
+ * blocks it (see {@link probeZeroResult}). Models otherwise drop words one tool call at a time. A database that matches
+ * English text only (ChinaXiv, RussiaRxiv: see {@link DatabaseAdapter.englishOnly}) is not probed for a query in a CJK or
+ * Cyrillic script: it is told to query that database in English instead, whatever the number of words.
  */
 
 import { adaptersFor, getAdapter, unknownDatabase, type DatabaseAdapter } from "./adapters/registry.js";
@@ -159,6 +161,27 @@ function describeRange({ from, to }: DateRange): string {
 /** "A", "A and B", "A, B and C". */
 function nameList(names: string[]): string {
   return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+}
+
+/** A letter of a CJK script (Han, Hiragana, Katakana, Hangul) or of Cyrillic. */
+const NON_ENGLISH_LETTER = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Cyrillic}]/u;
+
+/**
+ * Those of `adapters` that match a query against English text only (see {@link DatabaseAdapter.englishOnly}), when the
+ * query holds a letter of a CJK or Cyrillic script; none for any other query. The query is never translated.
+ */
+function englishOnlyFor(query: string, adapters: DatabaseAdapter[]): DatabaseAdapter[] {
+  return NON_ENGLISH_LETTER.test(query) ? adapters.filter((adapter) => adapter.englishOnly) : [];
+}
+
+/** The warning for a query in a CJK or Cyrillic script, searched in databases that read English only. */
+function englishOnlyWarning(adapters: DatabaseAdapter[]): string {
+  const names = nameList(adapters.map((a) => shortName(a.name)));
+  return (
+    `The query holds CJK or Cyrillic letters, but ${names} ${adapters.length > 1 ? "are" : "is"} searched in English: ChinaRxiv ` +
+    `matches a query against its English machine translation, so the query finds little or nothing there. ` +
+    `Query ${names} in English; the query is not translated.`
+  );
 }
 
 /** One warning for several databases that report the same empty-result reason (see {@link EmptyReason}). */
@@ -398,6 +421,10 @@ export async function searchLiterature(
     );
   }
   if (searched.length === 0) return empty;
+  // A query in another script finds nothing in a database that matches English text only, however many words it has: say
+  // so on every page, and keep such a database out of the zero-result probes and of the explanations that blame the words.
+  const inEnglish = englishOnlyFor(input.query, searched);
+  if (inEnglish.length > 0) warnings.push(englishOnlyWarning(inEnglish));
 
   const hasNextPage = offset + size < MAX_PAGED_RECORDS;
 
@@ -431,13 +458,15 @@ export async function searchLiterature(
   // Nothing found anywhere, on the first page, for a query of a few plain words: ask which word blocks it. What the probes
   // say stands in for the warnings that say less (the databases' own empty reasons below, and the generic one further down).
   const zero = total === 0 && failures.length === 0;
-  const words = zero && page === 1 ? probeWords(input.query) : undefined;
-  const probeWarning = words ? describeProbes(words, await probeZeroResult(input, searched, words), input) : undefined;
+  const probeable = searched.filter((adapter) => !inEnglish.includes(adapter));
+  const words = zero && page === 1 && probeable.length > 0 ? probeWords(input.query) : undefined;
+  const probeWarning = words ? describeProbes(words, await probeZeroResult(input, probeable, words), input) : undefined;
 
-  // Databases that found nothing for the same reason say so once, naming them all, in the order requested.
+  // Databases that found nothing for the same reason say so once, naming them all, in the order requested. One that reads
+  // English only, asked in another script, is explained by the warning above, not by the number of words.
   const byReason = new Map<EmptyReason, { name: string; warning: string }[]>();
   for (const { adapter, reported } of probeWarning ? [] : perAdapter) {
-    if (!reported) continue;
+    if (!reported || inEnglish.includes(adapter)) continue;
     byReason.set(reported.reason, [...(byReason.get(reported.reason) ?? []), { name: adapter.name, warning: reported.warning }]);
   }
   for (const [reason, group] of byReason) {
@@ -466,8 +495,9 @@ export async function searchLiterature(
   if (noAnimals) warnings.push(noAnimals);
   // A bare 0 reads as "no evidence exists". A failure explains a zero itself, and so does a design filter
   // (studyTypes, minDesignTier) with the warnings above; a date range does not, and a zero under one was read
-  // as the range being ignored.
-  if (zero) {
+  // as the range being ignored. A zero that the language warning explains in every database searched gets none of these:
+  // their advice (a synonym, fewer words) would send the caller the wrong way.
+  if (zero && inEnglish.length < searched.length) {
     const oneWord = !/\s/.test(input.query.trim());
     const { dateRange } = input;
     if (probeWarning) {

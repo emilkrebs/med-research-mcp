@@ -9,7 +9,7 @@ Three tools, a triage-first workflow. **Always start with `literature_search`** 
 
 ## Decision flow
 
-1. Turn the question into a query (below) and call `literature_search`. Default database is `"pubmed"`; for broader coverage use `["pubmed","europepmc"]`, `["pubmed","chinaxiv"]`, or `"all"`. For a preprint or a paper outside MEDLINE search `"europepmc"` alone (`SRC:PPR` keeps preprints only; PubMed reads it as words and has the NIH-supported ones). `"russiarxiv"` is Soviet-era papers, mostly mathematics, physics and chemistry, almost no medicine: a zero there is not "no Russian research exists".
+1. Turn the question into a query (below) and call `literature_search`. Default database is `"pubmed"`; for broader coverage use `["pubmed","europepmc"]`, `["pubmed","chinaxiv"]`, or `"all"`. For a preprint or a paper outside MEDLINE search `"europepmc"` alone (`SRC:PPR` keeps preprints only; PubMed reads it as words and has the NIH-supported ones). `"russiarxiv"` is Soviet-era papers, mostly mathematics, physics and chemistry, almost no medicine: a zero there is not "no Russian research exists". `chinaxiv` and `russiarxiv` are searched in English: query them in English, since a query in Chinese, Japanese, Korean or Russian finds nothing there (a warning says so; the query is not translated).
 2. Read `warnings` and `flags` first. Then **read the abstract of every result whose `designTier` is `null`**: unclassified records and most meta-analyses/systematic reviews. Null means unrated, not weak.
 3. `literature_fetch` the ids you care about (with their `database`) to read whole abstracts.
 4. `literature_fulltext` **only** when the abstract isn't enough: dosage, sample sizes, methods, statistical flaws.
@@ -24,13 +24,13 @@ Three tools, a triage-first workflow. **Always start with `literature_search`** 
 - `[au]` — author: `Hemilä H[au]`
 - `[pt]` — publication type, for strong designs: `AND (meta-analysis[pt] OR "randomized controlled trial"[pt])`
 - Europe PMC reads `[tiab] [ti] [au] [pt] [ta] [la] [dp] [pmid]` and drops other tags, so their words match full text.
-- `chinaxiv`/`russiarxiv` return only records containing **every** word, and read `OR` as a word: give them one or two key words.
+- `chinaxiv`/`russiarxiv` return only records containing **every** word, and read `OR` as a word: give them one or two key words, in English.
 
 Params (the tool descriptions have the rest):
 
 - `maxResults` (default 10, max 50) counts **per database and page**: two databases return up to 20.
 - `abstractMaxChars` cuts abstracts to that many characters (0 leaves them out). Ten whole abstracts run 20,000–30,000 characters: with several databases or many results set one (600 halves it). `abstractTruncated: true` (also on ChinaXiv/RussiaRxiv previews, cut at 500 characters) means `literature_fetch` the record for the whole abstract.
-- `page`: pass a result's `nextPage` with the same `maxResults` to read on. Each page is sorted on its own.
+- `page`: pass a result's `nextPage` with the same `maxResults` to read on. Each page is sorted on its own. Paging stops at each database's 10,000th record: a last page without `nextPage` that carries a paging-limit warning (PubMed, Europe PMC) is not the end of the results, so narrow the query.
 - `studyTypes` (e.g. `["meta-analysis","systematic-review","randomized-controlled-trial"]`): **use this to keep reviews and trials**. `cohort`, `case-control`, `cross-sectional` and `in-vitro` never match.
 - `minDesignTier` (4 = RCTs): drops every `null` tier, including most meta-analyses; read the warning.
 
@@ -83,7 +83,7 @@ Apply these to every answer, not only pivotal ones.
 - `literature_fetch({ids:["39123456","38987654"], database:"pubmed"})` — 1–50 ids of one database (a result's `id` and `database`): whole abstracts, publication types, MeSH, retraction/correction links, and the same `studyType`/`designTier`/`flags` as search.
 - `literature_fulltext({id:"39123456"})` — article body as markdown via Europe PMC (records with a `pmcid`) → Unpaywall → proxy → DOI; otherwise the abstract, and `warning` says why. A result's `id` works alone, with its prefix (`CBA:644599`; a bare number is a PMID); `doi` is only for an id Europe PMC doesn't know; a `url` is not a DOI. `warning` opens with `RETRACTED:`, `NOTICE:` or `EXPRESSION OF CONCERN:` when the record has that flag, even if the text came (say so first); it reads the record as the databases report it at the time, so the flags of search or fetch are the authority. A long text comes in parts: while `nextOffset` is set, call again with `offset: nextOffset`. An abstract returned in place of the text is cut to `maxChars` (`truncated: true`, no `nextOffset`): `literature_fetch` returns it whole. A PMCID, `PPR…` or `chinaxiv-…`/`ru-…` id that doesn't exist is `NOT_FOUND`.
 - NCBI is rate-limited: parallel calls are **safe** but don't run faster. Prefer a few precise queries.
-- A broad query is not an error: past 10,000 PubMed records the page comes with a warning that names the count; narrow it (a `[tiab]` term, an `AND` clause, a `dateRange`) before relying on the records. Errors: `RATE_LIMIT` (the server already retried; wait `retryAfter`); `NETWORK_ERROR`/`PARSE_FAILURE` (retry once, then say the DB is unreachable); `TIMEOUT` (retry, then ask for an earlier page or narrow the query); `INVALID_INPUT` and schema errors (fix the parameter named: database ids are lower case, dates must exist, a query needs a search term, not only quotes, brackets, operators or field tags; retrying the same one never helps). In a multi-database search, a database that fails while others answer shows up only in `warnings` (`<database> search failed: …`): say which is missing, never report it as "no studies found".
+- A broad query is not an error: past 10,000 PubMed records the page comes with a warning that names the count (Europe PMC warns on the page that reaches its 10,000th record); narrow it (a `[tiab]` term, an `AND` clause, a `dateRange`) before relying on the records. Errors: `RATE_LIMIT` (the server already retried; wait `retryAfter`); `NETWORK_ERROR`/`PARSE_FAILURE` (retry once, then say the DB is unreachable); `TIMEOUT` (retry, then ask for an earlier page or narrow the query); `INVALID_INPUT` and schema errors (fix the parameter named: database ids are lower case, dates must exist, a query needs a search term, not only quotes, brackets, operators or field tags; retrying the same one never helps). In a multi-database search, a database that fails while others answer shows up only in `warnings` (`<database> search failed: …`): say which is missing, never report it as "no studies found".
 
 ## Reporting
 

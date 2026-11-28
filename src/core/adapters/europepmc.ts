@@ -79,7 +79,7 @@
 import { LRUCache } from "lru-cache";
 import { defaultHttp, type AdapterHttp } from "./http.js";
 import { RestAdapter } from "./base.js";
-import { canonicalPmid, cleanDoi, first, isoDateBound, pageWindow, publicationDateClause, splitAuthors, strArray, toEuropePmcQuery, toIso1 } from "./util.js";
+import { canonicalPmid, cleanDoi, first, isoDateBound, MAX_PAGED_RECORDS, pageWindow, publicationDateClause, splitAuthors, strArray, toEuropePmcQuery, toIso1 } from "./util.js";
 import { designPublicationTypes, excludedPublicationTypes } from "../grader.js";
 import { STUDY_TYPES } from "../types.js";
 import { htmlToText } from "../text.js";
@@ -90,6 +90,15 @@ const CURSOR_MEMO_MAX = 500;
 const CURSOR_MEMO_TTL_MS = 60 * 60 * 1000;
 /** The most ids an `idlist` request returns. */
 const WALK_PAGE_SIZE = 1000;
+/**
+ * What a page that reaches the paging limit of a search says: it has no `nextPage`, and would read as the end of the
+ * results. Worded like PubMed's (pubmed.ts), but about the paging: Europe PMC itself goes on, its cursor returned records
+ * 10,001 to 10,010 of `diabetes metformin` (2026-11-28). The limit is {@link MAX_PAGED_RECORDS}, which `searchLiterature`
+ * applies to every database.
+ */
+const CAP_WARNING =
+  `Paging serves only the first ${MAX_PAGED_RECORDS.toLocaleString("en-US")} records of a Europe PMC search: narrow the query ` +
+  `(more specific terms, a dateRange or a studyTypes filter) to reach the rest.`;
 
 /**
  * Europe PMC matches `PUB_TYPE:"x"` as a run of words (any case, punctuation splitting words) in any type string of a
@@ -314,7 +323,12 @@ export class EuropePmcAdapter extends RestAdapter {
 
   private readonly paging = new LRUCache<string, QueryPaging>({ max: CURSOR_MEMO_MAX, ttl: CURSOR_MEMO_TTL_MS });
 
-  async search(input: SearchInput): Promise<{ count: number; ids: string[] }> {
+  /**
+   * The ids of the page asked for and the count of the search. A page that reaches the {@link MAX_PAGED_RECORDS}th record of
+   * a search with records after it carries a warning, since `searchLiterature` gives it no `nextPage`: a page that ends the
+   * search is the end, and has none.
+   */
+  async search(input: SearchInput): Promise<{ count: number; ids: string[]; warning?: string }> {
     const types = designPublicationTypes(input.studyTypes, input.minDesignTier);
     if (types?.length === 0) return { count: 0, ids: [] };
     const { offset, size } = pageWindow(input);
@@ -354,7 +368,8 @@ export class EuropePmcAdapter extends RestAdapter {
     this.remember(articles);
     const next = data?.nextCursorMark;
     if (next && next !== cursor) known.cursors.set(offset + (data?.resultList?.result?.length ?? 0), next);
-    return { count, ids: articles.map((a) => a.id) };
+    const capped = offset + size >= MAX_PAGED_RECORDS && count > offset + size;
+    return { count, ids: articles.map((a) => a.id), ...(capped ? { warning: CAP_WARNING } : {}) };
   }
 
   /**
