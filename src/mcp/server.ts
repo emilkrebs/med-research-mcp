@@ -149,6 +149,9 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   //   MeSH field and does not explode a heading). A tag after several unquoted words is removed too: PubMed searches them as a
   //   phrase only if its phrase index holds it (`sleep apnea[tiab]` is the phrase, `creatine cognition[tiab]` is creatine
   //   mapped to MeSH AND "cognition"[Title/Abstract]), hence the advice to quote a phrase. The ChinaRxiv adapter sends words only.
+  // - chinaxiv and russiarxiv match a query against ChinaRxiv's English text, checked 2026-11-28: on chinaxiv 糖尿病, 糖尿病 二甲双胍, 中国,
+  //   ダイエット and 당뇨병 found 0 records and diabetes 292; on russiarxiv диабет and вода found 0 and water 1,381. The warning
+  //   for such a query is in literature.ts, and the query is not translated.
   // - Size: for four generic queries, ten PubMed results came to 25,115-28,106 characters of JSON (PubMed's own answers run
   //   through searchLiterature), 12,760-13,330 with abstractMaxChars 600 and 6,577-7,154 with 0. The abstract text alone
   //   was 18,404-21,545 characters, about 2,000 per record.
@@ -179,7 +182,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
           "Options: pubmed, europepmc (PubMed's records plus preprints and other sources; it searches full text, so " +
           "papers that only mention the words match too), chinaxiv (Chinese preprints) and russiarxiv " +
           "(Soviet-era papers, mostly mathematics, physics and chemistry; almost no medicine), both via ChinaRxiv, a " +
-          "third-party service that machine-translates them into English.",
+          "third-party service that machine-translates them into English. chinaxiv and russiarxiv are searched in that " +
+          "English text, so query them in English: a query in Chinese, Japanese, Korean or Russian finds nothing there.",
       ),
     maxResults: z
       .number()
