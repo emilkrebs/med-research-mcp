@@ -140,18 +140,36 @@ describe("a query with nothing to search", () => {
       const adapter = untouched();
       const error = await search({ query }, [adapter]).catch((e: unknown) => e);
       expect(error, query).toMatchObject({ code: "INVALID_INPUT", recoverable: true });
-      expect((error as { userMessage: string }).userMessage, query).toContain("no letter or digit");
+      expect((error as { userMessage: string }).userMessage, query).toContain("no search term");
       expect((error as { userMessage: string }).userMessage, query).toContain("Send words or a quoted phrase");
       expect(adapter.search, query).not.toHaveBeenCalled();
     }
   });
 
-  it("is refused alone, with a design filter (which matched `()` against every clinical trial) and over several databases", async () => {
+  // Past the letter-or-digit test only because `tiab`, `AND` and `NOT` are letters; with a design filter each matched every record of the
+  // filter's publication types (1,287,132 at minDesignTier 2, 1,065,794 for NOT with the clinical-trial type; 2026-11-28).
+  it("is refused as INVALID_INPUT when it holds only operators and field tags", async () => {
+    for (const query of ["AND", "OR", "NOT", "AND OR", "OR NOT AND", "(AND)", "( NOT )", "[tiab]", "[mesh]", "[pt]", "[dp]", "()[tiab]", "[tiab] AND [mesh]", "NOT [tiab]", "[tiab[x]", "AND[tiab]"]) {
+      const adapter = untouched();
+      const error = await search({ query }, [adapter]).catch((e: unknown) => e);
+      expect(error, query).toMatchObject({ code: "INVALID_INPUT", recoverable: true });
+      expect((error as { userMessage: string }).userMessage, query).toContain("AND, OR and NOT, and field tags such as [tiab] are not terms");
+      expect(adapter.search, query).not.toHaveBeenCalled();
+    }
+  });
+
+  it("is refused alone, with a design filter (which matched it against every clinical trial) and over several databases", async () => {
     const [pubmedAdapter, europe] = [untouched("pubmed"), untouched("europepmc")];
     await expect(search({ query: "()", database: ["pubmed", "europepmc"], minDesignTier: 2 }, [pubmedAdapter, europe])).rejects.toMatchObject({
       code: "INVALID_INPUT",
     });
     await expect(search({ query: '"', studyTypes: ["clinical-trial"] }, [pubmedAdapter])).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    for (const query of ["NOT", "[tiab]", "AND OR"]) {
+      await expect(search({ query, minDesignTier: 2 }, [pubmedAdapter]), query).rejects.toMatchObject({ code: "INVALID_INPUT" });
+      await expect(search({ query, studyTypes: ["clinical-trial"], database: ["pubmed", "europepmc"] }, [pubmedAdapter, europe]), query).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+      });
+    }
     expect(pubmedAdapter.search).not.toHaveBeenCalled();
     expect(europe.search).not.toHaveBeenCalled();
   });
@@ -160,8 +178,13 @@ describe("a query with nothing to search", () => {
     await expect(search({ query: "   " }, [untouched()])).rejects.toMatchObject({ code: "INVALID_INPUT", userMessage: "The query is empty." });
   });
 
-  it("lets a query that works today through: unbalanced brackets and quotes round words, AND alone, emoji beside words, other scripts", async () => {
-    for (const query of ["diabetes)", "(diabetes", '"diabetes', 'diabetes"', "diabetes[", "AND", "OR", "💊 aspirin", "aspirin 💊", "阿司匹林", "Привет", "5", "COVID-19", "[tiab]", "()[tiab]", "(AND)", "٣"]) {
+  it("lets a query with a term through: unbalanced brackets and quotes round words, operators between terms, tags on words, emoji beside words, other scripts", async () => {
+    for (const query of [
+      "diabetes)", "(diabetes", '"diabetes', 'diabetes"', "diabetes[", "[tiab] diabetes", "💊 aspirin", "aspirin 💊", "阿司匹林", "Привет", "5", "٣",
+      "COVID-19", "5-HT", "SRC:PPR", '"sleep apnea"[tiab]', "sleep[tiab]", "tirzepatide NOT mice", "sleep OR apnea", "(sleep AND apnea)",
+      // Words that hold an operator, a quoted operator, and a lower-case one: all terms.
+      "NOTCH1", "ORAL", "ANDROGEN", '"AND"', "and", "tiab", "AND:x", "NOT,",
+    ]) {
       const adapter = untouched();
       await expect(search({ query }, [adapter]), query).resolves.toBeDefined();
       // At least once: a two-word query that finds nothing is probed word by word.
@@ -290,6 +313,33 @@ describe("phrases the server added to a PubMed query", () => {
     expect((await quick().esearch({ query: "tirzepatide qzxvbnmk", minDesignTier: 2 })).warning).toBe(
       'PubMed ignored "qzxvbnmk": no record contains it, so it searched without it.',
     );
+  });
+
+  // `Review` is the one type of the filter that is a single word, so esearch lists it as an ignored term; a phrase it keeps in the translation
+  // blocks, and one in the first list is a plain term. Not answers seen live (PubMed has all of these): the shapes the three lists could give.
+  it("leaves out the filter's phrase whichever of the three ways esearch reports it, and keeps the caller's own words beside it", async () => {
+    const warn = async (query: string, count: number, translation: string, lists: Record<string, unknown>) => {
+      vi.stubGlobal("fetch", vi.fn(async () => esearchJson(count, count > 0 ? range(1, 3) : [], { querytranslation: translation, ...lists })));
+      return (await quick().esearch({ query, studyTypes: ["review"] })).warning;
+    };
+    const quoted = (...terms: string[]) => ({ warninglist: { phrasesignored: [], quotedphrasesnotfound: terms, outputmessages: [] } });
+    // Left out of the translation: ignored, a word that no record contains (a one-word phrase), or a phrase searched as words.
+    const ignored = '"tirzepatide"[All Fields] AND ("Scoping Review"[Publication Type])';
+    expect(await warn("tirzepatide", 11, ignored, quoted('"Review"[pt]'))).toBeUndefined();
+    expect(await warn("tirzepatide", 11, '"tirzepatide"[All Fields]', { errorlist: { phrasesnotfound: ["Review"], fieldsnotfound: [] } })).toBeUndefined();
+    expect(await warn("tirzepatide", 11, '"tirzepatide"[All Fields]', quoted('"Review"[pt]', '"Scoping Review"[pt]'))).toBeUndefined();
+    // Kept in the translation, and the search found nothing: blocking, which would say "No PubMed record contains".
+    const kept = '"tirzepatide"[All Fields] AND ("Review"[Publication Type] OR "Scoping Review"[Publication Type])';
+    expect(await warn("tirzepatide", 0, kept, { ...quoted('"Review"[pt]', '"Scoping Review"[pt]'), errorlist: { phrasesnotfound: ["Review"], fieldsnotfound: [] } })).toBeUndefined();
+    // The caller's words beside them are still named, in each kind.
+    expect(await warn("tirzepatide qzxvbnmk", 11, '"tirzepatide"[All Fields]', { errorlist: { phrasesnotfound: ["qzxvbnmk", "Review"], fieldsnotfound: [] }, ...quoted('"Review"[pt]') })).toBe(
+      'PubMed ignored "qzxvbnmk": no record contains it, so it searched without it.',
+    );
+    expect(await warn("tirzepatide qzxvbnmk[tiab]", 0, `${kept} AND qzxvbnmk[tiab]`, { errorlist: { phrasesnotfound: ["qzxvbnmk", "Review"], fieldsnotfound: [] }, ...quoted('"Review"[pt]') })).toBe(
+      'No PubMed record contains "qzxvbnmk".',
+    );
+    // The caller's own "Review" is theirs, in the query: reported.
+    expect(await warn('tirzepatide "Review"', 0, kept, quoted('"Review"'))).toBe('No PubMed record contains "Review".');
   });
 
   it("does not suppress a phrase when there is no design filter to have added it", async () => {
