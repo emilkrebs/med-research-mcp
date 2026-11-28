@@ -109,8 +109,20 @@ export interface Article {
    */
   epubDate?: string;
   doi?: string;
-  /** NLM PublicationType tags (PubMed, Europe PMC). Empty for databases without them. */
+  /**
+   * NLM PublicationType tags (PubMed, Europe PMC), as PubMed lists them ("Journal Article", "Systematic Review"). Empty
+   * for databases without them. A Europe PMC record's own list also holds the publisher's article types
+   * ("research-article", "systematic-review"); those are in {@link articleTypes}, so that this list reads as PubMed's.
+   */
   publicationTypes: string[];
+  /**
+   * The publisher's article types of a Europe PMC record, as JATS names them in its `article-type` attribute
+   * ("research-article", "review-article", "case-report", "article-commentary", "systematic-review"): the type strings
+   * Europe PMC lists with the NLM ones, those with no capital letter (see europepmc.ts). The classifier reads them with
+   * {@link publicationTypes}. Absent when the record has none, and for every other database. A summary cached before
+   * this field existed may still hold them in `publicationTypes` until it expires.
+   */
+  articleTypes?: string[];
   /** MeSH descriptor names assigned by NLM (PubMed, Europe PMC). Absent until a record is MEDLINE-indexed. */
   meshHeadings?: string[];
   /**

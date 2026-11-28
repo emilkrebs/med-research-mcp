@@ -941,9 +941,16 @@ const NOTICE_KINDS: readonly [RegExp, string][] = [
 function standingNote(records: readonly (Article | null | undefined)[]): string | undefined {
   const graded = records.filter((r): r is Article => Boolean(r)).map((record) => ({ record, flags: classifyDesign(record).flags }));
   const having = (flag: RecordFlag): Article[] => graded.filter((g) => g.flags.includes(flag)).map((g) => g.record);
-  /** The notices that the records flagged `flag` link to by `type`, named by database and id. */
+  /**
+   * The notices that the records flagged `flag` link to by `type`, each named once, by database and id, as
+   * literature_fetch takes them. A PMID is one notice whichever database's copy of the article names it (a Europe PMC
+   * MEDLINE record's id is its PMID), so it is "pubmed <PMID>" and never the copy's own database: which copies are known
+   * doesn't change the list. Any other id (a preprint's PPR…, a PMC… id) is the database's own, and is named with it.
+   */
   const linked = (flag: RecordFlag, type: CorrectionType): string => {
-    const ids = having(flag).flatMap((r) => (r.corrections ?? []).filter((c) => c.type === type && c.id).map((c) => `${r.database ?? "pubmed"} ${c.id}`));
+    const ids = having(flag).flatMap((r) =>
+      (r.corrections ?? []).filter((c) => c.type === type && c.id).map((c) => `${/^\d+$/.test(c.id!) ? "pubmed" : (r.database ?? "pubmed")} ${c.id}`),
+    );
     const unique = [...new Set(ids)];
     return unique.length > 0 ? ` Linked notice${unique.length > 1 ? "s" : ""}: ${unique.join(", ")} (literature_fetch).` : "";
   };
@@ -954,7 +961,9 @@ function standingNote(records: readonly (Article | null | undefined)[]): string 
   }
   const notices = having("notice");
   if (notices.length > 0) {
-    const kinds = NOTICE_KINDS.filter(([kind]) => notices.some((r) => r.publicationTypes.some((t) => kind.test(t)))).map(([, name]) => name);
+    // The classifier's own view of a record's types: NLM's and a Europe PMC record's article types (JATS "retraction").
+    const typesOf = (r: Article): string[] => [...r.publicationTypes, ...(r.articleTypes ?? [])];
+    const kinds = NOTICE_KINDS.filter(([kind]) => notices.some((r) => typesOf(r).some((t) => kind.test(t)))).map(([, name]) => name);
     notes.push(`NOTICE: this record is ${kinds.length > 0 ? kinds.join(" and ") : "a notice"} (flag "notice"), not a study: its text is no evidence for a claim.`);
   }
   if (having("expression-of-concern").length > 0) {

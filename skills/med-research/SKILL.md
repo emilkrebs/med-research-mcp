@@ -13,7 +13,7 @@ Three tools, a triage-first workflow. **Always start with `literature_search`** 
 2. Read `warnings` and `flags` first. Then **read the abstract of every result whose `designTier` is `null`**: unclassified records and most meta-analyses/systematic reviews. Null means unrated, not weak.
 3. `literature_fetch` the ids you care about (with their `database`) to read whole abstracts.
 4. `literature_fulltext` **only** when the abstract isn't enough: dosage, sample sizes, methods, statistical flaws.
-5. Europe PMC records indexed in MEDLINE carry the same NLM labels as PubMed. Its preprints (`PPR…`) and `CBA:…` records have no design tag, so they are `unknown`, like all ChinaXiv/RussiaRxiv records — you classify them. ChinaXiv/RussiaRxiv come through ChinaRxiv, a third-party service; ChinaXiv records are preprints.
+5. Europe PMC records indexed in MEDLINE carry the same NLM labels as PubMed in `publicationTypes`; a Europe PMC record's `articleTypes` (`research-article`, `review-article`, …) are the publisher's own label, not NLM's, and set no `studyType`. Its preprints (`PPR…`) and `CBA:…` records have no design tag, so they are `unknown`, like all ChinaXiv/RussiaRxiv records — you classify them. ChinaXiv/RussiaRxiv come through ChinaRxiv, a third-party service; ChinaXiv records are preprints.
 
 ## Writing good queries (`literature_search`)
 

@@ -361,6 +361,8 @@ interface RegionalRecord {
   pubDate: string;
   journal: string;
   publicationTypes?: string[];
+  /** A Europe PMC record's publisher article types; the classifier reads them with `publicationTypes`. */
+  articleTypes?: string[];
   meshHeadings?: string[];
   corrections?: Correction[];
 }
@@ -426,6 +428,7 @@ export async function defaultRegionalLookup(item: RegionalId): Promise<PmidFacts
     pubDate: str(r.pubYear) || str(r.firstPublicationDate),
     journal: str(r.journalTitle),
     ...(meta?.publicationTypes.length ? { publicationTypes: meta.publicationTypes } : {}),
+    ...(meta?.articleTypes?.length ? { articleTypes: meta.articleTypes } : {}),
     ...(meta?.meshHeadings ? { meshHeadings: meta.meshHeadings } : {}),
     ...(meta?.corrections ? { corrections: meta.corrections } : {}),
   });

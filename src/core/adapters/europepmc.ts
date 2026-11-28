@@ -10,7 +10,8 @@
  * PMC, CBA, …) and an `id`; we key on `id` and reconstruct the article URL from both.
  * MEDLINE records carry the same NLM PublicationType tags, MeSH headings and
  * retraction/correction links as PubMed, so they classify the same way;
- * preprints are tagged "Preprint". A studyTypes or minDesignTier filter narrows
+ * preprints are tagged "Preprint". The publisher's JATS article types that Europe PMC lists among
+ * the NLM ones are kept apart, in `articleTypes` (see splitPubTypes). A studyTypes or minDesignTier filter narrows
  * the query with PUB_TYPE, as the PubMed client does with [pt], and for `unknown` and the
  * trial designs below the RCT also with NOT PUB_TYPE (see excludedPublicationTypes).
  *
@@ -242,6 +243,31 @@ export function exactIdQuery(id: string): string {
   return `EXT_ID:"${id.replace(/"/g, "")}"`;
 }
 
+/**
+ * Europe PMC's `pubTypeList` holds two vocabularies side by side: NLM's publication types, which PubMed lists too
+ * ("Journal Article", "Systematic Review", "Case Reports"), and the publisher's article type from the JATS `article-type`
+ * attribute ("research-article", "review-article", "case-report", "systematic-review", "article-commentary"). Of 2,297
+ * records sampled on 2026-11-28, 757 of 1,392 MEDLINE records and 331 of 605 PMC records had at least one, and none of
+ * the 200 preprints or 100 CBA records; a record is often typed twice, as `["Systematic Review", "systematic-review"]`.
+ * So that `publicationTypes` is comparable with PubMed's, the article types go to `articleTypes`, and the classifier reads
+ * both lists (see classifyDesign), so no record is graded differently for the split: all 2,297 got the same studyType,
+ * designTier and flags from the code before the split.
+ *
+ * What tells them apart is a capital letter. Every publication type on NLM's list has one (all 194 names on
+ * https://www.nlm.nih.gov/mesh/pubtypes.html, checked 2026-11-28), so no NLM name is ever moved, and every JATS value in
+ * the sample had none: research-article, review-article, article-commentary, case-report, systematic-review, brief-report,
+ * expression-of-concern, correction, methods-article, case-study, meeting-report, news, other. JATS allows any text and
+ * warns that publishers vary its case (https://jats.nlm.nih.gov/publishing/tag-library/1.3/attribute/article-type.html),
+ * so a capitalised one stays in `publicationTypes`: "Abstract", "Brief Report" and "Meeting Report" (PMC records),
+ * "Research article" and "Short communication" (CBA), and "IM" on one MEDLINE record, 128 strings in the sample. Telling
+ * them from NLM's names would take a list of those names, which NLM changes (it added Network Meta-Analysis and Human
+ * Challenge Trials in 2025): a name missing from the list would be moved to the wrong field until someone updated it.
+ */
+export function splitPubTypes(types: readonly string[]): { publicationTypes: string[]; articleTypes: string[] } {
+  const isArticleType = (type: string): boolean => !/\p{Lu}/u.test(type);
+  return { publicationTypes: types.filter((t) => !isArticleType(t)), articleTypes: types.filter(isArticleType) };
+}
+
 function toArticle(r: EpmcResult): Article | null {
   const rawId = first(r.id) ?? first(r.pmid);
   if (!rawId) return null;
@@ -249,6 +275,7 @@ function toArticle(r: EpmcResult): Article | null {
   const id = toEpmcId(source, rawId);
   const doi = cleanDoi(first(r.doi));
   const language = toIso1(first(r.language)) ?? "en";
+  const { publicationTypes, articleTypes } = splitPubTypes(strArray(r.pubTypeList?.pubType));
   const url =
     first(r.fullTextUrlList?.fullTextUrl?.[0]?.url) ?? `https://europepmc.org/article/${source}/${rawId}`;
 
@@ -259,7 +286,7 @@ function toArticle(r: EpmcResult): Article | null {
     journal:
       first(r.journalTitle) ?? first(r.journalInfo?.journal?.title) ?? first(r.bookOrReportDetails?.publisher) ?? "",
     pubDate: first(r.journalInfo?.dateOfPublication) ?? first(r.firstPublicationDate) ?? first(r.pubYear) ?? "",
-    publicationTypes: strArray(r.pubTypeList?.pubType),
+    publicationTypes,
     database: "europepmc",
     url,
     language,
@@ -273,6 +300,7 @@ function toArticle(r: EpmcResult): Article | null {
   if (pmcid && /^PMC\d+$/i.test(pmcid)) article.pmcid = pmcid.toUpperCase();
   const mesh = [r.meshHeadingList?.meshHeading ?? []].flat().map((h) => first(h?.descriptorName)).filter((m) => m != null);
   if (mesh.length > 0) article.meshHeadings = mesh;
+  if (articleTypes.length > 0) article.articleTypes = articleTypes;
   const corrections = toCorrections(r.commentCorrectionList);
   if (corrections.length > 0) article.corrections = corrections;
   return article;

@@ -341,11 +341,18 @@ export function unassignedStudyTypes(studyTypes?: readonly StudyType[]): StudyTy
   return (studyTypes ?? []).filter((t) => !assigned.has(t));
 }
 
-/** Classify a record from its metadata. Exposed for testing without constructing an Article. */
+/**
+ * Classify a record from its metadata. Exposed for testing without constructing an Article.
+ *
+ * The record's `articleTypes` (a Europe PMC record's JATS article types, kept apart from its NLM `publicationTypes`) are
+ * read with them, as one set of lower-cased strings: the classifier compares whole strings, so a record is graded as it was
+ * when Europe PMC's mixed list was all in `publicationTypes`. No JATS value is a design tag, but "editorial" and "letter",
+ * which JATS has and so do the tags, would match.
+ */
 export function classifyDesign(
-  meta: Pick<Article, "title" | "publicationTypes" | "meshHeadings" | "corrections" | "machineTranslated" | "machineGeneratedAbstract">,
+  meta: Pick<Article, "title" | "publicationTypes" | "articleTypes" | "meshHeadings" | "corrections" | "machineTranslated" | "machineGeneratedAbstract">,
 ): Classification {
-  const tags = lowerSet(meta.publicationTypes);
+  const tags = lowerSet([...(meta.publicationTypes ?? []), ...(meta.articleTypes ?? [])]);
   const mesh = lowerSet(meta.meshHeadings);
   const links = new Set((meta.corrections ?? []).map((c) => c.type));
 
