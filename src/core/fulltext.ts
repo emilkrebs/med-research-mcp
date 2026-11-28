@@ -28,11 +28,11 @@
  * answers 404 for.
  *
  * What a call fetches a text from is settled before anything is read from the cache: the PMCID of a PMC or preprint id
- * (a PMID's, read from its record), the DOI for Unpaywall and the proxy and direct routes, the ChinaRxiv id. A PMID's
- * record is read first, and a DOI given with the PMID must be the one it holds (see {@link fetchFulltext}). A text is
- * cached under the source it was fetched from, never under the id a caller asked with (see {@link fulltextCacheKey}), and
- * a call is answered with the DOI that text belongs to: one id can't be given another article's text, nor one DOI's text
- * be returned under another.
+ * (a PMID's, read from its record), the DOI for Unpaywall and the proxy and direct routes, the ChinaRxiv id. The
+ * record of an id is read first, and a DOI given with the id must be the one it holds (see {@link fetchFulltext}). A
+ * text is cached under the source it was fetched from, never under the id a caller asked with (see
+ * {@link fulltextCacheKey}), and a call is answered with the DOI that text belongs to: one id can't be given another
+ * article's text, nor one DOI's text be returned under another.
  *
  * The warning opens with the article's standing when a record of it is known and flagged retracted, a notice,
  * or with an expression of concern (see {@link standingNote}), whether or not a text was found. A record is
@@ -40,8 +40,9 @@
  * esummary for a PMID, efetch for its abstract, the Europe PMC or ChinaRxiv record. Where no
  * request is made anyway and no cache holds a record, one is asked for beside the text's own request, which takes
  * far longer, and the text waits for it at most STANDING_WAIT_MS: Europe PMC's record for a PMCID or preprint id (a
- * search caches a record under its PMID, where a PMCID doesn't find it), and for a DOI given with an id that is neither
- * of those, a PMID nor a ChinaRxiv id, whose own record would say nothing of that DOI, Europe PMC's record of the DOI.
+ * search caches a record under its PMID, where a PMCID doesn't find it), and, for a text fetched by a DOI that no record
+ * confirms (an id with no record of its own, or a record that has no DOI or can't be read in time), Europe PMC's record of
+ * the DOI: the record of the id says nothing of that DOI's text, so it isn't put into the warning of it.
  * Not for the later parts of a text (offset above 0), which the first call's lookup has served. It is read
  * from the records at every call and never stored with a text: a full text cached for 30 days is served with a
  * retraction recorded after it was cached.
@@ -86,12 +87,14 @@ const DEFAULT_MAX_CHARS = 50_000;
 const DEFAULT_TIMEOUT_MS = 20_000;
 /**
  * How long, counted from the start of a call, the text of a PMCID or preprint waits for Europe PMC's record of it, and the
- * text of a DOI given with an id of no record of its own for Europe PMC's record of the DOI, which are asked for beside the
- * text's own request, for the article's standing (see {@link fetchFulltext}). On 2026-11-16 the record of PMC12905075 by
- * PMCID answered in 50-301 ms (5 requests) and the text, `fullTextXML`, in 3.8-6.1 s (4 requests); the esummary of its PMID
+ * text of a DOI that no record confirms for Europe PMC's record of the DOI, which are asked for beside the text's own
+ * request, for the article's standing (see {@link fetchFulltext}). On 2026-11-16 the record of PMC12905075 by PMCID
+ * answered in 50-301 ms (5 requests) and the text, `fullTextXML`, in 3.8-6.1 s (4 requests); the esummary of its PMID
  * 41695609 answered in 211-706 ms (8 requests: 5 alone, 3 inside a call), while 5 calls given the PMID and its DOI took
  * 1.1-21.0 s, one of which found no text. The record is there long before the text, and only a lookup that outlasts this is
- * left out of the warning. A PMID's esummary is not waited for in this way: the call needs it to know the PMID's DOI and PMCID.
+ * left out of the warning. It is also the longest a call that was given a DOI waits for the record of its id, which says
+ * whether the DOI is the id's own and where else to fetch from; one that outlasts it goes on with the DOI unchecked. A PMID
+ * given alone waits for its esummary as long as it takes: without it there is no DOI to go on.
  */
 export const STANDING_WAIT_MS = 3_000;
 /** Extracted text shorter than this is treated as a paywall stub / failed extraction. */
@@ -219,6 +222,17 @@ export function fulltextCacheKey(source: CachedSource, ref: string): string {
   return `source:${source}:${source === "unpaywall" ? ref.toLowerCase() : ref.toUpperCase()}`;
 }
 
+/** The `source` of an entry that names the key of a text (see {@link pointerKey}), not a text. */
+const POINTER_SOURCE = "pointer";
+
+/**
+ * Where an entry is kept that names the key a PMID's text is cached under, so that a text still cached can be served
+ * while the PMID's record can't be read (a summary lasts 7 days, a text 30, and PubMed can be down). The call writes it
+ * only for a source the PMID's own record gave, never for a DOI that was given and couldn't be confirmed, so it can
+ * name only the PMID's own text; its `fulltext` is that key, and it expires with the entries of its store.
+ */
+const pointerKey = (pmid: string): string => `pointer:${pmid}`;
+
 /** A proxy, direct or ChinaRxiv text being read in parts. */
 interface Reading extends Extracted {
   source: Source;
@@ -308,28 +322,53 @@ export async function fetchFulltext(
   // The key records of this id are kept under: the id as Europe PMC and ChinaRxiv write it. An id of none of those shapes,
   // which arrives with a DOI, names no record: the DOI is all there is to go by, and no cache is read under the id.
   const recordId = chinarxivId ?? europePmcId ?? otherId ?? (isPmid(id) ? id : undefined);
-  // A DOI given with an id whose own record says nothing of it: not a PMID's (the DOI is checked against that record), a
-  // PMCID's or a preprint's (resolved by the id first), nor a ChinaRxiv id's. Europe PMC's record of the DOI is the one to read.
-  const standingDoi = inputDoi && !isPmid(id) && !europePmcId && !chinarxivId ? inputDoi : undefined;
+  // An id with a record of its own to check a DOI against: a PMID, a PMCID or preprint id, another id of Europe PMC's.
+  // (ChinaRxiv's records carry no DOI.)
+  const checkable = recordId !== undefined && !chinarxivId;
   // What the call knows of the article's record. `article` is the summary used to resolve it (below); `looked` holds
-  // the records fetched on the way, so that a cache that stores nothing doesn't hide them from the warning; `idRecord`
-  // is the id's own, whose DOI is the one a text fetched by the id's PMCID belongs to.
+  // the records of the id fetched on the way, so that a cache that stores nothing doesn't hide them from the warning;
+  // `idRecord` is the id's own, whose DOI is the one a text fetched by the id's PMCID belongs to; `byDoi` holds the
+  // records looked up by the DOI given.
   let article: Article | null = null;
   let idRecord: Article | undefined;
   const looked: Article[] = [];
-  /** The warning's first words: what the records say about the article's standing (see {@link standingNote}). */
-  const standing = (...more: (Article | undefined)[]): string | undefined =>
-    standingNote([article, ...looked, ...more, ...cachedRecords(cache, recordId, standingDoi)]);
+  const byDoi: Article[] = [];
+  /** The DOI the text is looked for by: given, or the record's. */
+  let doi: string | undefined;
+  /**
+   * Whether the DOI given is not known to be the id's own: the id's record has no DOI to confirm it with, it couldn't
+   * be read in time, there is no such record (an id of none of the shapes above, a ChinaRxiv id). A text fetched by
+   * that DOI is that DOI's, and the id's record has nothing to say of it (see `standingOf`).
+   */
+  let doiUnconfirmed = Boolean(inputDoi);
+  const startedAt = now();
+  /** `promise`'s value, but waiting for it no longer than STANDING_WAIT_MS from the start of the call. */
+  const standingWait = <T>(promise: Promise<T>): Promise<T | undefined> => within(Math.max(0, STANDING_WAIT_MS - (now() - startedAt)), promise);
+  /**
+   * The warning's first words: what the records say about the article's standing (see {@link standingNote}). The text of
+   * a `source` is the article of the id for Europe PMC's (by the id's PMCID) and ChinaRxiv's, and for the abstract
+   * returned in place of a text (no source); the records of the id speak for it. A text of the DOI (Unpaywall, proxy,
+   * direct) is the id's only while the DOI is: otherwise only the records looked up by the DOI speak for it, and an id
+   * with none of its own has only those.
+   */
+  const standingOf = (source: Source | undefined, ...more: (Article | undefined)[]): string | undefined => {
+    const doiRoute = source === "unpaywall" || source === "proxy" || source === "direct";
+    const own = [article, ...looked, ...cachedRecords(cache, recordId)];
+    const ofDoi = [...byDoi, ...cachedRecords(cache, undefined, doi)];
+    const records = recordId === undefined ? ofDoi : doiRoute ? (doiUnconfirmed ? ofDoi : [...own, ...ofDoi]) : own;
+    return standingNote([...records, ...more]);
+  };
+  const standing = (...more: (Article | undefined)[]): string | undefined => standingOf(undefined, ...more);
 
   // The record of an id PubMed doesn't know, from the database that holds it; of a PMID, PubMed's esummary, which is read
-  // before the call resolves (below); of a DOI given with no id to go by (see `standingDoi`), Europe PMC's. Each is
-  // looked up once, when first needed.
+  // before the call resolves (below); of a DOI that no record of an id confirms, Europe PMC's. Each is looked up once,
+  // when first needed.
   const adapterFor = deps.adapter ?? defaultAdapter;
   let recordLookup: Promise<Article | undefined> | undefined;
   let doiLookup: Promise<Article | undefined> | undefined;
-  const recordOfDoi = (doi: string): Promise<Article | undefined> =>
-    (doiLookup ??= lookUpByDoi(doi, cache, adapterFor).then((found) => {
-      if (found) looked.push(found);
+  const recordOfDoi = (d: string): Promise<Article | undefined> =>
+    (doiLookup ??= lookUpByDoi(d, cache, adapterFor).then((found) => {
+      if (found) byDoi.push(found);
       return found;
     }));
   const record = (): Promise<Article | undefined> =>
@@ -342,17 +381,23 @@ export async function fetchFulltext(
         })
       : recordOfDoi(inputDoi!));
 
-  // A PMCID or preprint id, or a DOI given with an id of no record of its own, whose record no cache holds and which the
-  // text's own request doesn't return: asked for beside that request, so that the warning can open with the article's
-  // standing. A PMCID alone never finds a record a search cached under its PMID, and a DOI alone has no record to
-  // find, so a retracted paper's text would be returned with nothing to say so. The text waits for the record at most
-  // STANDING_WAIT_MS from here (the record is usually there within the first half second, long before the text), and
-  // a lookup that fails or is late is left out: it goes on, and its record is kept for the next call. The DOI given
-  // still drives the resolution. Not for the later parts of a text, which the first call's lookup has served.
+  // A PMCID or preprint id whose record no cache holds and which the text's own request doesn't return: asked for beside
+  // that request, so that the warning can open with the article's standing. A PMCID alone never finds a record a search
+  // cached under its PMID, so a retracted paper's text would be returned with nothing to say so. The text waits for the
+  // record at most STANDING_WAIT_MS from here (the record is usually there within the first half second, long before
+  // the text), and a lookup that fails or is late is left out: it goes on, and its record is kept for the next call.
+  // Not for the later parts of a text, which the first call's lookup has served.
   const standingLookup: Promise<unknown> | undefined =
-    (europePmcId || standingDoi) && offset === 0 && cachedRecords(cache, recordId, standingDoi).length === 0
-      ? within(STANDING_WAIT_MS, europePmcId ? record() : recordOfDoi(standingDoi!))
-      : undefined;
+    europePmcId && offset === 0 && cachedRecords(cache, recordId).length === 0 ? within(STANDING_WAIT_MS, record()) : undefined;
+
+  // The same for a DOI that is not known to be the id's own (see `doiUnconfirmed`): the record of the DOI, from Europe
+  // PMC, is what a text of the DOI is flagged by. Started once, when such a text is about to be read or fetched, and
+  // waited for there, at most STANDING_WAIT_MS from the start of the call.
+  let doiStanding: Promise<unknown> | undefined;
+  const doiStandingLookup = (): Promise<unknown> | undefined => {
+    if (!doiUnconfirmed || !doi || offset > 0) return undefined;
+    return (doiStanding ??= cachedRecords(cache, undefined, doi).length === 0 ? standingWait(recordOfDoi(doi)) : undefined);
+  };
 
   // The part asked for. A proxy, direct or ChinaRxiv text that goes on is kept for the next part, and any other text
   // replaces it: the next part comes from the text this one came from. It is kept under the source it was fetched
@@ -369,7 +414,7 @@ export async function fetchFulltext(
   const serve = (text: Extracted, source: Source, label: string | undefined): FulltextOutput => {
     // The standing is read from the records at every call, never stored with a text: a text cached for 30 days
     // is served with the warning of a retraction recorded after it was cached.
-    const warning = joinNotes(standing(), text.warning);
+    const warning = joinNotes(standingOf(source), text.warning);
     const out: FulltextOutput = {
       id,
       ...(label ? { doi: label } : {}),
@@ -386,19 +431,43 @@ export async function fetchFulltext(
     return out;
   };
 
-  // 1. Resolve what the id stands for. A PMID's record gives its DOI and PMCID, so it is read first, from the cache or
-  // esummary, and a DOI given with the PMID is checked against it. Where the record can't be read the DOI given is all there
-  // is (a failed request is no error then), and nothing is mislabelled by that: a text is cached under the source it was
-  // fetched from. Without a DOI the PMID has nothing else to go on, and a failed request is an error of the call.
+  // The text of a PMID that an earlier call served, found through the entry kept for the PMID (see `pointerKey`): what
+  // a call falls back to when the record can't be read, so that a text still cached is served while PubMed is down.
+  const pointedText = (): FulltextOutput | undefined => {
+    const pointer = cache.getFulltext(pointerKey(id));
+    const target = pointer?.source === POINTER_SOURCE && pointer.fulltext.startsWith("source:") ? cache.getFulltext(pointer.fulltext) : null;
+    if (!pointer || !target || !pointer.fulltext.startsWith(`source:${target.source}:`) || !OPEN_ACCESS_SOURCES.has(target.source)) return undefined;
+    return serve(target, target.source as Source, target.doi);
+  };
+
+  // 1. Resolve what the id stands for. The record of an id gives its DOI and PMCID, so it is read first, from the cache
+  // or its database: for a PMID esummary, for the others the record Europe PMC holds. A DOI given with such an id is
+  // checked against it, waiting for the record at most STANDING_WAIT_MS; where it can't be read in time the DOI given is
+  // all there is (a failed request is no error then), and nothing is mislabelled by that: a text is cached under the
+  // source it was fetched from, and the id's record doesn't speak for it (see `doiUnconfirmed`). Without a DOI a PMID
+  // has nothing else to go on, and a failed request is an error of the call, unless a text of the PMID is still cached.
   article = recordId ? (cache.getSummary(recordId) ?? cache.getSummary(ownSummaryKey(recordId)) ?? cache.getSummary(`europepmc:${recordId}`)) : null;
-  if (!article && isPmid(id)) article = (inputDoi ? await record() : await esummaryOf(id, cache, client)) ?? null;
-  const recordDoi = isPmid(id) ? normalizeDoi(article?.doi) : undefined;
+  if (!article && checkable) {
+    if (inputDoi) {
+      article = (await standingWait(record())) ?? null;
+    } else if (isPmid(id)) {
+      try {
+        article = (await esummaryOf(id, cache, client)) ?? null;
+      } catch (err) {
+        const pointed = pointedText();
+        if (pointed) return pointed;
+        throw err;
+      }
+    }
+  }
+  const recordDoi = checkable ? normalizeDoi(article?.doi) : undefined;
   if (inputDoi && recordDoi && inputDoi.toLowerCase() !== recordDoi.toLowerCase()) {
     throw errors.invalidInput(
-      `The doi ${inputDoi} is not the DOI of PMID ${id}: its record has ${recordDoi}. Leave out doi, which is read from the record, or pass ${recordDoi}.`,
+      `The doi ${inputDoi} is not the DOI of ${isPmid(id) ? "PMID " : ""}${id}: its record has ${recordDoi}. Leave out doi, which is read from the record, or pass ${recordDoi}.`,
     );
   }
-  let doi = inputDoi ?? normalizeDoi(article?.doi);
+  doiUnconfirmed = Boolean(inputDoi) && !recordDoi;
+  doi = inputDoi ?? normalizeDoi(article?.doi);
 
   // The abstract: the landing-page check needs it, and the fallback returns it. Looked up once, when first needed.
   let abstractLookup: Promise<string | undefined> | undefined;
@@ -435,23 +504,40 @@ export async function fetchFulltext(
   const ownDoi = (): string | undefined =>
     [article, idRecord, ...cachedRecords(cache, recordId)].map((r) => normalizeDoi(r?.doi)).find(Boolean);
 
+  /**
+   * Leaves an entry for a PMID that names the key its text is kept under (see `pointerKey`), so that the text can be
+   * found again without the PMID's record. Only for a source the PMID's own record gave: not a DOI that was given and
+   * couldn't be confirmed.
+   */
+  const point = (key: string, source: CachedSource): void => {
+    if (!isPmid(id) || (source === "unpaywall" && doiUnconfirmed)) return;
+    if (cache.getFulltext(pointerKey(id))?.fulltext !== key) {
+      cache.setFulltext(pointerKey(id), { source: POINTER_SOURCE, fulltext: key, format: "markdown", fetchedAt: now() });
+    }
+  };
+
   /** The text kept for the source this call would fetch from, served; undefined when there is none. */
   const keptText = async (source: CachedSource): Promise<FulltextOutput | undefined> => {
     const key = cacheKeyOf(source);
     const cached = key ? cache.getFulltext(key) : null;
     // Only a text of the source it is kept for counts: a proxy or direct text, which 0.5.0 also cached, is never served.
-    if (!cached || cached.source !== source) return undefined;
+    if (!key || !cached || cached.source !== source) return undefined;
     await standingLookup;
+    if (source === "unpaywall") await doiStandingLookup();
+    point(key, source);
     return serve(cached, source, cached.doi ?? (source === "europepmc" ? ownDoi() : doi));
   };
 
   // 2. A text being read in parts, then a cached one: either holds the whole text, so every part is cheap. The cache
-  // is read for the sources this call fetches from, in the order it tries them below. An Unpaywall copy is not read
-  // before Europe PMC has been tried, where the id has a PMCID (see below): as on a cold cache, Europe PMC's text is the
-  // one returned, so the same paper doesn't read differently depending on what an earlier call kept.
+  // is read for the sources this call fetches from, in the order it tries them below. From the start of a text, an
+  // Unpaywall copy is not read before Europe PMC has been tried, where the id has a PMCID (see below): as on a cold
+  // cache, Europe PMC's text is the one returned, so the same paper doesn't read differently depending on what an
+  // earlier call kept. A later part reads every source kept before it goes to the network, since the part must come
+  // from the text the first came from, and Europe PMC, which failed then, may answer now (or the record, which couldn't
+  // be read then, can now).
   const current = offset > 0 ? readingKeys().map((key) => reading.get(key)).find(Boolean) : undefined;
   if (current) return serve(current, current.source, current.doi);
-  const kept = (await keptText("europepmc")) ?? (pmcid ? undefined : await keptText("unpaywall"));
+  const kept = (await keptText("europepmc")) ?? (pmcid && offset === 0 ? undefined : await keptText("unpaywall"));
   if (kept) return kept;
 
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -504,6 +590,7 @@ export async function fetchFulltext(
         continue;
       }
       await standingLookup;
+      if (source !== "europepmc") await doiStandingLookup();
       // Europe PMC's text is the PMCID's, so it belongs to the DOI of the record of that PMCID, not to one a caller gave;
       // any other source's is the DOI it was fetched for.
       const label = source === "europepmc" ? ownDoi() : doi;
@@ -511,8 +598,9 @@ export async function fetchFulltext(
       // belong to. A proxy or direct text may be licensed to this user alone, and the cache can outlive the session or
       // serve other callers.
       const key = cacheKeyOf(source);
-      if (key && OPEN_ACCESS_SOURCES.has(source)) {
+      if (key && (source === "europepmc" || source === "unpaywall")) {
         cache.setFulltext(key, { source, fulltext: got.fulltext, format: got.format, fetchedAt: now(), ...(label ? { doi: label } : {}) });
+        point(key, source);
       }
       return serve(got, source, label);
     }
@@ -530,7 +618,9 @@ export async function fetchFulltext(
         // In the text's own warning, which every part carries: a ChinaRxiv text is read in parts from memory.
         const found = await record();
         const note = joinNotes(standingNote([found]), translationNote(found));
-        return serve({ fulltext: text, format: "markdown", ...(note ? { warning: note } : {}) }, source, doi);
+        // Labelled with the DOI of ChinaRxiv's own record, if it has one, never the caller's: the text is a translation of
+        // that record, and a part read later from memory carries the label too.
+        return serve({ fulltext: text, format: "markdown", ...(note ? { warning: note } : {}) }, source, normalizeDoi(found?.doi));
       }
       misses.push({ source, kind: "no-text" });
     } catch (err) {
@@ -563,6 +653,8 @@ export async function fetchFulltext(
   const unpaywall = deps.unpaywall ?? new UnpaywallClient({ tool: client.tool });
   let unpaywallAnswer: UnpaywallLookup | undefined;
   if (doi) {
+    // Beside the lookup and the page requests, so that a text of a DOI no record confirms is flagged by the DOI's own.
+    void doiStandingLookup();
     unpaywallAnswer = await safeLookup(unpaywall, doi);
     const urls = unpaywallAnswer.status === "found" ? openAccessUrls(unpaywallAnswer.result.urls) : [];
     const unpaywallOut = await attempt("unpaywall", urls);
@@ -579,6 +671,7 @@ export async function fetchFulltext(
   let text = await abstract();
   const chinarxivRecord = chinarxivId ? await record() : undefined;
   await standingLookup;
+  await doiStandingLookup();
   const doiUnknown = misses.some((m) => m.source === "direct" && m.kind === "status" && (m.status === 404 || m.status === 410) && m.host === "doi.org");
   if (doi && doiUnknown && !text) throw errors.doiNotFound(doi);
   // A PMCID or preprint id that no route found text for, and of which Europe PMC answers a lookup of the record with none,
@@ -716,17 +809,29 @@ async function lookUpRecord(
 /** Where the record of a DOI is kept: next to the summaries this module looks up itself, under the DOI, which has no case. */
 const doiSummaryKey = (doi: string): string => ownSummaryKey(`doi:${doi.toLowerCase()}`);
 
+/** How long the answer "Europe PMC has no record of this DOI" is remembered, so that repeated calls don't repeat the search. */
+const DOI_MISS_TTL_MS = 10 * 60 * 1000;
+/** The DOIs Europe PMC had no record of, per cache, in memory only: a miss is no record to keep for the next process. */
+const doiMisses = new WeakMap<Cache, LRUCache<string, true>>();
+
 /**
  * The record of a DOI, from Europe PMC (which holds PubMed's records too; see {@link RecordSource.fetchByDoi}), for the
- * standing of an article that no id names, and for its abstract. Kept for the next call under {@link doiSummaryKey}. A
- * failed lookup is no record: callers carry on without.
+ * standing of a text fetched by a DOI that no record confirms, and for the abstract of an id that has no other. Kept for
+ * the next call under {@link doiSummaryKey}; that Europe PMC has none is remembered for {@link DOI_MISS_TTL_MS}. A failed
+ * lookup is no record and is not remembered: callers carry on without.
  */
 async function lookUpByDoi(doi: string, cache: Cache, adapterFor: NonNullable<FulltextDeps["adapter"]>): Promise<Article | undefined> {
   const known = cache.getSummary(doiSummaryKey(doi));
   if (known) return known;
+  let misses = doiMisses.get(cache);
+  if (!misses) doiMisses.set(cache, (misses = new LRUCache({ max: 1000, ttl: DOI_MISS_TTL_MS })));
+  if (misses.has(doi.toLowerCase())) return undefined;
   try {
-    const found = (await (await adapterFor("europepmc"))?.fetchByDoi?.(doi)) ?? undefined;
+    const adapter = await adapterFor("europepmc");
+    if (!adapter?.fetchByDoi) return undefined;
+    const found = (await adapter.fetchByDoi(doi)) ?? undefined;
     if (found) cache.setSummary(doiSummaryKey(doi), found);
+    else misses.set(doi.toLowerCase(), true);
     return found;
   } catch {
     return undefined;
@@ -895,8 +1000,9 @@ async function resolveAbstract(
     const data = (await client.efetch([id])).get(id);
     if (data) {
       // Without a summary (a DOI was given with the PMID) the record is only what efetch says of it, and isn't cached.
+      // Nor is a record of Europe PMC's, which the bare PMID's summary, served by search and fetch as PubMed's, must not hold.
       const completed = withEfetch(article ?? { id, title: "", authors: [], journal: "", pubDate: "", publicationTypes: [] }, data);
-      if (article) cache.setSummary(id, completed);
+      if (article && (article.database ?? "pubmed") === "pubmed") cache.setSummary(id, completed);
       learn(completed);
     }
     const abstract = data?.abstract;

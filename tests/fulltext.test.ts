@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { defaultJatsToMarkdown, fetchFulltext, fulltextCacheKey, STANDING_WAIT_MS, type FetchedResource, type FulltextDeps } from "../src/core/fulltext";
+import { defaultJatsToMarkdown, fetchFulltext as fetchFulltextWith, fulltextCacheKey, STANDING_WAIT_MS, type FetchedResource, type FulltextDeps } from "../src/core/fulltext";
 import { UnpaywallClient, type UnpaywallLookup, type UnpaywallResult } from "../src/core/unpaywall";
 import { EuropePmcAdapter } from "../src/core/adapters/europepmc";
 import { ChinaRXivAdapter } from "../src/core/adapters/chinarxiv";
 import type { AdapterHttp } from "../src/core/adapters/http";
-import { FULLTEXT_TTL_MS, LRUBackend } from "../src/core/cache";
+import { FULLTEXT_TTL_MS, LRUBackend, type Cache } from "../src/core/cache";
 import { fetchPubMed, NcbiClient } from "../src/core/pubmed";
 import { PROJECT_CONTACT_EMAIL } from "../src/core/version";
 import { errors, ResearchApiException } from "../src/core/errors";
@@ -83,6 +83,23 @@ function fakeEuropePmc(records: Article[] = []) {
 // network. A test that reaches one without injecting `adapter` fails here, instead of its request
 // being swallowed as a failed lookup.
 const strayRequests: string[] = [];
+
+/**
+ * What a test that injects no `adapter` gets: Europe PMC holds no record of any DOI (a DOI that no record of its id
+ * confirms is looked up there, which many of these tests, given a PMID with its DOI and no summary, cause without caring
+ * for the answer), and a lookup of an id is recorded as a stray request, as the registry's adapters' would be.
+ */
+const defaultAdapter: FulltextDeps["adapter"] = (database) => ({
+  fetch: async (ids: string[]) => {
+    strayRequests.push(`${database} lookup of ${ids.join(", ")}`);
+    return [];
+  },
+});
+
+/** `fetchFulltext`, with `defaultAdapter` for a test that names none. */
+function fetchFulltext(input: Parameters<typeof fetchFulltextWith>[0], cache?: Cache, client?: NcbiClient, deps: FulltextDeps = {}) {
+  return fetchFulltextWith(input, cache, client, { adapter: defaultAdapter, ...deps });
+}
 beforeEach(() => {
   strayRequests.length = 0;
   vi.stubGlobal("fetch", async (url: unknown) => {
@@ -674,14 +691,24 @@ describe("fetchFulltext — other Europe PMC ids, looked up like a preprint's", 
     expect(europePmc.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("uses a DOI the caller gave without asking Europe PMC for the record's, as before", async () => {
+  it("checks a DOI the caller gave against the record's: refused when it is another, used when it is the record's or the record has none", async () => {
     const europePmc = fakeEuropePmc([{ ...CBA_RECORD, doi: CBA_DOI }]);
     const lookup = vi.fn(async (): Promise<UnpaywallLookup> => ({ status: "none" }));
-    const out = await fetchFulltext({ id: CBA, doi: DOI }, new LRUBackend(), fakeClient(), { unpaywall: { lookup } as unknown as UnpaywallClient, fetchUrl: async () => paywalled(), adapter: europePmc.adapter });
+    const deps = (adapter: FulltextDeps["adapter"]): FulltextDeps => ({ unpaywall: { lookup } as unknown as UnpaywallClient, fetchUrl: async () => paywalled(), adapter });
+    // Another DOI: nothing is looked for under it.
+    const error = await fetchFulltext({ id: CBA, doi: DOI }, new LRUBackend(), fakeClient(), deps(europePmc.adapter)).catch((e: unknown) => e as ResearchApiException);
+    expect(error).toMatchObject({ code: "INVALID_INPUT" });
+    expect(error.userMessage).toContain(`${CBA}: its record has ${CBA_DOI}`);
+    expect(lookup).not.toHaveBeenCalled();
+    // The record's own, whatever its form.
+    const same = await fetchFulltext({ id: CBA, doi: `https://doi.org/${CBA_DOI.toUpperCase()}` }, new LRUBackend(), fakeClient(), deps(europePmc.adapter));
+    expect(lookup).toHaveBeenCalledWith(CBA_DOI.toUpperCase());
+    expect(same).toMatchObject({ source: "none", doi: CBA_DOI.toUpperCase(), fulltext: "The CBA record's abstract." });
+    // A record without one can't say, and the DOI given is the only one there is.
+    lookup.mockClear();
+    const bare = await fetchFulltext({ id: CBA, doi: DOI }, new LRUBackend(), fakeClient(), deps(fakeEuropePmc([CBA_RECORD]).adapter));
     expect(lookup).toHaveBeenCalledWith(DOI);
-    expect(out.doi).toBe(DOI);
-    // Only the fallback asks for the abstract.
-    expect(out).toMatchObject({ source: "none", fulltext: "The CBA record's abstract." });
+    expect(bare).toMatchObject({ source: "none", doi: DOI, fulltext: "The CBA record's abstract." });
   });
 
   it("uses the record's DOI over a url given as the doi", async () => {
@@ -927,14 +954,17 @@ describe("fetchFulltext — Europe PMC by PMCID", () => {
       expect(europePmc.fetch).toHaveBeenCalledTimes(1);
     });
 
-    it("keeps a DOI the caller gave over the record's", async () => {
-      const europePmc = fakeEuropePmc([{ ...PREPRINT, doi: PREPRINT_DOI }]);
+    it("refuses a DOI the caller gave when it isn't the record's, and keeps one the record can't contradict", async () => {
       const lookup = vi.fn(async (): Promise<UnpaywallLookup> => ({ status: "none" }));
-      const out = await fetchFulltext({ id: "PPR123456", doi: DOI }, new LRUBackend(), fakeClient(), {
-        unpaywall: { lookup } as unknown as UnpaywallClient,
-        fetchUrl: noText,
-        adapter: europePmc.adapter,
-      });
+      const deps = (adapter: FulltextDeps["adapter"]): FulltextDeps => ({ unpaywall: { lookup } as unknown as UnpaywallClient, fetchUrl: noText, adapter });
+      const error = await fetchFulltext({ id: "PPR123456", doi: DOI }, new LRUBackend(), fakeClient(), deps(fakeEuropePmc([{ ...PREPRINT, doi: PREPRINT_DOI }]).adapter)).catch(
+        (e: unknown) => e as ResearchApiException,
+      );
+      expect(error).toMatchObject({ code: "INVALID_INPUT" });
+      expect(error.userMessage).toContain(`PPR123456: its record has ${PREPRINT_DOI}`);
+      expect(lookup).not.toHaveBeenCalled();
+      // A record without a DOI can't contradict it.
+      const out = await fetchFulltext({ id: "PPR123456", doi: DOI }, new LRUBackend(), fakeClient(), deps(fakeEuropePmc([PREPRINT]).adapter));
       expect(lookup).toHaveBeenCalledWith(DOI);
       expect(out.doi).toBe(DOI);
     });
@@ -957,14 +987,16 @@ describe("fetchFulltext — Europe PMC by PMCID", () => {
       const cba: Article = { ...PREPRINT, id: "CBA:644599", journal: "Chin Med J", publicationTypes: [], abstract: "The CBA record's abstract." };
       const cache = new LRUBackend();
       cache.setSummary("europepmc:CBA:644599", cba);
-      const http: AdapterHttp = { json: vi.fn(async () => ({})) as AdapterHttp["json"], text: async () => "" };
+      const asked: string[] = [];
+      const http: AdapterHttp = { json: (async (url: string) => (asked.push(new URL(url).searchParams.get("query")!), {})) as AdapterHttp["json"], text: async () => "" };
       const out = await fetchFulltext({ id: "CBA:644599", doi: DOI }, cache, fakeClient(), {
         unpaywall: fakeUnpaywall(null),
         fetchUrl: async () => paywalled(),
         adapter: () => new EuropePmcAdapter(http),
       });
       expect(out).toMatchObject({ source: "none", fulltext: "The CBA record's abstract." });
-      expect(http.json).not.toHaveBeenCalled();
+      // The record has no DOI to confirm the one given, so that DOI's own record is looked up; the id's, never.
+      expect(asked).toEqual([`DOI:"${DOI}"`]);
     });
 
     it("uses the record a search just found in the adapter's memory, and otherwise asks Europe PMC for the exact id", async () => {
@@ -1767,20 +1799,48 @@ describe("fetchFulltext — a PMID given with its DOI, whose record no cache hol
     expect(esummary).toHaveBeenCalledTimes(1);
   });
 
-  it("waits for the record as long as it takes, before it asks for a text, for it says where to look", async () => {
-    let release!: (found: Map<string, Article>) => void;
-    const { client } = pubmed(() => new Promise((resolve) => (release = resolve)));
-    const fetchUrl = vi.fn(async (url: string) => pdfResource(new Uint8Array([1]), url));
-    const deps: FulltextDeps = { ...paths[1]!.deps(), fetchUrl };
-    const call = fetchFulltext({ id: PMID, doi: DOI }, new LRUBackend(), client, deps);
-    // Well past the wait a PMCID's record is given beside the text's request (see STANDING_WAIT_MS): nothing is fetched yet.
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(fetchUrl).not.toHaveBeenCalled();
-    release(new Map([[PMID, retracted]]));
-    const out = await call;
-    expect(out).toMatchObject({ source: "unpaywall", doi: DOI });
-    expect(out.warning).toBe(WARNING_START);
-    expect(fetchUrl).toHaveBeenCalledTimes(1);
+  it(`waits for the record before it asks for a text, for it says where to look, but no longer than ${STANDING_WAIT_MS} ms`, async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let release!: (found: Map<string, Article>) => void;
+      const { client, esummary } = pubmed(() => new Promise((resolve) => (release = resolve)));
+      const fetchUrl = vi.fn(async (url: string) => pdfResource(new Uint8Array([1]), url));
+      const deps: FulltextDeps = { ...paths[1]!.deps(), fetchUrl };
+      const cache = new LRUBackend();
+      const call = fetchFulltext({ id: PMID, doi: DOI }, cache, client, deps);
+      await vi.advanceTimersByTimeAsync(STANDING_WAIT_MS - 1);
+      expect(fetchUrl).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      // The record is late: the DOI given is used unchecked, and the PMID's record, which can't say that it is the PMID's,
+      // doesn't speak for the text, even when it arrives before the text is returned.
+      release(new Map([[PMID, retracted]]));
+      const out = await call;
+      expect(out).toMatchObject({ source: "unpaywall", doi: DOI });
+      expect(out.warning).toBeUndefined();
+      expect(fetchUrl).toHaveBeenCalledTimes(1);
+      expect(esummary).toHaveBeenCalledTimes(1);
+      // It is kept for the next call, which has the record, and so the text's warning.
+      expect((await fetchFulltext({ id: PMID, doi: DOI }, cache, client, deps)).warning).toBe(WARNING_START);
+      expect(esummary).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for the esummary of a PMID given alone as long as it takes, for it has no DOI without it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let release!: (found: Map<string, Article>) => void;
+      const { client } = pubmed(() => new Promise((resolve) => (release = resolve)));
+      const fetchUrl = vi.fn(async (url: string) => pdfResource(new Uint8Array([1]), url));
+      const call = fetchFulltext({ id: PMID }, new LRUBackend(), client, { ...paths[1]!.deps(), fetchUrl });
+      await vi.advanceTimersByTimeAsync(10 * STANDING_WAIT_MS);
+      expect(fetchUrl).not.toHaveBeenCalled();
+      release(new Map([[PMID, retracted]]));
+      expect(await call).toMatchObject({ source: "unpaywall", doi: DOI, warning: WARNING_START });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refuses a DOI that is not the one the PMID's record has, naming both, and fetches nothing", async () => {
@@ -1800,7 +1860,7 @@ describe("fetchFulltext — a PMID given with its DOI, whose record no cache hol
     expect(fetchUrl).not.toHaveBeenCalled();
   });
 
-  it("takes the DOI of the record as the PMID's, whatever its case or form, and goes on without one when the record has none", async () => {
+  it("takes the DOI of the record as the PMID's, whatever its case or form", async () => {
     const lookup = vi.fn(async (): Promise<UnpaywallLookup> => ({ status: "found", result: { doi: DOI, isOa: true, urls: ["https://oa.example/paper.pdf"] } }));
     const deps: FulltextDeps = {
       unpaywall: { lookup, sharedContact: false } as unknown as UnpaywallClient,
@@ -1811,13 +1871,26 @@ describe("fetchFulltext — a PMID given with its DOI, whose record no cache hol
       [DOI.toUpperCase(), DOI],
       [DOI, `https://doi.org/${DOI.toUpperCase()}`],
       [DOI, `doi:${DOI}`],
-      [undefined, DOI],
     ] as const) {
       const { client } = pubmed(async (ids) => new Map([[ids[0]!, { ...retracted, doi: recorded }]]));
       const out = await fetchFulltext({ id: PMID, doi: given }, new LRUBackend(), client, deps);
       expect(out.source, `${recorded} ${given}`).toBe("unpaywall");
       expect(out.warning, `${recorded} ${given}`).toBe(WARNING_START);
     }
+  });
+
+  it("goes on with the DOI given when the record has none, without the record's warning, which isn't the DOI's", async () => {
+    const lookup = vi.fn(async (): Promise<UnpaywallLookup> => ({ status: "found", result: { doi: DOI, isOa: true, urls: ["https://oa.example/paper.pdf"] } }));
+    const deps: FulltextDeps = {
+      unpaywall: { lookup, sharedContact: false } as unknown as UnpaywallClient,
+      fetchUrl: async (url) => pdfResource(new Uint8Array([1]), url),
+      pdfToText: async () => "Text. " + "content ".repeat(200),
+    };
+    const { client } = pubmed(async (ids) => new Map([[ids[0]!, { ...retracted, doi: undefined }]]));
+    const out = await fetchFulltext({ id: PMID, doi: DOI }, new LRUBackend(), client, deps);
+    expect(out).toMatchObject({ source: "unpaywall", doi: DOI });
+    expect(lookup).toHaveBeenCalledWith(DOI);
+    expect(out.warning).toBeUndefined();
   });
 
   it.each(paths)("returns what it has on $name when the lookup fails or finds no record, and never throws for it", async (path) => {

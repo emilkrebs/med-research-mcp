@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import Database from "better-sqlite3";
 import { fetchFulltext, fulltextCacheKey, STANDING_WAIT_MS, type FetchedResource, type FulltextDeps } from "../src/core/fulltext";
 import { EuropePmcAdapter } from "../src/core/adapters/europepmc";
 import type { AdapterHttp } from "../src/core/adapters/http";
@@ -208,9 +212,16 @@ describe("a text is cached under the source it was fetched from", () => {
     expect(byPmcid).toMatchObject({ source: "europepmc", doi: B_DOI, fulltext: withDoi.fulltext });
     expect(fetchUrl).toHaveBeenCalledTimes(1);
 
-    // A DOI given with a PMCID doesn't relabel its text: it is the text of the PMCID.
+    // A DOI given with a PMCID is checked against the record of the PMCID, as a PMID's is: another is refused.
     const other = new LRUBackend();
-    const given = await fetchFulltext({ id: "PMC1182327", doi: A_DOI }, other, client, { ...deps, adapter: () => ({ fetch: async () => [recordB] }) });
+    const known: FulltextDeps["adapter"] = () => ({ fetch: async () => [recordB] });
+    const refused = await fetchFulltext({ id: "PMC1182327", doi: A_DOI }, other, client, { ...deps, adapter: known }).catch((e: unknown) => e as ResearchApiException);
+    expect(refused).toMatchObject({ code: "INVALID_INPUT" });
+    expect(refused.userMessage).toContain("PMC1182327");
+    expect(refused.userMessage).toContain(A_DOI);
+    expect(refused.userMessage).toContain(B_DOI);
+    expect(other.getFulltext(fulltextCacheKey("europepmc", "PMC1182327"))).toBeNull();
+    const given = await fetchFulltext({ id: "PMC1182327", doi: B_DOI }, other, client, { ...deps, adapter: known });
     expect(given).toMatchObject({ source: "europepmc", doi: B_DOI });
     // With no record to say, it says nothing, and stores nothing: a later call is not told a DOI the text may not have.
     const unrecorded = new LRUBackend();
@@ -504,37 +515,69 @@ describe("what an earlier version stored under an id is never read", () => {
   const stale = (key: string, cache: Cache, source = "unpaywall"): void =>
     cache.setFulltext(key, { source, fulltext: OLD_TEXT, format: "markdown", fetchedAt: Date.now() });
 
-  it("ignores a text kept under a plain id in a persistent cache, and keeps its own beside it, with its DOI", async () => {
-    const cache = new SQLiteBackend(":memory:");
+  /** What each caller reads, run through a cache that holds an earlier version's entries, plain-id keys included. */
+  async function readsOnlyItsOwn(cache: Cache): Promise<void> {
+    const { client } = pubmed([retractedA, recordB]);
+    const { fetchUrl, ...pages } = web();
+    const deps: FulltextDeps = { unpaywall: unpaywallOf([A_DOI, B_DOI]), fetchUrl, adapter: europePmc([], [recordB]).adapter, ...pages };
+
+    const byPmid = await fetchFulltext({ id: A }, cache, client, deps);
+    expect(byPmid.fulltext).toContain(`https://oa.example/${A_DOI}`);
+    expect(byPmid.fulltext).not.toContain("another article");
+    const byDoi = await fetchFulltext({ id: "x", doi: B_DOI }, cache, client, { ...deps, adapter: europePmc().adapter });
+    expect(byDoi.fulltext).not.toContain("another article");
+    const byPmcid = await fetchFulltext({ id: "PMC1182327" }, cache, client, deps);
+    expect(byPmcid.fulltext).toContain(epmcUrl("PMC1182327"));
+
+    // The texts it fetched are stored under the sources, with the DOI each belongs to, and read back from there.
+    expect(cache.getFulltext(fulltextCacheKey("unpaywall", A_DOI))).toMatchObject({ source: "unpaywall", doi: A_DOI });
+    expect(cache.getFulltext(fulltextCacheKey("europepmc", "PMC1182327"))).toMatchObject({ source: "europepmc", doi: B_DOI });
+    const requests = fetchUrl.mock.calls.length;
+    expect(await fetchFulltext({ id: A }, cache, client, deps)).toEqual(byPmid);
+    expect(await fetchFulltext({ id: "other", doi: A_DOI }, cache, client, deps)).toMatchObject({ doi: A_DOI, fulltext: byPmid.fulltext });
+    expect(await fetchFulltext({ id: PMID_B }, cache, client, deps)).toMatchObject({ source: "europepmc", doi: B_DOI, fulltext: byPmcid.fulltext });
+    expect(fetchUrl).toHaveBeenCalledTimes(requests);
+  }
+
+  it("empties the full texts of format 3, which a file written by an earlier version holds under plain ids, and keeps its own, with their DOIs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fulltext-v3-"));
+    const path = join(dir, "cache.db");
     try {
-      stale(A, cache);
-      stale("x", cache);
-      stale("PMC1182327", cache, "europepmc");
-      const { client } = pubmed([retractedA, recordB]);
-      const { fetchUrl, ...pages } = web();
-      const deps: FulltextDeps = { unpaywall: unpaywallOf([A_DOI, B_DOI]), fetchUrl, adapter: europePmc([], [recordB]).adapter, ...pages };
+      // A file as the version before this one left it: its tables, with the key column `id` and no `doi`.
+      const raw = new Database(path);
+      raw.exec(`
+        CREATE TABLE summaries_v3 (id TEXT PRIMARY KEY, article TEXT NOT NULL, fetched_at INTEGER NOT NULL);
+        CREATE TABLE abstracts_v3 (id TEXT PRIMARY KEY, abstract TEXT NOT NULL, fetched_at INTEGER NOT NULL);
+        CREATE TABLE fulltexts_v3 (id TEXT PRIMARY KEY, source TEXT NOT NULL, fulltext TEXT NOT NULL, format TEXT NOT NULL, fetched_at INTEGER NOT NULL);
+      `);
+      const insert = raw.prepare("INSERT INTO fulltexts_v3 VALUES (?, ?, ?, ?, ?)");
+      for (const [id, source] of [[A, "unpaywall"], ["x", "unpaywall"], ["PMC1182327", "europepmc"]] as const) insert.run(id, source, OLD_TEXT, "markdown", Date.now());
+      raw.close();
 
-      const byPmid = await fetchFulltext({ id: A }, cache, client, deps);
-      expect(byPmid.fulltext).toContain(`https://oa.example/${A_DOI}`);
-      expect(byPmid.fulltext).not.toContain("another article");
-      const byDoi = await fetchFulltext({ id: "x", doi: B_DOI }, cache, client, { ...deps, adapter: europePmc().adapter });
-      expect(byDoi.fulltext).not.toContain("another article");
-      const byPmcid = await fetchFulltext({ id: "PMC1182327" }, cache, client, deps);
-      expect(byPmcid.fulltext).toContain(epmcUrl("PMC1182327"));
-
-      // The texts it fetched are stored under the sources, with the DOI each belongs to, and read back from there.
-      expect(cache.getFulltext(fulltextCacheKey("unpaywall", A_DOI))).toMatchObject({ source: "unpaywall", doi: A_DOI });
-      expect(cache.getFulltext(fulltextCacheKey("europepmc", "PMC1182327"))).toMatchObject({ source: "europepmc", doi: B_DOI });
-      const requests = fetchUrl.mock.calls.length;
-      expect(await fetchFulltext({ id: A }, cache, client, deps)).toEqual(byPmid);
-      expect(await fetchFulltext({ id: "other", doi: A_DOI }, cache, client, deps)).toMatchObject({ doi: A_DOI, fulltext: byPmid.fulltext });
-      expect(await fetchFulltext({ id: PMID_B }, cache, client, deps)).toMatchObject({ source: "europepmc", doi: B_DOI, fulltext: byPmcid.fulltext });
-      expect(fetchUrl).toHaveBeenCalledTimes(requests);
-      // The entries under plain ids are still there, and not served.
-      expect(cache.getFulltext(A)?.fulltext).toBe(OLD_TEXT);
+      const cache = new SQLiteBackend(path);
+      try {
+        for (const id of [A, "x", "PMC1182327"]) expect(cache.getFulltext(id), id).toBeNull();
+        await readsOnlyItsOwn(cache);
+      } finally {
+        cache.close();
+      }
+      // The old table is emptied, not dropped, and what the new version stored is in the new one, with its DOI column.
+      const after = new Database(path);
+      expect(after.prepare("SELECT COUNT(*) AS n FROM fulltexts_v3").get()).toEqual({ n: 0 });
+      expect(after.prepare("SELECT source, doi FROM fulltexts_v4 WHERE id = ?").get(fulltextCacheKey("unpaywall", A_DOI))).toEqual({ source: "unpaywall", doi: A_DOI });
+      after.close();
     } finally {
-      cache.close();
+      rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("ignores a text kept under a plain id in a cache that doesn't separate versions, and leaves it there", async () => {
+    const cache = new LRUBackend();
+    stale(A, cache);
+    stale("x", cache);
+    stale("PMC1182327", cache, "europepmc");
+    await readsOnlyItsOwn(cache);
+    expect(cache.getFulltext(A)?.fulltext).toBe(OLD_TEXT);
   });
 
   it("uses a different key for each source, so that no id or DOI can name another's", () => {
@@ -547,5 +590,240 @@ describe("what an earlier version stored under an id is never read", () => {
       expect(key).not.toBe(A_DOI);
       expect(key).not.toMatch(/^(?:PMC|PPR)?\d+$/);
     }
+  });
+});
+
+describe("a text read in parts stays the one it started with, whichever source answers later", () => {
+  const tagOf = (url: string): string => url.replace(/\W+/g, "_");
+
+  it("keeps to the Unpaywall copy when Europe PMC, which failed for the first part, answers for the next", async () => {
+    const cache = new LRUBackend();
+    const { client } = pubmed([recordB]);
+    let europePmcUp = false;
+    const { fetchUrl, ...pages } = web({ refused: (url) => !europePmcUp && url.includes("/fullTextXML") });
+    const deps: FulltextDeps = { unpaywall: unpaywallOf([B_DOI]), fetchUrl, adapter: europePmc().adapter, ...pages };
+
+    const first = await fetchFulltext({ id: PMID_B, maxChars: 500 }, cache, client, deps);
+    expect(first).toMatchObject({ source: "unpaywall", doi: B_DOI, truncated: true });
+    europePmcUp = true;
+    const requests = fetchUrl.mock.calls.length;
+    const more = await fetchFulltext({ id: PMID_B, offset: first.nextOffset!, maxChars: 500 }, cache, client, deps);
+    expect(more).toMatchObject({ source: "unpaywall", doi: B_DOI });
+    expect(more.fulltext).toContain(tagOf(`https://oa.example/${B_DOI}`));
+    expect(fetchUrl).toHaveBeenCalledTimes(requests);
+
+    // From the start of a text, Europe PMC is tried first, as on a cold cache.
+    const fresh = await fetchFulltext({ id: PMID_B, maxChars: 500 }, cache, client, deps);
+    expect(fresh.source).toBe("europepmc");
+  });
+
+  it("keeps to the text of a DOI that couldn't be checked when the record can be read for the next part", async () => {
+    const cache = new LRUBackend();
+    const { fetchUrl, ...pages } = web();
+    const deps: FulltextDeps = { unpaywall: unpaywallOf([B_DOI]), fetchUrl, adapter: europePmc().adapter, ...pages };
+
+    // PubMed is down for the first part: no PMCID, so the DOI's copy is read.
+    const first = await fetchFulltext({ id: PMID_B, doi: B_DOI, maxChars: 500 }, cache, pubmed([recordB], { down: true }).client, deps);
+    expect(first).toMatchObject({ source: "unpaywall", truncated: true });
+    // It is up for the next, and says the PMID has a PMCID: the text that was started is still the one read on.
+    const requests = fetchUrl.mock.calls.length;
+    const more = await fetchFulltext({ id: PMID_B, doi: B_DOI, offset: first.nextOffset!, maxChars: 500 }, cache, pubmed([recordB]).client, deps);
+    expect(more).toMatchObject({ source: "unpaywall", doi: B_DOI });
+    expect(more.fulltext).toContain(tagOf(`https://oa.example/${B_DOI}`));
+    expect(fetchUrl).toHaveBeenCalledTimes(requests);
+  });
+});
+
+describe("a ChinaRxiv text is labelled with the DOI of ChinaRxiv's own record, never the caller's", () => {
+  const ID = "chinaxiv-202401.00027";
+  const BODY = ("Translated sentence. ".repeat(60)).trim();
+  const record = (extra: Partial<Article> = {}): Article => ({
+    id: ID,
+    title: "A translated paper",
+    authors: ["Zhang W"],
+    journal: "ChinaXiv",
+    pubDate: "2024",
+    publicationTypes: [],
+    database: "chinaxiv",
+    machineTranslated: true,
+    ...extra,
+  });
+  const chinarxiv = (found: Article): FulltextDeps["adapter"] => () => ({ fetch: async () => [found], fetchFull: async () => [found], fetchText: async () => BODY });
+
+  it("serves the text without the DOI given, and every later part too, from anyone", async () => {
+    const cache = new LRUBackend();
+    const { client } = pubmed([]);
+    const deps: FulltextDeps = { unpaywall: unpaywallOf([B_DOI]), adapter: chinarxiv(record()) };
+
+    const first = await fetchFulltext({ id: ID, doi: B_DOI, maxChars: 400 }, cache, client, deps);
+    expect(first).toMatchObject({ id: ID, source: "chinarxiv", truncated: true });
+    expect(first.doi).toBeUndefined();
+    const next = first.nextOffset!;
+    for (const input of [{ id: ID }, { id: ID, doi: B_DOI }, { id: ID, doi: A_DOI }]) {
+      const more = await fetchFulltext({ ...input, offset: next, maxChars: 400 }, cache, client, deps);
+      expect(more, JSON.stringify(input)).toMatchObject({ source: "chinarxiv" });
+      expect(more.doi, JSON.stringify(input)).toBeUndefined();
+    }
+  });
+
+  it("labels it with the DOI the record itself has", async () => {
+    const cache = new LRUBackend();
+    const deps: FulltextDeps = { unpaywall: unpaywallOf([]), adapter: chinarxiv(record({ doi: A_DOI })) };
+    const first = await fetchFulltext({ id: ID, doi: B_DOI, maxChars: 400 }, cache, pubmed([]).client, deps);
+    expect(first).toMatchObject({ source: "chinarxiv", doi: A_DOI });
+    const more = await fetchFulltext({ id: ID, offset: first.nextOffset!, maxChars: 400 }, cache, pubmed([]).client, deps);
+    expect(more).toMatchObject({ source: "chinarxiv", doi: A_DOI });
+  });
+});
+
+describe("the record of an id speaks for the text of a DOI only when the DOI is the id's own", () => {
+  const NOTICE_ID = "11111111";
+  const DOI_NOTICE = "22222222";
+  const marks = (id: string) => ({ publicationTypes: ["Journal Article", "Retracted Publication"], corrections: [{ type: "RetractionIn" as const, id }], database: "europepmc" as const });
+  /** The record of PMC1182327, retracted, whose DOI is `doi` (none, when undefined). */
+  const idRecord = (doi?: string): Article => ({ ...recordB, ...(doi ? { doi } : { doi: undefined }), ...marks(NOTICE_ID) });
+  /** The record Europe PMC holds for B_DOI: flagged, with another notice. */
+  const doiRecord: Article = { ...recordB, ...marks(DOI_NOTICE) };
+  const europePmcOf = (found: Article, byDoi: Article[] = []) => {
+    const { fetchByDoi } = europePmc(byDoi);
+    const adapter: FulltextDeps["adapter"] = () => ({ fetch: async () => [found], fetchByDoi });
+    return { adapter, fetchByDoi };
+  };
+  const deps = (adapter: FulltextDeps["adapter"], europePmcUp: boolean): FulltextDeps => {
+    const { fetchUrl, ...pages } = web({ refused: (url) => !europePmcUp && url.includes("/fullTextXML") });
+    return { unpaywall: unpaywallOf([B_DOI]), fetchUrl, adapter, ...pages };
+  };
+
+  it("puts the record's warning on the text of the DOI the record confirms, even when Europe PMC has none", async () => {
+    const out = await fetchFulltext({ id: "PMC1182327", doi: B_DOI }, new LRUBackend(), pubmed([]).client, deps(europePmcOf(idRecord(B_DOI)).adapter, false));
+    expect(out).toMatchObject({ source: "unpaywall", doi: B_DOI });
+    expect(out.warning).toContain(`europepmc ${NOTICE_ID}`);
+  });
+
+  it("puts the warning of the DOI's own record on the text of a DOI that a record without one can't confirm, and not the id's", async () => {
+    for (const [id, found, client] of [
+      ["PMC1182327", idRecord(), pubmed([]).client],
+      [PMID_B, idRecord(), pubmed([idRecord()]).client],
+    ] as const) {
+      const { adapter, fetchByDoi } = europePmcOf(found, [doiRecord]);
+      const out = await fetchFulltext({ id, doi: B_DOI }, new LRUBackend(), client, deps(adapter, false));
+      expect(out, id).toMatchObject({ source: "unpaywall", doi: B_DOI });
+      expect(out.warning, id).toContain(`europepmc ${DOI_NOTICE}`);
+      expect(out.warning, id).not.toContain(NOTICE_ID);
+      expect(fetchByDoi, id).toHaveBeenCalledWith(B_DOI);
+    }
+    // With nothing known of the DOI, the text has no warning: the id's record says nothing of it.
+    const { adapter } = europePmcOf(idRecord());
+    expect((await fetchFulltext({ id: "PMC1182327", doi: B_DOI }, new LRUBackend(), pubmed([]).client, deps(adapter, false))).warning).toBeUndefined();
+  });
+
+  it("still puts the record's warning on Europe PMC's text of the PMCID, and on the abstract returned in place of a text", async () => {
+    const { adapter } = europePmcOf(idRecord(), [doiRecord]);
+    const text = await fetchFulltext({ id: "PMC1182327", doi: B_DOI }, new LRUBackend(), pubmed([]).client, deps(adapter, true));
+    expect(text.source).toBe("europepmc");
+    expect(text.warning).toContain(`europepmc ${NOTICE_ID}`);
+    expect(text.warning).not.toContain(DOI_NOTICE);
+
+    const { fetchUrl, ...pages } = web({ refused: () => true });
+    const none = await fetchFulltext({ id: PMID_B, doi: B_DOI }, new LRUBackend(), pubmed([idRecord()]).client, { unpaywall: unpaywallOf([B_DOI]), fetchUrl, proxyPrefix: "", adapter, ...pages });
+    expect(none.source).toBe("none");
+    expect(none.warning).toContain(`europepmc ${NOTICE_ID}`);
+  });
+
+  it("warns by the DOI's record when the id's can't be read", async () => {
+    const { adapter } = europePmcOf(idRecord(), [doiRecord]);
+    const down = await fetchFulltext({ id: A, doi: B_DOI }, new LRUBackend(), pubmed([], { down: true }).client, deps(adapter, false));
+    expect(down).toMatchObject({ source: "unpaywall", doi: B_DOI });
+    expect(down.warning).toContain(`europepmc ${DOI_NOTICE}`);
+    expect(down.warning).not.toContain(A_NOTICE);
+  });
+});
+
+describe("a PMID's text that is still cached is served while PubMed can't be reached", () => {
+  /** A cache whose summaries have expired (they last 7 days, a text 30) when `expired` is set. */
+  class ExpiringSummaries extends LRUBackend {
+    expired = false;
+    override getSummary(id: string): Article | null {
+      return this.expired ? null : super.getSummary(id);
+    }
+  }
+  const down = pubmed([], { down: true }).client;
+
+  it.each([
+    ["Europe PMC's text of the PMID's PMCID", PMID_B, recordB, "europepmc"],
+    ["an Unpaywall copy of the PMID's DOI", A, retractedA, "unpaywall"],
+  ] as const)("serves %s, every part of it", async (_name, pmid, record, source) => {
+    const cache = new ExpiringSummaries();
+    const { fetchUrl, ...pages } = web();
+    const deps: FulltextDeps = { unpaywall: unpaywallOf([A_DOI, B_DOI]), fetchUrl, adapter: europePmc().adapter, ...pages };
+    const first = await fetchFulltext({ id: pmid, maxChars: 500 }, cache, pubmed([record]).client, deps);
+    expect(first.source).toBe(source);
+    cache.expired = true;
+    const requests = fetchUrl.mock.calls.length;
+    const again = await fetchFulltext({ id: pmid, maxChars: 500 }, cache, down, deps);
+    expect(again).toMatchObject({ source, doi: first.doi, fulltext: first.fulltext, totalChars: first.totalChars });
+    const later = await fetchFulltext({ id: pmid, offset: first.nextOffset!, maxChars: 500 }, cache, down, deps);
+    expect(later.source).toBe(source);
+    expect(fetchUrl).toHaveBeenCalledTimes(requests);
+    // A PMID with no text kept still fails as it does, since without its record there is nothing to go on.
+    await expect(fetchFulltext({ id: "99999999" }, cache, down, deps)).rejects.toThrow("NCBI is down");
+  });
+
+  it("leaves no way to the text of a DOI that couldn't be confirmed for the PMID it was given with", async () => {
+    const cache = new ExpiringSummaries();
+    const { fetchUrl, ...pages } = web();
+    const deps: FulltextDeps = { unpaywall: unpaywallOf([A_DOI, B_DOI]), fetchUrl, adapter: europePmc().adapter, ...pages };
+    // PubMed is down, so B's DOI can't be checked against the PMID's record: B's text is returned for the call.
+    const unchecked = await fetchFulltext({ id: A, doi: B_DOI }, cache, down, deps);
+    expect(unchecked).toMatchObject({ source: "unpaywall", doi: B_DOI });
+    // Nothing ties the PMID to it: when the PMID's record can't be read, the PMID gets no text, not that one.
+    await expect(fetchFulltext({ id: A }, cache, down, deps)).rejects.toThrow("NCBI is down");
+  });
+});
+
+describe("a DOI no record answers for is not searched for on every call", () => {
+  const page = (): FulltextDeps => {
+    const { fetchUrl, ...pages } = web();
+    return { unpaywall: unpaywallOf([VOJTA_DOI]), fetchUrl, ...pages };
+  };
+
+  it("remembers that Europe PMC has no record, for the cache the call has", async () => {
+    const cache = new LRUBackend();
+    const { client } = pubmed([]);
+    const { fetchByDoi, adapter } = europePmc();
+    for (let i = 0; i < 3; i++) await fetchFulltext({ id: "x", doi: VOJTA_DOI }, cache, client, { ...page(), adapter });
+    expect(fetchByDoi).toHaveBeenCalledTimes(1);
+    // Another cache starts again.
+    await fetchFulltext({ id: "x", doi: VOJTA_DOI }, new LRUBackend(), client, { ...page(), adapter });
+    expect(fetchByDoi).toHaveBeenCalledTimes(2);
+  });
+
+  it("doesn't remember a request that failed, which is asked again and warns once it answers", async () => {
+    const cache = new LRUBackend();
+    const { client } = pubmed([]);
+    const fetchByDoi = vi.fn().mockRejectedValueOnce(new Error("Europe PMC is down")).mockResolvedValue(vojtaRecord);
+    const adapter: FulltextDeps["adapter"] = () => ({ fetch: async () => [], fetchByDoi });
+    expect((await fetchFulltext({ id: "x", doi: VOJTA_DOI }, cache, client, { ...page(), adapter })).warning).toBeUndefined();
+    expect((await fetchFulltext({ id: "x", doi: VOJTA_DOI }, cache, client, { ...page(), adapter })).warning).toContain(RETRACTED_START);
+    expect(fetchByDoi).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("a Europe PMC record read for a PMID is not kept as PubMed's", () => {
+  it("leaves the bare PMID's summary, which search and fetch serve as PubMed's, to PubMed's records", async () => {
+    const { client } = pubmed([]);
+    const refused = web({ refused: () => true });
+    const deps: FulltextDeps = { unpaywall: unpaywallOf([]), proxyPrefix: "", adapter: europePmc().adapter, ...refused };
+    // A record Europe PMC's search left in the cache, read for the abstract that efetch then completes.
+    const fromEuropePmc = new LRUBackend();
+    fromEuropePmc.setSummary(`europepmc:${A}`, { ...retractedA, database: "europepmc" });
+    const out = await fetchFulltext({ id: A }, fromEuropePmc, client, deps);
+    expect(out.source).toBe("none");
+    expect(fromEuropePmc.getSummary(A)).toBeNull();
+    // The esummary a call made itself is PubMed's: completed by efetch, it is kept under the bare PMID, as before.
+    const fromPubMed = new LRUBackend();
+    fromPubMed.setSummary(`fulltext:${A}`, retractedA);
+    await fetchFulltext({ id: A }, fromPubMed, client, deps);
+    expect(fromPubMed.getSummary(A)).toMatchObject({ id: A });
   });
 });
